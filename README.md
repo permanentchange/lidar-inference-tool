@@ -77,6 +77,8 @@ Notes:
 
 - the full build requires CUDA and TensorRT at configure time
 - CMake rejects Conda-managed include and library paths on purpose; use system dependencies or explicit non-Conda roots
+- TensorRT auto-detection is limited to standard system prefixes such as `/usr`, `/usr/local`, and `/opt`
+- the build no longer scans personal directories such as `$HOME/TensorRT*` or `$HOME/workspace/TensorRT*`
 - if TensorRT or `yaml-cpp` is installed in a nonstandard location, pass `-DTENSORRT_ROOT=...` and / or `-DYAML_CPP_ROOT=...`
 
 ### Python utilities
@@ -110,7 +112,7 @@ cmake -S . -B build -DBUILD_EXAMPLES=OFF
 cmake --build build -j$(nproc)
 ```
 
-If TensorRT is not detected automatically:
+If TensorRT is not detected automatically from standard system prefixes:
 
 ```bash
 cmake -S . -B build -DTENSORRT_ROOT=/path/to/TensorRT
@@ -126,7 +128,7 @@ cmake -S . -B build \
 cmake --build build -j$(nproc)
 ```
 
-If the CMake cache is stale or was copied from another environment, reconfigure from scratch:
+If the CMake cache is stale, was copied from another environment, or still points at an older TensorRT selection, reconfigure from scratch:
 
 ```bash
 rm -rf build

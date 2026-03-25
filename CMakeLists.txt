@@ -89,20 +89,13 @@ endif()
 if(DEFINED ENV{TensorRT_ROOT} AND NOT "$ENV{TensorRT_ROOT}" STREQUAL "")
   list(INSERT TENSORRT_SEARCH_ROOTS 0 "$ENV{TensorRT_ROOT}")
 endif()
-if(DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
-  file(GLOB _tensorrt_home_candidates
-    "$ENV{HOME}/TensorRT*"
-    "$ENV{HOME}/workspace/TensorRT*")
-  if(_tensorrt_home_candidates)
-    list(APPEND TENSORRT_SEARCH_ROOTS ${_tensorrt_home_candidates})
-  endif()
-endif()
 
 find_program(TRTEXEC_BIN trtexec
-  HINTS ${TENSORRT_SEARCH_ROOTS}
+  PATHS ${TENSORRT_SEARCH_ROOTS}
   PATH_SUFFIXES
     bin
-    targets/x86_64-linux-gnu/bin)
+    targets/x86_64-linux-gnu/bin
+  NO_DEFAULT_PATH)
 if(TRTEXEC_BIN)
   get_filename_component(_trtexec_dir "${TRTEXEC_BIN}" DIRECTORY)
   get_filename_component(_trtexec_parent "${_trtexec_dir}/.." ABSOLUTE)
