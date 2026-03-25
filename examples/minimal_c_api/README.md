@@ -23,15 +23,25 @@ Use the repository demo assets by default:
 ./build/minimal_c_api_example demo/end2end.engine demo/pcd.bin
 ```
 
+Process multiple point clouds in one run:
+
+```bash
+./build/minimal_c_api_example demo/end2end.engine demo/pcd.bin demo/pcd.bin
+```
+
 Arguments:
 
 - `<engine_path>`: TensorRT engine path
-- `<pcd_bin_path>`: float32 `.bin` point cloud path
+- `<pcd_bin_path>`: one or more float32 `.bin` point cloud paths
 
 Input expectations:
 
 - the point cloud file must contain `float32` values
 - this example uses the same runtime settings as `demo/demo.yaml`
 - the example reads `.bin` input with 5 features per point
+- files are loaded one by one into a reused host buffer to reduce repeated allocations
+- output buffers are allocated once from `InferenceOutputSpec` and reused for every file
+- load or inference failures are reported and skipped; the program returns nonzero if any file fails
 
-The program prints the total detection count and up to five decoded detections.
+The program prints a batch summary with processed file counts, total points, total detected
+objects, aggregate timings, and any failed file paths.

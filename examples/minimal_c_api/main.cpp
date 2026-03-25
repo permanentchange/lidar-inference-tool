@@ -1,20 +1,19 @@
 #include "inference.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
-#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
 namespace {
 
 constexpr int kNumPointFeatures = 5;
-constexpr int kBoxDim = 7;
-constexpr size_t kMaxPreviewDetections = 5;
 
 InferenceConfig MakeDemoConfig(const char* engine_path) {
   InferenceConfig config{};
@@ -92,7 +91,7 @@ bool LoadPointCloudBin(const std::string& path,
     return false;
   }
 
-  out_points->assign(total_floats, 0.0f);
+  out_points->resize(total_floats);
   input.seekg(0, std::ios::beg);
   input.read(reinterpret_cast<char*>(out_points->data()), file_size);
   if (!input) {
@@ -105,25 +104,22 @@ bool LoadPointCloudBin(const std::string& path,
 }
 
 void PrintUsage(const char* program) {
-  std::cerr << "Usage: " << program << " <engine_path> <pcd_bin_path>\n";
+  std::cerr << "Usage: " << program << " <engine_path> <pcd_bin_path> [pcd_bin_path ...]\n";
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc != 3) {
+  if (argc < 3) {
     PrintUsage(argc > 0 ? argv[0] : "minimal_c_api_example");
     return 1;
   }
 
   const std::string engine_path = argv[1];
-  const std::string point_cloud_path = argv[2];
-
-  std::vector<float> points;
-  std::string error;
-  if (!LoadPointCloudBin(point_cloud_path, kNumPointFeatures, &points, &error)) {
-    std::cerr << error << "\n";
-    return 1;
+  std::vector<std::string> point_cloud_paths;
+  point_cloud_paths.reserve(static_cast<size_t>(argc - 2));
+  for (int i = 2; i < argc; ++i) {
+    point_cloud_paths.emplace_back(argv[i]);
   }
 
   InferenceConfig config = MakeDemoConfig(engine_path.c_str());
@@ -146,10 +142,13 @@ int main(int argc, char** argv) {
   std::vector<float> cls_preds(spec.cls_count, 0.0f);
   std::vector<float> box_preds(spec.box_count, 0.0f);
   std::vector<int> label_preds(spec.label_count, 0);
+  std::vector<float> points;
+  points.reserve(static_cast<size_t>(config.max_points) *
+                 static_cast<size_t>(config.num_point_features));
 
   InferenceRequest request{};
-  request.points = points.data();
-  request.point_count = static_cast<int>(points.size() / kNumPointFeatures);
+  request.points = nullptr;
+  request.point_count = 0;
   request.motion_4x4 = nullptr;
   request.enable_runtime = 1;
 
@@ -163,34 +162,85 @@ int main(int argc, char** argv) {
   response.freespace = nullptr;
   response.freespace_capacity = 0;
 
-  const InferenceStatus forward_status =
-      inference_forward(handle, &request, &response);
-  if (forward_status != INFERENCE_STATUS_OK) {
-    std::cerr << "inference_forward failed with status " << forward_status << ": "
-              << inference_last_error(handle) << "\n";
-    inference_destroy(handle);
-    return 1;
+  using Clock = std::chrono::steady_clock;
+  const auto total_start = Clock::now();
+  size_t succeeded_files = 0;
+  size_t failed_files = 0;
+  size_t total_loaded_points = 0;
+  size_t total_consumed_points = 0;
+  size_t total_detected_objects = 0;
+  double total_load_ms = 0.0;
+  double total_infer_ms = 0.0;
+  std::vector<std::string> failure_messages;
+
+  for (const std::string& point_cloud_path : point_cloud_paths) {
+    std::string error;
+    const auto load_start = Clock::now();
+    const bool loaded = LoadPointCloudBin(point_cloud_path, kNumPointFeatures, &points, &error);
+    const auto load_end = Clock::now();
+    total_load_ms += std::chrono::duration<double, std::milli>(load_end - load_start).count();
+    if (!loaded) {
+      ++failed_files;
+      failure_messages.push_back(point_cloud_path + ": " + error);
+      continue;
+    }
+
+    request.points = points.data();
+    request.point_count = static_cast<int>(points.size() / static_cast<size_t>(kNumPointFeatures));
+    total_loaded_points += static_cast<size_t>(request.point_count);
+    total_consumed_points += static_cast<size_t>(
+        std::max(0, std::min(request.point_count, config.max_points)));
+
+    response.cls_count = 0;
+    response.box_count = 0;
+    response.label_count = 0;
+    response.freespace_count = 0;
+
+    const auto infer_start = Clock::now();
+    const InferenceStatus forward_status = inference_forward(handle, &request, &response);
+    const auto infer_end = Clock::now();
+    total_infer_ms += std::chrono::duration<double, std::milli>(infer_end - infer_start).count();
+
+    if (forward_status != INFERENCE_STATUS_OK) {
+      ++failed_files;
+      std::ostringstream oss;
+      oss << point_cloud_path << ": inference_forward failed with status " << forward_status
+          << ": " << inference_last_error(handle);
+      failure_messages.push_back(oss.str());
+      continue;
+    }
+
+    ++succeeded_files;
+    total_detected_objects += response.cls_count;
   }
 
-  std::cout << "Loaded points: " << request.point_count << "\n";
-  std::cout << "Detected objects: " << response.cls_count << "\n";
+  const auto total_end = Clock::now();
+  const double total_elapsed_ms =
+      std::chrono::duration<double, std::milli>(total_end - total_start).count();
 
-  const size_t preview_count = std::min(response.cls_count, kMaxPreviewDetections);
-  std::cout << std::fixed << std::setprecision(4);
-  for (size_t i = 0; i < preview_count; ++i) {
-    const size_t box_offset = i * kBoxDim;
-    std::cout << "det[" << i << "] score=" << response.cls_preds[i]
-              << " label=" << response.label_preds[i]
-              << " box=[";
-    for (int dim = 0; dim < kBoxDim; ++dim) {
-      if (dim > 0) {
-        std::cout << ", ";
-      }
-      std::cout << response.box_preds[box_offset + static_cast<size_t>(dim)];
+  std::cout << "Processed files: " << point_cloud_paths.size() << "\n";
+  std::cout << "Succeeded files: " << succeeded_files << "\n";
+  std::cout << "Failed files: " << failed_files << "\n";
+  std::cout << "Total loaded points: " << total_loaded_points << "\n";
+  std::cout << "Total consumed points: " << total_consumed_points << "\n";
+  std::cout << "Total detected objects: " << total_detected_objects << "\n";
+  std::cout << "Total load time: " << total_load_ms << " ms\n";
+  std::cout << "Total inference time: " << total_infer_ms << " ms\n";
+  std::cout << "Total elapsed time: " << total_elapsed_ms << " ms\n";
+  if (succeeded_files > 0) {
+    const double success_count = static_cast<double>(succeeded_files);
+    std::cout << "Mean load time per successful file: " << (total_load_ms / success_count)
+              << " ms\n";
+    std::cout << "Mean inference time per successful file: " << (total_infer_ms / success_count)
+              << " ms\n";
+  }
+  if (!failure_messages.empty()) {
+    std::cout << "Failures:\n";
+    for (const std::string& failure_message : failure_messages) {
+      std::cout << "  " << failure_message << "\n";
     }
-    std::cout << "]\n";
   }
 
   inference_destroy(handle);
-  return 0;
+  return failure_messages.empty() ? 0 : 1;
 }
