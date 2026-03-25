@@ -4,6 +4,7 @@
 
 - `libinference.so`: a shared library with a small C API for loading one engine and running decoded detections
 - `pillar_debug_tool`: a single-sample debug executable that loads a YAML config, runs inference, dumps intermediate tensors, and writes timing reports
+- `minimal_c_api_example`: a minimal executable under `examples/` that shows the shortest public API call flow
 
 The current runtime is written for PointPillars / CenterPoint-style engines with fixed binding names and a 3-task head layout.
 
@@ -20,6 +21,7 @@ This README intentionally uses repository-relative paths and placeholders such a
 - `tools/pillar_debug_tool.cpp`: debug CLI entry point
 - `tools/onnx2engine.sh`: helper script for `trtexec`
 - `scripts/visualize_bev.py`: BEV visualization for dumped debug artifacts
+- `examples/minimal_c_api/`: minimal executable example for the public C API
 - `demo/demo.yaml`: default demo config
 - `demo/end2end.onnx`: example ONNX model
 - `demo/end2end.engine`: example TensorRT engine
@@ -101,6 +103,13 @@ cmake -S . -B build
 cmake --build build -j$(nproc)
 ```
 
+The example targets are enabled by default. Disable them only if you want the shared library and debug tool without the `examples/` executables:
+
+```bash
+cmake -S . -B build -DBUILD_EXAMPLES=OFF
+cmake --build build -j$(nproc)
+```
+
 If TensorRT is not detected automatically:
 
 ```bash
@@ -129,6 +138,7 @@ A successful full build generates:
 
 - `build/libinference.so`
 - `build/pillar_debug_tool`
+- `build/minimal_c_api_example` when `BUILD_EXAMPLES=ON`
 
 ### Stub build
 
@@ -144,6 +154,7 @@ Stub behavior:
 - only `build/libinference.so` is produced
 - exported API calls return `INFERENCE_STATUS_NOT_SUPPORTED`
 - `inference_last_error()` reports that the library was built without CUDA or TensorRT support
+- example executables are skipped even if `BUILD_EXAMPLES=ON`
 
 ## Quick Start
 
@@ -153,6 +164,12 @@ Run one debug session:
 
 ```bash
 ./build/pillar_debug_tool demo/demo.yaml
+```
+
+Run the minimal public API example against the same demo assets:
+
+```bash
+./build/minimal_c_api_example demo/end2end.engine demo/pcd.bin
 ```
 
 The default demo config reads:
@@ -173,6 +190,20 @@ Typical console output includes:
 - final NMS box count
 - per-stage timings for a single run
 - percentile summary over `profile_iters` runs after `warmup_iters` warmup runs
+
+## Examples
+
+The repository includes a standalone example under `examples/minimal_c_api/`.
+
+What it does:
+
+- loads a `.bin` point cloud with 5 features per point
+- creates an `InferenceHandle` with runtime parameters matching `demo/demo.yaml`
+- queries `InferenceOutputSpec`
+- allocates output buffers and runs `inference_forward`
+- prints the total detection count and up to five decoded boxes
+
+Its local README is at `examples/minimal_c_api/README.md`.
 
 ## Debug Config
 

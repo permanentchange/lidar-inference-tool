@@ -5,6 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(BUILD_STUB_IF_NO_TENSORRT "Allow stub build when TensorRT is unavailable" OFF)
+option(BUILD_EXAMPLES "Build example executables" ON)
 set(TENSORRT_ROOT "" CACHE PATH "TensorRT installation root")
 set(YAML_CPP_ROOT "" CACHE PATH "System yaml-cpp installation root")
 
@@ -167,6 +168,11 @@ if(MISSING_GPU_DEPS)
       PUBLIC
         ${INFERENCE_PUBLIC_INCLUDE_DIR}
     )
+    if(BUILD_EXAMPLES)
+      message(STATUS
+        "Skipping example executables because the project is building the stub library. "
+        "Configure a full CUDA + TensorRT build to enable examples.")
+    endif()
   else()
     message(FATAL_ERROR
       "Full build requires CUDA and TensorRT. Missing dependencies:\n"
@@ -225,4 +231,8 @@ else()
       voxelization
       ${YAML_CPP_LIBRARY}
   )
+
+  if(BUILD_EXAMPLES)
+    add_subdirectory(examples)
+  endif()
 endif()
