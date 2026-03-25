@@ -50,3 +50,14 @@ Thumbs.db
 
 # output data
 /outputs 
+# big files
+*.onnx
+*.engine
+*.trt
+*.pt
+*.pth
+*.bin
+*.pcd
+*.png
+*.jpg
+*.jpeg

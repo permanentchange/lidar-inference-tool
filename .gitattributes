@@ -1,0 +1,12 @@
+* text=auto eol=lf
+
+*.a binary
+*.dll binary
+*.dylib binary
+*.exe binary
+*.jpg binary
+*.jpeg binary
+*.npy binary
+*.png binary
+*.so binary
+*.so.* binary
