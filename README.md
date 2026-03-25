@@ -341,7 +341,8 @@ Current behavior:
 
 ## Public C API
 
-The public interface is declared in `include/inference.h`.
+The public interface is declared in `include/inference.h`, and that header now contains the
+canonical field-by-field and function-by-function contract.
 
 Exported functions:
 
@@ -355,10 +356,10 @@ Exported functions:
 Typical call flow:
 
 1. Fill an `InferenceConfig` and call `inference_create()`.
-2. Call `inference_get_output_spec()` to learn the maximum buffer sizes.
-3. Allocate response buffers from that spec.
-4. Fill an `InferenceRequest` with point data and call `inference_forward()`.
-5. Read `cls_count`, `box_count`, and `label_count` from the response.
+2. Call `inference_get_output_spec()` to learn the required output capacities.
+3. Allocate response buffers using those element counts.
+4. Fill an `InferenceRequest` with tightly packed point data and call `inference_forward()`.
+5. Read `cls_count`, `box_count`, `label_count`, and `freespace_count` from the response.
 6. Call `inference_destroy()` when done.
 
 Minimal example:
@@ -401,15 +402,16 @@ if (status != INFERENCE_STATUS_OK) {
 inference_destroy(handle);
 ```
 
-Response semantics:
+Important semantics:
 
-- `cls_preds` stores decoded detection scores
+- `InferenceOutputSpec` and all `*_capacity` fields use element counts, not byte sizes
 - `box_preds` stores decoded boxes as `[x, y, z, dx, dy, dz, yaw]`
 - `label_preds` stores 1-based task ids
-- `box_count` is the number of floats in `box_preds`, so it is `7 * cls_count`
+- `box_count` is the number of float elements in `box_preds`, so it is `7 * cls_count`
 - `freespace_count` is always `0` in the current implementation
-- `freespace` is only zero-filled if a caller supplies that buffer
+- `freespace` is optional and is only zero-filled if a caller supplies that buffer
 - `motion_4x4` and `enable_runtime` are present in the public request struct, but the current runtime does not read them
+- call `inference_last_error()` after a failing API call to retrieve a human-readable backend error
 
 ## ONNX to TensorRT
 
