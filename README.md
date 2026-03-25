@@ -1,55 +1,81 @@
 # lidar-inference-tool
 
-`lidar-inference-tool` provides two main deliverables:
+`lidar-inference-tool` is a C++17 LiDAR inference project built around TensorRT end-to-end pillar models. The repository exposes:
 
-- A shared C API library: `libinference.so`
-- A single-sample debug executable: `pillar_debug_tool`
+- `libinference.so`: a shared library with a small C API for loading one engine and running decoded detections
+- `pillar_debug_tool`: a single-sample debug executable that loads a YAML config, runs inference, dumps intermediate tensors, and writes timing reports
 
-The current implementation targets PointPillars / CenterPoint-style TensorRT
-end-to-end engines. It takes point clouds as input and returns decoded
-detections sorted by score.
+The current runtime is written for PointPillars / CenterPoint-style engines with fixed binding names and a 3-task head layout.
 
-## Repository Metadata
+## Privacy Note
 
-- Contribution guidelines: `CONTRIBUTING.md`
-- License: `LICENSE`
-- Local build products and debug outputs are covered by `.gitignore`
+This README intentionally uses repository-relative paths and placeholders such as `/path/to/TensorRT`. Do not replace examples with host-specific absolute paths, usernames, home directories, or machine identifiers when sharing configs or logs.
 
 ## Repository Layout
 
-- `include/inference.h`: stable public C API
-- `src/pillar_runtime.cpp`: TensorRT engine loading, voxelization, inference, and decode
-- `src/pillar_debug_utils.cpp`: debug config parsing, NMS, and artifact export
-- `tools/pillar_debug_tool.cpp`: single-sample debug entry point
-- `tools/onnx2engine.sh`: helper script that converts ONNX to TensorRT and profiles the engine with `trtexec`
-- `demo/demo.yaml`: default demo configuration
+- `include/inference.h`: public C API
+- `src/inference_api.cpp`: shared-library entry points
+- `src/pillar_runtime.cpp`: TensorRT loading, voxelization, inference, decode, and response packing
+- `src/pillar_debug_utils.cpp`: YAML parsing, point-cloud loading, NMS, and artifact export
+- `tools/pillar_debug_tool.cpp`: debug CLI entry point
+- `tools/onnx2engine.sh`: helper script for `trtexec`
+- `scripts/visualize_bev.py`: BEV visualization for dumped debug artifacts
+- `demo/demo.yaml`: default demo config
 - `demo/end2end.onnx`: example ONNX model
 - `demo/end2end.engine`: example TensorRT engine
 - `demo/pcd.bin`: example point cloud
-- `scripts/visualize_bev.py`: BEV visualization script
 - `third_party/voxelize/`: vendored CUDA voxelization module
-- `third_party/iou3d_nms/`: low-level IoU and NMS module used by the debug tool
+- `third_party/iou3d_nms/`: low-level IoU / NMS module used by the debug tool
+
+## Runtime Contract
+
+The TensorRT engine must expose these bindings:
+
+Inputs:
+
+- `voxels` (`float32`)
+- `num_points` (`int32`)
+- `coors` (`int32`)
+
+Outputs:
+
+- `bbox_pred0` (`float32`)
+- `cls_score0` (`float32`)
+- `dir_cls_pred0` (`float32`)
+
+Additional assumptions enforced by the runtime:
+
+- output tensors must be 4D `BCHW`
+- output feature-map spatial sizes must match
+- `bbox_pred0` must have `8 * task_count` channels
+- `dir_cls_pred0` must have `2 * task_count` channels
+- the current decode path expects 3 tasks
+- decoded labels are `1`, `2`, `3` inside the C API, mapped by default to `car`, `pedestrian`, `cyclist`
+
+Initialization fails if the engine bindings, dtypes, or channel layout do not match these expectations.
 
 ## Requirements
 
-### Native inference build
+### Full native build
 
 - Linux
 - CMake >= 3.0.2
 - GCC / G++ with C++17 support
-- CUDA Toolkit
-- TensorRT
-- System `yaml-cpp` development package
+- CUDA Toolkit with `nvcc`
+- TensorRT headers and libraries
+- `yaml-cpp` development package
 
-Install the system YAML dependency on Ubuntu:
+Install the YAML dependency on Ubuntu:
 
 ```bash
 sudo apt-get install -y libyaml-cpp-dev
 ```
 
-The build does not support Conda-provided include or library paths. If your
-existing `build/` directory was configured with Conda flags, remove it and
-configure again.
+Notes:
+
+- the full build requires CUDA and TensorRT at configure time
+- CMake rejects Conda-managed include and library paths on purpose; use system dependencies or explicit non-Conda roots
+- if TensorRT or `yaml-cpp` is installed in a nonstandard location, pass `-DTENSORRT_ROOT=...` and / or `-DYAML_CPP_ROOT=...`
 
 ### Python utilities
 
@@ -58,7 +84,7 @@ configure again.
 - `pyyaml`
 - `matplotlib`
 
-Install Python dependencies with:
+Install optional Python dependencies with:
 
 ```bash
 python3 -m pip install numpy pyyaml matplotlib
@@ -66,145 +92,146 @@ python3 -m pip install numpy pyyaml matplotlib
 
 ## Build
 
-Run all commands from the repository root.
+Run commands from the repository root.
 
-### Fast path
-
-Start with this exact command:
+### Full build
 
 ```bash
-cmake -S . -B build && cmake --build build -j$(nproc)
+cmake -S . -B build
+cmake --build build -j$(nproc)
 ```
 
-This passes when TensorRT auto-detection succeeds. The current CMake logic
-checks common system paths, common extracted TensorRT directories, and paths
-that can be inferred from `trtexec`.
-
-### If the fast path fails
-
-If configure fails because TensorRT was not found, rerun with an explicit
-TensorRT root:
+If TensorRT is not detected automatically:
 
 ```bash
-cmake -S . -B build -DTENSORRT_ROOT=/path/to/TensorRT && cmake --build build -j$(nproc)
+cmake -S . -B build -DTENSORRT_ROOT=/path/to/TensorRT
+cmake --build build -j$(nproc)
 ```
 
-### If the cache is stale or polluted
+If `yaml-cpp` is outside standard system prefixes:
 
-If `build/` was copied from another machine or was previously configured with
-Conda-managed paths, remove it and reconfigure locally:
+```bash
+cmake -S . -B build \
+  -DTENSORRT_ROOT=/path/to/TensorRT \
+  -DYAML_CPP_ROOT=/path/to/yaml-cpp
+cmake --build build -j$(nproc)
+```
+
+If the CMake cache is stale or was copied from another environment, reconfigure from scratch:
 
 ```bash
 rm -rf build
-cmake -S . -B build -DTENSORRT_ROOT=/path/to/TensorRT && cmake --build build -j$(nproc)
+cmake -S . -B build -DTENSORRT_ROOT=/path/to/TensorRT
+cmake --build build -j$(nproc)
 ```
 
-### Optional stub build
+A successful full build generates:
 
-The default configuration is strict: if CUDA or TensorRT is missing, CMake
-fails during configure. To build the stub library explicitly, enable the stub
-switch:
+- `build/libinference.so`
+- `build/pillar_debug_tool`
+
+### Stub build
+
+If CUDA or TensorRT is unavailable but you still want the shared library to build, enable the stub explicitly:
 
 ```bash
 cmake -S . -B build -DBUILD_STUB_IF_NO_TENSORRT=ON
 cmake --build build -j$(nproc)
 ```
 
-Successful full builds generate:
+Stub behavior:
 
-- `build/libinference.so`
-- `build/pillar_debug_tool`
+- only `build/libinference.so` is produced
+- exported API calls return `INFERENCE_STATUS_NOT_SUPPORTED`
+- `inference_last_error()` reports that the library was built without CUDA or TensorRT support
 
-Stub builds only generate `build/libinference.so`, and exported API calls such
-as `inference_create()` and `inference_forward()` return
-`INFERENCE_STATUS_NOT_SUPPORTED`.
+## Quick Start
 
-## Engine Contract
+The repository ships a demo config that resolves all paths relative to `demo/demo.yaml`, so the sample remains portable across machines.
 
-The runtime expects the TensorRT engine to expose the following bindings.
-
-Input bindings:
-
-- `voxels`
-- `num_points`
-- `coors`
-
-Output bindings:
-
-- `bbox_pred0`
-- `cls_score0`
-- `dir_cls_pred0`
-
-The decode logic assumes three tasks:
-
-- `1 -> car`
-- `2 -> pedestrian`
-- `3 -> cyclist`
-
-Expected head layout:
-
-- `bbox_pred0`: 8 channels per task
-- `dir_cls_pred0`: 2 channels per task
-- `cls_score0`: 1 heatmap channel per task
-
-Initialization fails if the engine bindings, dtypes, or output tensor layout do
-not match these assumptions.
-
-## Debug Tool Workflow
-
-### Configuration
-
-The default debug config is `demo/demo.yaml`.
-
-All path fields in the YAML are resolved relative to the YAML file itself, so
-the demo stays portable across machines.
-
-Important fields:
-
-- `engine_path`: TensorRT engine file
-- `pcd_path`: input point cloud, supports `.bin` and `.pcd`
-- `dump_dir`: output directory for debug artifacts
-- `runtime.*`: voxelization and decode parameters
-- `post_processing.*`: NMS and final score thresholds
-
-The shipped demo config points at files inside `demo/`:
-
-- `end2end.engine`
-- `pcd.bin`
-- `demo_output`
-
-### Run a single-sample debug session
+Run one debug session:
 
 ```bash
 ./build/pillar_debug_tool demo/demo.yaml
 ```
 
+The default demo config reads:
+
+- `demo/end2end.engine`
+- `demo/pcd.bin`
+
+and writes artifacts under:
+
+- `outputs/demo_dump`
+
 Typical console output includes:
 
-- point cloud load time
+- point-cloud load time
 - input point count
 - pillar count
 - decoded candidate count
 - final NMS box count
-- single-run inference latency
-- profile summary timings
+- per-stage timings for a single run
+- percentile summary over `profile_iters` runs after `warmup_iters` warmup runs
 
-### Generate BEV visualizations
+## Debug Config
+
+`pillar_debug_tool` expects one YAML file:
 
 ```bash
-python3 scripts/visualize_bev.py demo/demo.yaml
+./build/pillar_debug_tool <config.yaml>
 ```
 
-Generated files under `dump_dir`:
+Top-level fields:
 
-- `01_input_points_bev.png`
-- `02_heatmap_bev.png`
-- `03_decoded_candidates_bev.png`
-- `04_final_boxes_bev.png`
+- `engine_path`: TensorRT engine path
+- `pcd_path`: input point cloud path
+- `dump_dir`: output directory for `.npy` / `.json` artifacts
+- `warmup_iters`: number of warmup runs before profiling
+- `profile_iters`: number of profiled runs
+- `bev_resolution`: stored for visualization-oriented workflows
+- `runtime`: voxelization and decode settings
+- `post_processing`: debug NMS and final filtering settings
 
-### Common debug artifacts
+Important `runtime` fields:
 
-`pillar_debug_tool` usually writes the following files into `dump_dir`:
+- `max_points`
+- `frame_num`
+- `num_point_features`
+- `point_cloud_range`
+- `post_center_range`
+- `pillar_size`
+- `max_points_per_pillar`
+- `min_pillars`
+- `max_pillars`
+- `bbox_max_num`
+- `out_size_factor`
+- `score_threshold`
+
+Important `post_processing` fields:
+
+- `nms_type`
+- `nms_thresh`
+- `nms_pre_maxsize`
+- `nms_post_maxsize`
+- `final_score_threshold`
+- `circle_nms_min_radius`
+- `label_names`
+- `label_score_thresh`
+
+Path handling:
+
+- `engine_path`, `pcd_path`, and `dump_dir` are resolved relative to the YAML file if they are not absolute
+- using repository-relative paths is recommended for portability and privacy
+
+NMS behavior:
+
+- when `nms_type` is `circle`, the tool applies per-label circle NMS using `circle_nms_min_radius`
+- for any other `nms_type`, the tool uses the CUDA IoU NMS path from `third_party/iou3d_nms`
+
+## Debug Artifacts
+
+A successful debug run writes these files into `dump_dir`:
 
 - `input_points.npy`
 - `pillar_voxels.npy`
@@ -225,14 +252,124 @@ Generated files under `dump_dir`:
 
 Notes:
 
-- `result.json` contains the exported final detection output
-- `timings.json` contains the profile summary
-- `metadata.json` contains tensor summaries for the dump
+- `result.json` contains final detections after the debug tool's NMS stage
+- `result.json` writes a zero-based `label` field plus `label_name`; this differs from the C API output, which uses `1..3`
+- `metadata.json` contains timing data and tensor summaries
+- `timings.json` contains both the single-run timing breakdown and aggregated profile statistics
+
+## BEV Visualization
+
+After a debug run, generate BEV plots with:
+
+```bash
+python3 scripts/visualize_bev.py demo/demo.yaml
+```
+
+The script reads `dump_dir` from the YAML config and produces:
+
+- `01_input_points_bev.png`
+- `02_heatmap_bev.png`
+- `03_decoded_candidates_bev.png`
+- `04_final_boxes_bev.png`
+
+## Input Formats
+
+### `.bin`
+
+The loader accepts `float32` point clouds and tries to infer the source feature count from the file size.
+
+Current behavior:
+
+- if the file length matches `runtime.num_point_features`, that feature count is used directly
+- otherwise the loader falls back to common layouts in this order: `5`, `4`, `3`
+- data is copied into a buffer shaped by `runtime.num_point_features`
+- if both the source file and the runtime are 5-feature layouts, only the first 4 features are copied and the 5th feature is zero-padded
+
+That last rule matches the behavior documented in the loader comment: 5D input is treated as `XYZI` plus a zero-filled trailing feature instead of passing the 5th input channel through unchanged.
+
+### `.pcd`
+
+Current behavior:
+
+- only binary PCD is supported
+- only `x`, `y`, `z` are read from the payload
+- remaining channels in the runtime input buffer are zero-padded
+
+## Public C API
+
+The public interface is declared in `include/inference.h`.
+
+Exported functions:
+
+- `inference_create`
+- `inference_get_output_spec`
+- `inference_forward`
+- `inference_reset`
+- `inference_destroy`
+- `inference_last_error`
+
+Typical call flow:
+
+1. Fill an `InferenceConfig` and call `inference_create()`.
+2. Call `inference_get_output_spec()` to learn the maximum buffer sizes.
+3. Allocate response buffers from that spec.
+4. Fill an `InferenceRequest` with point data and call `inference_forward()`.
+5. Read `cls_count`, `box_count`, and `label_count` from the response.
+6. Call `inference_destroy()` when done.
+
+Minimal example:
+
+```c
+#include "inference.h"
+
+InferenceHandle* handle = NULL;
+InferenceConfig config = {0};
+/* fill config.end2end_file and runtime parameters */
+if (inference_create(&config, &handle) != INFERENCE_STATUS_OK) {
+  return 1;
+}
+
+InferenceOutputSpec spec = {0};
+inference_get_output_spec(handle, &spec);
+
+float* cls_preds = malloc(spec.cls_count * sizeof(float));
+float* box_preds = malloc(spec.box_count * sizeof(float));
+int* label_preds = malloc(spec.label_count * sizeof(int));
+
+InferenceRequest request = {0};
+request.points = points;
+request.point_count = point_count;
+request.enable_runtime = 1;
+
+InferenceResponse response = {0};
+response.cls_preds = cls_preds;
+response.cls_capacity = spec.cls_count;
+response.box_preds = box_preds;
+response.box_capacity = spec.box_count;
+response.label_preds = label_preds;
+response.label_capacity = spec.label_count;
+
+InferenceStatus status = inference_forward(handle, &request, &response);
+if (status != INFERENCE_STATUS_OK) {
+  const char* err = inference_last_error(handle);
+}
+
+inference_destroy(handle);
+```
+
+Response semantics:
+
+- `cls_preds` stores decoded detection scores
+- `box_preds` stores decoded boxes as `[x, y, z, dx, dy, dz, yaw]`
+- `label_preds` stores 1-based task ids
+- `box_count` is the number of floats in `box_preds`, so it is `7 * cls_count`
+- `freespace_count` is always `0` in the current implementation
+- `freespace` is only zero-filled if a caller supplies that buffer
+- `motion_4x4` and `enable_runtime` are present in the public request struct, but the current runtime does not read them
 
 ## ONNX to TensorRT
 
-Use `tools/onnx2engine.sh` to convert an ONNX model into a TensorRT engine and
-run a quick `trtexec` profile.
+Use the helper script to build an engine and then run a quick `trtexec` profile:
 
 ```bash
 bash tools/onnx2engine.sh <onnx_path> <engine_path> <min_points> <opt_points> <max_points>
@@ -244,52 +381,9 @@ Example:
 bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end.engine 10000 40000 50000
 ```
 
-Requirements:
+Requirements and behavior:
 
 - `trtexec` must be available in `PATH`
 - the ONNX file must already exist
-
-Behavior:
-
-- if the target engine already exists, the script skips regeneration
-- after conversion, it runs `trtexec --loadEngine ... --dumpProfile --verbose`
-
-## Input Formats
-
-### `.bin`
-
-The loader supports `float32` point clouds with 3, 4, or 5 features per point.
-
-Current behavior:
-
-- 3D input is interpreted as `x y z`
-- 4D input is interpreted as `x y z intensity`
-- 5D input matches `InferTools PointCloudLoader(use_timestamp=False)`: only the
-  first 4 values are forwarded and the 5th feature is zero-padded
-
-In other words, a 5D input file does not pass the 5th feature through to the
-model verbatim.
-
-### `.pcd`
-
-Only binary PCD is supported.
-
-Current behavior:
-
-- `x y z` are loaded
-- intensity is filled with `0`
-
-## Public API Usage
-
-Public header:
-
-- `include/inference.h`
-
-Exported symbols:
-
-- `inference_create`
-- `inference_get_output_spec`
-- `inference_forward`
-- `inference_reset`
-- `inference_destroy`
-- `inference_last_error`
+- if the target engine already exists, regeneration is skipped
+- the script always runs a follow-up `trtexec --loadEngine ... --dumpProfile --verbose` pass
