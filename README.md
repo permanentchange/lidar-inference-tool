@@ -31,7 +31,7 @@ This README intentionally uses repository-relative paths and placeholders such a
 
 ## Runtime Contract
 
-The TensorRT engine must expose these bindings:
+The TensorRT engine may execute internally in FP16 or INT8, but it must expose these external bindings:
 
 Inputs:
 
@@ -47,6 +47,8 @@ Outputs:
 
 Additional assumptions enforced by the runtime:
 
+- the engine must expose at least one optimization profile for pillar count
+- the `voxels`, `num_points`, and `coors` inputs must agree on the same min/opt/max pillar range
 - output tensors must be 4D `BCHW`
 - output feature-map spatial sizes must match
 - `bbox_pred0` must have `8 * task_count` channels
@@ -54,7 +56,7 @@ Additional assumptions enforced by the runtime:
 - the current decode path expects 3 tasks
 - decoded labels are `1`, `2`, `3` inside the C API, mapped by default to `car`, `pedestrian`, `cyclist`
 
-Initialization fails if the engine bindings, dtypes, or channel layout do not match these expectations.
+Initialization fails if the engine bindings, dtypes, optimization profile, or channel layout do not match these expectations.
 
 ## Requirements
 
@@ -418,18 +420,27 @@ Important semantics:
 Use the helper script to build an engine and then run a quick `trtexec` profile:
 
 ```bash
-bash tools/onnx2engine.sh <onnx_path> <engine_path> <min_points> <opt_points> <max_points>
+bash tools/onnx2engine.sh <onnx_path> <engine_path> <min_points> <opt_points> <max_points> [fp32|fp16|int8]
 ```
 
-Example:
+FP16 example:
 
 ```bash
-bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end.engine 10000 40000 50000
+bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end.engine 10000 40000 50000 fp16
+```
+
+INT8 example for a quantized / Q-DQ ONNX model:
+
+```bash
+bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end_int8.engine 10000 40000 50000 int8
 ```
 
 Requirements and behavior:
 
 - `trtexec` must be available in `PATH`
 - the ONNX file must already exist
+- the generated engine must preserve the current external binding contract: `voxels=float32`, `num_points=int32`, `coors=int32`, outputs `float32`
+- the generated engine must keep a pillar-count optimization profile compatible with the runtime min/max settings
+- `int8` export assumes the ONNX graph is already quantized or otherwise buildable by TensorRT without adding a calibration path in this helper
 - if the target engine already exists, regeneration is skipped
 - the script always runs a follow-up `trtexec --loadEngine ... --dumpProfile --verbose` pass
