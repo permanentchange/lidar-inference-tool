@@ -1,11 +1,11 @@
 #include "pillar_runtime.hpp"
+#include "trt_engine.hpp"
 
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
 #include <cstring>
-#include <fstream>
 #include <limits>
 #include <memory>
 #include <numeric>
@@ -16,8 +16,6 @@
 #include <utility>
 
 #include <cuda_runtime_api.h>
-#include <NvInfer.h>
-#include <NvInferRuntime.h>
 
 #include "voxelization.hpp"
 
@@ -27,14 +25,6 @@ namespace {
 constexpr int kBoxDim = 7;
 constexpr int kBBoxChannelsPerTask = 8;
 constexpr int kDirChannelsPerTask = 2;
-constexpr int kBatchIndex = 0;
-constexpr int kProfileIndex = 0;
-constexpr char kVoxelsName[] = "voxels";
-constexpr char kNumPointsName[] = "num_points";
-constexpr char kCoorsName[] = "coors";
-constexpr char kBboxPredName[] = "bbox_pred0";
-constexpr char kClsScoreName[] = "cls_score0";
-constexpr char kDirClsPredName[] = "dir_cls_pred0";
 
 double ElapsedMs(const std::chrono::steady_clock::time_point& start,
                  const std::chrono::steady_clock::time_point& end) {
@@ -73,365 +63,6 @@ float SafeExp(float value) {
   constexpr float kClampMax = 20.0f;
   return std::exp(std::max(kClampMin, std::min(kClampMax, value)));
 }
-
-class TrtLogger : public nvinfer1::ILogger {
- public:
-  void log(Severity severity, const char* msg) noexcept override {
-    if (severity <= Severity::kERROR) {
-      last_error_ = msg == nullptr ? "" : msg;
-    }
-  }
-
-  const std::string& last_error() const { return last_error_; }
-
- private:
-  std::string last_error_;
-};
-
-class TrtEngine {
- public:
-  InferenceStatus Load(const RuntimeConfig& config,
-                       const std::string& engine_path,
-                       std::string* out_error) {
-    std::ifstream input(engine_path, std::ios::binary);
-    if (!input.is_open()) {
-      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                      "Failed to open engine: " + engine_path);
-    }
-    input.seekg(0, std::ios::end);
-    const std::streamsize size = input.tellg();
-    input.seekg(0, std::ios::beg);
-    if (size <= 0) {
-      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                      "Engine file is empty: " + engine_path);
-    }
-    std::vector<char> data(static_cast<size_t>(size));
-    if (!input.read(data.data(), size)) {
-      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                      "Failed to read engine: " + engine_path);
-    }
-
-    runtime_.reset(nvinfer1::createInferRuntime(logger_));
-    if (!runtime_) {
-      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
-                      "Failed to create TensorRT runtime");
-    }
-
-    engine_.reset(runtime_->deserializeCudaEngine(data.data(), data.size()));
-    if (!engine_) {
-      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
-                      "Failed to deserialize engine: " + logger_.last_error());
-    }
-
-    context_.reset(engine_->createExecutionContext());
-    if (!context_) {
-      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
-                      "Failed to create execution context");
-    }
-
-    const int profile_count = engine_->getNbOptimizationProfiles();
-    if (profile_count < 1) {
-      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
-                      "TensorRT engine must expose at least one optimization profile");
-    }
-    if (!context_->setOptimizationProfile(kProfileIndex)) {
-      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
-                      "Failed to activate TensorRT optimization profile 0");
-    }
-
-    voxels_index_ = engine_->getBindingIndex(kVoxelsName);
-    num_points_index_ = engine_->getBindingIndex(kNumPointsName);
-    coors_index_ = engine_->getBindingIndex(kCoorsName);
-    bbox_pred_index_ = engine_->getBindingIndex(kBboxPredName);
-    cls_score_index_ = engine_->getBindingIndex(kClsScoreName);
-    dir_cls_pred_index_ = engine_->getBindingIndex(kDirClsPredName);
-    if (voxels_index_ < 0 || num_points_index_ < 0 || coors_index_ < 0 ||
-        bbox_pred_index_ < 0 || cls_score_index_ < 0 || dir_cls_pred_index_ < 0) {
-      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
-                      "Engine bindings do not match expected CenterPoint pillar names");
-    }
-
-    if (engine_->getBindingDataType(voxels_index_) != nvinfer1::DataType::kFLOAT ||
-        engine_->getBindingDataType(num_points_index_) != nvinfer1::DataType::kINT32 ||
-        engine_->getBindingDataType(coors_index_) != nvinfer1::DataType::kINT32 ||
-        engine_->getBindingDataType(bbox_pred_index_) != nvinfer1::DataType::kFLOAT ||
-        engine_->getBindingDataType(cls_score_index_) != nvinfer1::DataType::kFLOAT ||
-        engine_->getBindingDataType(dir_cls_pred_index_) != nvinfer1::DataType::kFLOAT) {
-      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
-                      "Engine binding dtypes do not match expected float/int32 contract");
-    }
-
-    InferenceStatus status = ValidateInputProfiles(config, out_error);
-    if (status != INFERENCE_STATUS_OK) {
-      return status;
-    }
-
-    const nvinfer1::Dims bbox_dims = engine_->getBindingDimensions(bbox_pred_index_);
-    const nvinfer1::Dims cls_dims = engine_->getBindingDimensions(cls_score_index_);
-    const nvinfer1::Dims dir_dims = engine_->getBindingDimensions(dir_cls_pred_index_);
-    if (bbox_dims.nbDims != 4 || cls_dims.nbDims != 4 || dir_dims.nbDims != 4) {
-      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
-                      "Engine outputs must be 4D BCHW tensors");
-    }
-
-    bbox_channels_ = bbox_dims.d[1];
-    cls_channels_ = cls_dims.d[1];
-    dir_channels_ = dir_dims.d[1];
-    height_ = cls_dims.d[2];
-    width_ = cls_dims.d[3];
-    if (bbox_dims.d[2] != height_ || bbox_dims.d[3] != width_ || dir_dims.d[2] != height_ ||
-        dir_dims.d[3] != width_) {
-      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
-                      "Engine output feature map shapes do not match");
-    }
-    if (bbox_channels_ <= 0 || cls_channels_ <= 0 || dir_channels_ <= 0 ||
-        bbox_channels_ != cls_channels_ * kBBoxChannelsPerTask ||
-        dir_channels_ != cls_channels_ * kDirChannelsPerTask) {
-      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
-                      "Engine channels do not match expected 3-task CenterPoint head layout");
-    }
-    return INFERENCE_STATUS_OK;
-  }
-
-  InferenceStatus ConfigureShapes(const RuntimeConfig& config,
-                                  int num_pillars,
-                                  std::string* out_error) {
-    if (num_pillars < min_runtime_pillars_ || num_pillars > max_runtime_pillars_) {
-      std::ostringstream oss;
-      oss << "Pillar count " << num_pillars << " is outside supported runtime/profile range ["
-          << min_runtime_pillars_ << ", " << max_runtime_pillars_ << "]";
-      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
-    }
-
-    nvinfer1::Dims voxels_dims;
-    voxels_dims.nbDims = 3;
-    voxels_dims.d[0] = num_pillars;
-    voxels_dims.d[1] = config.max_points_per_pillar;
-    voxels_dims.d[2] = config.num_point_features;
-
-    nvinfer1::Dims num_points_dims;
-    num_points_dims.nbDims = 1;
-    num_points_dims.d[0] = num_pillars;
-
-    nvinfer1::Dims coors_dims;
-    coors_dims.nbDims = 2;
-    coors_dims.d[0] = num_pillars;
-    coors_dims.d[1] = 4;
-
-    if (!context_->setBindingDimensions(voxels_index_, voxels_dims) ||
-        !context_->setBindingDimensions(num_points_index_, num_points_dims) ||
-        !context_->setBindingDimensions(coors_index_, coors_dims) ||
-        !context_->allInputDimensionsSpecified()) {
-      std::ostringstream oss;
-      oss << "Failed to set TensorRT binding dimensions for pillar count " << num_pillars
-          << " within optimization profile [" << min_profile_pillars_ << ", "
-          << max_profile_pillars_ << "]";
-      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
-    }
-    return INFERENCE_STATUS_OK;
-  }
-
-  InferenceStatus Enqueue(void** bindings,
-                          cudaStream_t stream,
-                          std::string* out_error) {
-    if (!context_->enqueueV2(bindings, stream, nullptr)) {
-      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
-                      "TensorRT enqueueV2 failed");
-    }
-    return INFERENCE_STATUS_OK;
-  }
-
-  int task_count() const { return cls_channels_; }
-  int bbox_channels() const { return bbox_channels_; }
-  int cls_channels() const { return cls_channels_; }
-  int dir_channels() const { return dir_channels_; }
-  int height() const { return height_; }
-  int width() const { return width_; }
-  int num_bindings() const { return engine_->getNbBindings(); }
-  int min_runtime_pillars() const { return min_runtime_pillars_; }
-  int max_runtime_pillars() const { return max_runtime_pillars_; }
-  int voxels_index() const { return voxels_index_; }
-  int num_points_index() const { return num_points_index_; }
-  int coors_index() const { return coors_index_; }
-  int bbox_pred_index() const { return bbox_pred_index_; }
-  int cls_score_index() const { return cls_score_index_; }
-  int dir_cls_pred_index() const { return dir_cls_pred_index_; }
-
- private:
-  static std::string DimsToString(const nvinfer1::Dims& dims) {
-    if (dims.nbDims < 0) {
-      return "<invalid>";
-    }
-    std::ostringstream oss;
-    for (int i = 0; i < dims.nbDims; ++i) {
-      if (i > 0) {
-        oss << 'x';
-      }
-      oss << dims.d[i];
-    }
-    return oss.str();
-  }
-
-  InferenceStatus ValidateInputProfile(const char* tensor_name,
-                                       int expected_nb_dims,
-                                       const std::array<int, 3>& expected_static_dims,
-                                       int* out_min_pillars,
-                                       int* out_opt_pillars,
-                                       int* out_max_pillars,
-                                       std::string* out_error) const {
-    const nvinfer1::Dims min_dims =
-        engine_->getProfileShape(tensor_name, kProfileIndex, nvinfer1::OptProfileSelector::kMIN);
-    const nvinfer1::Dims opt_dims =
-        engine_->getProfileShape(tensor_name, kProfileIndex, nvinfer1::OptProfileSelector::kOPT);
-    const nvinfer1::Dims max_dims =
-        engine_->getProfileShape(tensor_name, kProfileIndex, nvinfer1::OptProfileSelector::kMAX);
-
-    const auto validate_dims = [&](const char* label, const nvinfer1::Dims& dims) -> InferenceStatus {
-      if (dims.nbDims != expected_nb_dims) {
-        std::ostringstream oss;
-        oss << "TensorRT profile " << label << " shape for " << tensor_name << " is "
-            << DimsToString(dims) << ", expected " << expected_nb_dims << " dimensions";
-        return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
-      }
-      for (int i = 1; i < expected_nb_dims; ++i) {
-        if (dims.d[i] != expected_static_dims[static_cast<size_t>(i)]) {
-          std::ostringstream oss;
-          oss << "TensorRT profile " << label << " shape for " << tensor_name << " is "
-              << DimsToString(dims) << ", expected dimension " << i << " to be "
-              << expected_static_dims[static_cast<size_t>(i)];
-          return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
-        }
-      }
-      return INFERENCE_STATUS_OK;
-    };
-
-    InferenceStatus status = validate_dims("min", min_dims);
-    if (status != INFERENCE_STATUS_OK) {
-      return status;
-    }
-    status = validate_dims("opt", opt_dims);
-    if (status != INFERENCE_STATUS_OK) {
-      return status;
-    }
-    status = validate_dims("max", max_dims);
-    if (status != INFERENCE_STATUS_OK) {
-      return status;
-    }
-
-    const int min_pillars = min_dims.d[0];
-    const int opt_pillars = opt_dims.d[0];
-    const int max_pillars = max_dims.d[0];
-    if (min_pillars <= 0 || opt_pillars < min_pillars || max_pillars < opt_pillars) {
-      std::ostringstream oss;
-      oss << "TensorRT profile for " << tensor_name << " is invalid: min=" << min_pillars
-          << ", opt=" << opt_pillars << ", max=" << max_pillars;
-      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
-    }
-    *out_min_pillars = min_pillars;
-    *out_opt_pillars = opt_pillars;
-    *out_max_pillars = max_pillars;
-    return INFERENCE_STATUS_OK;
-  }
-
-  InferenceStatus ValidateInputProfiles(const RuntimeConfig& config,
-                                        std::string* out_error) {
-    int voxels_min = 0;
-    int voxels_opt = 0;
-    int voxels_max = 0;
-    int num_points_min = 0;
-    int num_points_opt = 0;
-    int num_points_max = 0;
-    int coors_min = 0;
-    int coors_opt = 0;
-    int coors_max = 0;
-
-    InferenceStatus status =
-        ValidateInputProfile(kVoxelsName, 3, {0, config.max_points_per_pillar, config.num_point_features},
-                             &voxels_min, &voxels_opt, &voxels_max, out_error);
-    if (status != INFERENCE_STATUS_OK) {
-      return status;
-    }
-    status = ValidateInputProfile(kNumPointsName, 1, {0, 0, 0},
-                                  &num_points_min, &num_points_opt, &num_points_max, out_error);
-    if (status != INFERENCE_STATUS_OK) {
-      return status;
-    }
-    status = ValidateInputProfile(kCoorsName, 2, {0, 4, 0},
-                                  &coors_min, &coors_opt, &coors_max, out_error);
-    if (status != INFERENCE_STATUS_OK) {
-      return status;
-    }
-
-    if (voxels_min != num_points_min || voxels_opt != num_points_opt || voxels_max != num_points_max ||
-        voxels_min != coors_min || voxels_opt != coors_opt || voxels_max != coors_max) {
-      std::ostringstream oss;
-      oss << "TensorRT input profiles disagree on pillar-count range: voxels=["
-          << voxels_min << ", " << voxels_opt << ", " << voxels_max << "], num_points=["
-          << num_points_min << ", " << num_points_opt << ", " << num_points_max
-          << "], coors=[" << coors_min << ", " << coors_opt << ", " << coors_max << "]";
-      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
-    }
-
-    min_profile_pillars_ = voxels_min;
-    opt_profile_pillars_ = voxels_opt;
-    max_profile_pillars_ = voxels_max;
-    min_runtime_pillars_ = std::max(config.min_pillars, min_profile_pillars_);
-    max_runtime_pillars_ = std::min(config.max_pillars, max_profile_pillars_);
-    if (min_runtime_pillars_ > max_runtime_pillars_) {
-      std::ostringstream oss;
-      oss << "Runtime pillar range [" << config.min_pillars << ", " << config.max_pillars
-          << "] does not overlap TensorRT optimization profile [" << min_profile_pillars_ << ", "
-          << max_profile_pillars_ << "]";
-      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
-    }
-    return INFERENCE_STATUS_OK;
-  }
-
-  struct RuntimeDeleter {
-    void operator()(nvinfer1::IRuntime* runtime) const {
-      if (runtime != nullptr) {
-        runtime->destroy();
-      }
-    }
-  };
-
-  struct EngineDeleter {
-    void operator()(nvinfer1::ICudaEngine* engine) const {
-      if (engine != nullptr) {
-        engine->destroy();
-      }
-    }
-  };
-
-  struct ContextDeleter {
-    void operator()(nvinfer1::IExecutionContext* context) const {
-      if (context != nullptr) {
-        context->destroy();
-      }
-    }
-  };
-
-  TrtLogger logger_;
-  std::unique_ptr<nvinfer1::IRuntime, RuntimeDeleter> runtime_;
-  std::unique_ptr<nvinfer1::ICudaEngine, EngineDeleter> engine_;
-  std::unique_ptr<nvinfer1::IExecutionContext, ContextDeleter> context_;
-  int voxels_index_ = -1;
-  int num_points_index_ = -1;
-  int coors_index_ = -1;
-  int bbox_pred_index_ = -1;
-  int cls_score_index_ = -1;
-  int dir_cls_pred_index_ = -1;
-  int bbox_channels_ = 0;
-  int cls_channels_ = 0;
-  int dir_channels_ = 0;
-  int height_ = 0;
-  int width_ = 0;
-  int min_profile_pillars_ = 0;
-  int opt_profile_pillars_ = 0;
-  int max_profile_pillars_ = 0;
-  int min_runtime_pillars_ = 0;
-  int max_runtime_pillars_ = 0;
-};
 
 InferenceStatus CheckCuda(cudaError_t error,
                           const std::string& operation,
@@ -734,7 +365,7 @@ InferenceOutputSpec MakeOutputSpec(int task_count, int bbox_max_num) {
 }
 
 struct PillarRuntime::Impl {
-  TrtEngine engine;
+  TrtExecutor trt;
   std::shared_ptr<Voxelization> voxelizer;
   cudaStream_t stream = nullptr;
   float* d_points = nullptr;
@@ -770,11 +401,12 @@ PillarRuntime::~PillarRuntime() = default;
 
 InferenceStatus PillarRuntime::Initialize() {
   impl_ = std::make_unique<Impl>();
-  InferenceStatus status = impl_->engine.Load(config_, config_.end2end_file, &last_error_);
+  InferenceStatus status = impl_->trt.Load(config_, config_.end2end_file, &last_error_);
   if (status != INFERENCE_STATUS_OK) {
     return status;
   }
-  output_spec_ = MakeOutputSpec(impl_->engine.task_count(), config_.bbox_max_num);
+  const EngineContract& contract = impl_->trt.contract();
+  output_spec_ = MakeOutputSpec(contract.task_count, config_.bbox_max_num);
 
   status = CheckCuda(cudaStreamCreate(&impl_->stream), "cudaStreamCreate", &last_error_);
   if (status != INFERENCE_STATUS_OK) {
@@ -805,15 +437,15 @@ InferenceStatus PillarRuntime::Initialize() {
 
   const size_t max_points_size = static_cast<size_t>(config_.max_points) *
                                  static_cast<size_t>(config_.num_point_features);
-  const size_t bbox_size = static_cast<size_t>(impl_->engine.bbox_channels()) *
-                           static_cast<size_t>(impl_->engine.height()) *
-                           static_cast<size_t>(impl_->engine.width());
-  const size_t cls_size = static_cast<size_t>(impl_->engine.cls_channels()) *
-                          static_cast<size_t>(impl_->engine.height()) *
-                          static_cast<size_t>(impl_->engine.width());
-  const size_t dir_size = static_cast<size_t>(impl_->engine.dir_channels()) *
-                          static_cast<size_t>(impl_->engine.height()) *
-                          static_cast<size_t>(impl_->engine.width());
+  const size_t bbox_size = static_cast<size_t>(contract.bbox_channels) *
+                           static_cast<size_t>(contract.height) *
+                           static_cast<size_t>(contract.width);
+  const size_t cls_size = static_cast<size_t>(contract.cls_channels) *
+                          static_cast<size_t>(contract.height) *
+                          static_cast<size_t>(contract.width);
+  const size_t dir_size = static_cast<size_t>(contract.dir_channels) *
+                          static_cast<size_t>(contract.height) *
+                          static_cast<size_t>(contract.width);
 
   status = CheckCuda(cudaMalloc(reinterpret_cast<void**>(&impl_->d_points),
                                 max_points_size * sizeof(float)),
@@ -910,9 +542,10 @@ InferenceStatus PillarRuntime::Forward(const InferenceRequest& request,
   unsigned int* d_coors = nullptr;
   const int actual_num_pillars =
       static_cast<int>(impl_->voxelizer->get_pillar_output(&d_voxels, &d_num_points, &d_coors));
+  const EngineContract& contract = impl_->trt.contract();
   const int padded_num_pillars =
-      std::min(impl_->engine.max_runtime_pillars(),
-               std::max(actual_num_pillars, impl_->engine.min_runtime_pillars()));
+      std::min(contract.max_runtime_pillars,
+               std::max(actual_num_pillars, contract.min_runtime_pillars));
 
   if (debug != nullptr) {
     PillarInputTensors pillar_inputs;
@@ -926,7 +559,7 @@ InferenceStatus PillarRuntime::Forward(const InferenceRequest& request,
     debug->pillar_inputs = std::move(pillar_inputs);
   }
 
-  status = impl_->engine.ConfigureShapes(config_, padded_num_pillars, &last_error_);
+  status = impl_->trt.ConfigureShapes(config_, padded_num_pillars, &last_error_);
   if (status != INFERENCE_STATUS_OK) {
     cudaEventDestroy(gpu_start);
     cudaEventDestroy(gpu_end);
@@ -934,15 +567,15 @@ InferenceStatus PillarRuntime::Forward(const InferenceRequest& request,
   }
 
   void* bindings[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
-  bindings[impl_->engine.voxels_index()] = d_voxels;
-  bindings[impl_->engine.num_points_index()] = d_num_points;
-  bindings[impl_->engine.coors_index()] = d_coors;
-  bindings[impl_->engine.bbox_pred_index()] = impl_->d_bbox_pred;
-  bindings[impl_->engine.cls_score_index()] = impl_->d_cls_score;
-  bindings[impl_->engine.dir_cls_pred_index()] = impl_->d_dir_cls_pred;
+  bindings[contract.voxels_index] = d_voxels;
+  bindings[contract.num_points_index] = d_num_points;
+  bindings[contract.coors_index] = d_coors;
+  bindings[contract.bbox_pred_index] = impl_->d_bbox_pred;
+  bindings[contract.cls_score_index] = impl_->d_cls_score;
+  bindings[contract.dir_cls_pred_index] = impl_->d_dir_cls_pred;
 
   cudaEventRecord(gpu_start, impl_->stream);
-  status = impl_->engine.Enqueue(bindings, impl_->stream, &last_error_);
+  status = impl_->trt.Enqueue(bindings, impl_->stream, &last_error_);
   cudaEventRecord(gpu_end, impl_->stream);
   cudaEventSynchronize(gpu_end);
   cudaEventElapsedTime(&elapsed_ms, gpu_start, gpu_end);
@@ -984,11 +617,11 @@ InferenceStatus PillarRuntime::Forward(const InferenceRequest& request,
   raw_outputs.bbox_pred = impl_->h_bbox_pred.data();
   raw_outputs.cls_score = impl_->h_cls_score.data();
   raw_outputs.dir_cls_pred = impl_->h_dir_cls_pred.data();
-  raw_outputs.bbox_channels = impl_->engine.bbox_channels();
-  raw_outputs.cls_channels = impl_->engine.cls_channels();
-  raw_outputs.dir_channels = impl_->engine.dir_channels();
-  raw_outputs.height = impl_->engine.height();
-  raw_outputs.width = impl_->engine.width();
+  raw_outputs.bbox_channels = contract.bbox_channels;
+  raw_outputs.cls_channels = contract.cls_channels;
+  raw_outputs.dir_channels = contract.dir_channels;
+  raw_outputs.height = contract.height;
+  raw_outputs.width = contract.width;
   if (debug != nullptr) {
     debug->raw_outputs.bbox_pred = impl_->h_bbox_pred;
     debug->raw_outputs.cls_score = impl_->h_cls_score;

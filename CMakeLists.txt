@@ -197,6 +197,7 @@ else()
   add_library(inference SHARED
     src/inference_api.cpp
     src/pillar_runtime.cpp
+    src/trt_engine.cpp
   )
   target_include_directories(inference
     PUBLIC
@@ -217,6 +218,7 @@ else()
   add_executable(pillar_debug_tool
     tools/pillar_debug_tool.cpp
     src/pillar_runtime.cpp
+    src/trt_engine.cpp
     src/pillar_debug_utils.cpp
   )
   target_include_directories(pillar_debug_tool
