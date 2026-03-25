@@ -45,6 +45,10 @@ endforeach()
 
 find_package(CUDA)
 
+if((NOT DEFINED CMAKE_CUDA_COMPILER OR "${CMAKE_CUDA_COMPILER}" STREQUAL "") AND EXISTS "/usr/local/cuda/bin/nvcc")
+  set(CMAKE_CUDA_COMPILER "/usr/local/cuda/bin/nvcc" CACHE FILEPATH "CUDA compiler" FORCE)
+endif()
+
 set(YAML_CPP_SEARCH_PREFIXES
   /usr
   /usr/local)
@@ -122,11 +126,19 @@ if(CMAKE_SYSTEM_PROCESSOR)
   list(APPEND TENSORRT_LIBRARY_SUFFIXES "targets/${CMAKE_SYSTEM_PROCESSOR}-linux-gnu/lib")
 endif()
 
+set(TENSORRT_INCLUDE_SUFFIXES
+  include
+  targets/x86_64-linux-gnu/include)
+if(CMAKE_LIBRARY_ARCHITECTURE)
+  list(APPEND TENSORRT_INCLUDE_SUFFIXES "include/${CMAKE_LIBRARY_ARCHITECTURE}")
+endif()
+if(CMAKE_SYSTEM_PROCESSOR)
+  list(APPEND TENSORRT_INCLUDE_SUFFIXES "targets/${CMAKE_SYSTEM_PROCESSOR}-linux-gnu/include")
+endif()
+
 find_path(TENSORRT_INCLUDE_DIR NvInfer.h
   PATHS ${TENSORRT_SEARCH_ROOTS}
-  PATH_SUFFIXES
-    include
-    targets/x86_64-linux-gnu/include
+  PATH_SUFFIXES ${TENSORRT_INCLUDE_SUFFIXES}
   NO_DEFAULT_PATH)
 find_library(NVINFER_LIB nvinfer
   PATHS ${TENSORRT_SEARCH_ROOTS}

@@ -140,6 +140,17 @@ A successful full build generates:
 - `build/pillar_debug_tool`
 - `build/minimal_c_api_example` when `BUILD_EXAMPLES=ON`
 
+### Platform notes
+
+On some ARM64 / `aarch64` Linux systems, TensorRT headers are installed under a multiarch include directory such as `/usr/include/aarch64-linux-gnu` instead of the generic `/usr/include`. The CMake configuration in this repository now checks the active multiarch include suffix automatically, so a standard system TensorRT installation is detected without extra flags.
+
+If you configure from a non-interactive shell where `PATH` is minimal or empty, make sure CMake can still resolve `nvcc`. The repository now falls back to `/usr/local/cuda/bin/nvcc` when it exists, but an explicit override also works:
+
+```bash
+cmake -S . -B build -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc
+cmake --build build -j$(nproc)
+```
+
 ### Stub build
 
 If CUDA or TensorRT is unavailable but you still want the shared library to build, enable the stub explicitly:
