@@ -1,0 +1,52 @@
+# CMake and local build directories
+/build/
+/out/
+/cmake-build-*/
+/CMakeFiles/
+/CMakeCache.txt
+/CTestTestfile.cmake
+/cmake_install.cmake
+/install_manifest.txt
+/compile_commands.json
+/Makefile
+/Testing/
+
+# Native build intermediates
+*.o
+*.obj
+*.lo
+*.la
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+
+# Editor and OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Local runtime artifacts
+/artifacts/
+/outputs/
+/dump/
+/tmp/
+/.cache/
+*.log
+
+# output data
+/outputs 
