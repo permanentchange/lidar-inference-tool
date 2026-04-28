@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.0.2)
-project(inference LANGUAGES CXX)
+project(lidar-inference-tool 
+  VERSION 1.0.0
+  DESCRIPTION "TensorRT lidar-inference-tool library"
+  LANGUAGES CXX
+)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -144,6 +148,7 @@ find_library(NVINFER_PLUGIN_LIB nvinfer_plugin
 
 set(INFERENCE_PUBLIC_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include)
 set(INFERENCE_PRIVATE_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
+set(INFERENCE_PUBLIC_INCLUDE_DIR_INSTALL ${CMAKE_INSTALL_INCLUDEDIR})
 
 set(MISSING_GPU_DEPS)
 if(NOT CUDA_FOUND)
@@ -171,7 +176,8 @@ if(MISSING_GPU_DEPS)
     )
     target_include_directories(inference
       PUBLIC
-        ${INFERENCE_PUBLIC_INCLUDE_DIR}
+        $<BUILD_INTERFACE:${INFERENCE_PUBLIC_INCLUDE_DIR}>
+        $<INSTALL_INTERFACE:${INFERENCE_PUBLIC_INCLUDE_DIR_INSTALL}>
     )
     if(BUILD_EXAMPLES)
       message(STATUS
@@ -201,7 +207,8 @@ else()
   )
   target_include_directories(inference
     PUBLIC
-      ${INFERENCE_PUBLIC_INCLUDE_DIR}
+      $<BUILD_INTERFACE:${INFERENCE_PUBLIC_INCLUDE_DIR}>
+      $<INSTALL_INTERFACE:${INFERENCE_PUBLIC_INCLUDE_DIR_INSTALL}>
     PRIVATE
       ${INFERENCE_PRIVATE_INCLUDE_DIR}
       ${TENSORRT_INCLUDE_DIR}
@@ -223,7 +230,8 @@ else()
   )
   target_include_directories(pillar_debug_tool
     PRIVATE
-      ${INFERENCE_PUBLIC_INCLUDE_DIR}
+      $<BUILD_INTERFACE:${INFERENCE_PUBLIC_INCLUDE_DIR}>
+      $<INSTALL_INTERFACE:${INFERENCE_PUBLIC_INCLUDE_DIR_INSTALL}>
       ${INFERENCE_PRIVATE_INCLUDE_DIR}
       ${TENSORRT_INCLUDE_DIR}
       ${CUDA_INCLUDE_DIRS}
@@ -243,3 +251,83 @@ else()
     add_subdirectory(examples)
   endif()
 endif()
+
+# ===================== CPack (DEB) Packaging =====================
+set(install_targets
+  inference
+  voxelization
+)
+
+include(GNUInstallDirs)
+
+# ===================== 安装规则 =====================
+install(TARGETS ${install_targets}
+  EXPORT lidarInferenceTargets
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+# 头文件
+install(DIRECTORY ${INFERENCE_PUBLIC_INCLUDE_DIR}/
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+# 其他
+if(TARGET pillar_debug_tool)
+  install(TARGETS pillar_debug_tool
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+  )
+endif()
+
+# ===================== CMake package 支持 =====================
+include(CMakePackageConfigHelpers)
+
+set(INSTALL_CONFIGDIR ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME})
+
+# 导出 targets
+install(EXPORT lidarInferenceTargets
+  FILE ${PROJECT_NAME}Targets.cmake
+  NAMESPACE ${PROJECT_NAME}::
+  DESTINATION ${INSTALL_CONFIGDIR}
+)
+
+# 生成 Config.cmake
+configure_package_config_file(
+  ${CMAKE_CURRENT_SOURCE_DIR}/cmake/${PROJECT_NAME}Config.cmake.in
+  ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}Config.cmake
+  INSTALL_DESTINATION ${INSTALL_CONFIGDIR}
+)
+
+# 安装 Config.cmake
+install(FILES
+  ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}Config.cmake
+  DESTINATION ${INSTALL_CONFIGDIR}
+)
+
+# ===================== CPack =====================
+set(CPACK_PACKAGE_NAME ${PROJECT_NAME})
+set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY ${PROJECT_DESCRIPTION})
+set(CPACK_PACKAGE_CONTACT "zkzc <zkzc@todo.com>")
+
+# 生成 DEB
+set(CPACK_GENERATOR "DEB")
+
+# Debian 相关字段
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "zkzc <zkzc@todo.com>")
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "libc6 (>= 2.31)")
+
+# 自动解析依赖（推荐开启）
+set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+
+# 系统架构，同义映射
+if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+  set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "arm64")
+elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+  set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
+else()
+  set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+
+include(CPack)
