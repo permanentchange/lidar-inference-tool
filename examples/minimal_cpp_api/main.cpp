@@ -12,6 +12,7 @@
 
 namespace {
 
+// 读取 float32 .bin 点云文件，并按指定点特征维度解释为紧凑数组。
 bool LoadPointCloudBin(const std::string& path,
                        int num_point_features,
                        std::vector<float>* out_points,
@@ -81,6 +82,7 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  // 第一个参数是模型目录，后续参数是一帧或多帧点云文件路径。
   const std::string model_dir = argv[1];
   std::vector<std::string> point_cloud_paths;
   point_cloud_paths.reserve(static_cast<size_t>(argc - 2));
@@ -90,6 +92,7 @@ int main(int argc, char** argv) {
 
   std::string error;
   std::unique_ptr<inference::LidarInferenceRuntime> runtime;
+  // 在启动阶段一次性加载 model.yaml 和 TensorRT engine，运行时复用同一个 runtime。
   const InferenceStatus create_status =
       inference::LidarInferenceRuntime::CreateFromModelDir(model_dir, &runtime, &error);
   if (create_status != INFERENCE_STATUS_OK) {
@@ -98,10 +101,13 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  // 点特征维度来自模型配置，而不是样例里写死，避免调用方和模型约定不一致。
   const int num_point_features = runtime->config().model.num_point_features;
   std::vector<float> points;
+  // 预留最大点数对应的 host buffer，减少多帧处理时的重复扩容。
   points.reserve(static_cast<size_t>(runtime->config().runtime.max_points) *
                  static_cast<size_t>(num_point_features));
+  // 输出检测结果容器在循环里重复使用，避免每帧重新分配。
   std::vector<inference::Detection> detections;
 
   using Clock = std::chrono::steady_clock;
@@ -116,6 +122,7 @@ int main(int argc, char** argv) {
 
   for (const std::string& point_cloud_path : point_cloud_paths) {
     std::string load_error;
+    // 逐帧读取点云，样例只演示最常见的 float32 .bin 输入格式。
     const auto load_start = Clock::now();
     const bool loaded = LoadPointCloudBin(point_cloud_path, num_point_features, &points, &load_error);
     const auto load_end = Clock::now();
@@ -127,10 +134,12 @@ int main(int argc, char** argv) {
     }
 
     inference::PointCloudView cloud{};
+    // PointCloudView 只做轻量视图封装，不复制点云数据。
     cloud.points = points.data();
     cloud.point_count = static_cast<int>(points.size() / static_cast<size_t>(num_point_features));
     total_loaded_points += static_cast<size_t>(cloud.point_count);
 
+    // Infer() 走的是库内封装好的完整流程，返回 NMS 之后的最终检测结果。
     const auto infer_start = Clock::now();
     const InferenceStatus infer_status = runtime->Infer(cloud, &detections);
     const auto infer_end = Clock::now();
@@ -159,6 +168,7 @@ int main(int argc, char** argv) {
   std::cout << "Total elapsed time: " << total_elapsed_ms << " ms\n";
 
   if (!detections.empty()) {
+    // 只打印最后一帧中的前几个目标，便于快速确认输出格式是否正确。
     const size_t preview_count = std::min<size_t>(detections.size(), 5);
     std::cout << "Last frame preview (" << preview_count << " detections):\n";
     for (size_t i = 0; i < preview_count; ++i) {
@@ -179,6 +189,7 @@ int main(int argc, char** argv) {
   }
 
   if (!failure_messages.empty()) {
+    // 汇总失败文件，便于调用方批处理时一次性排查异常输入。
     std::cerr << "Failed inputs:\n";
     for (const std::string& message : failure_messages) {
       std::cerr << "  " << message << "\n";
