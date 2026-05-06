@@ -198,10 +198,20 @@ InferenceStatus BuildPillars(const RuntimeConfig& config,
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                     "out_tensors is null");
   }
-  if (num_pillars < 0 || num_pillars > config.max_pillars || d_voxels == nullptr ||
-      d_num_points == nullptr || d_coors == nullptr) {
+  if (num_pillars < 0 || num_pillars > config.max_pillars) {
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                    "Invalid device pillar tensors");
+                    "Invalid pillar count for debug tensors");
+  }
+  if (num_pillars == 0) {
+    out_tensors->num_pillars = 0;
+    out_tensors->voxels.clear();
+    out_tensors->num_points.clear();
+    out_tensors->coors.clear();
+    return INFERENCE_STATUS_OK;
+  }
+  if (d_voxels == nullptr || d_num_points == nullptr || d_coors == nullptr) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "Device pillar tensors are null for a non-empty debug capture");
   }
 
   const int voxel_stride = config.max_points_per_pillar * config.num_point_features;
@@ -804,7 +814,7 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
 
   if (debug != nullptr) {
     PillarInputTensors pillar_inputs;
-    status = BuildPillars(config_, padded_num_pillars, d_voxels, d_num_points, d_coors,
+    status = BuildPillars(config_, actual_num_pillars, d_voxels, d_num_points, d_coors,
                           &pillar_inputs, &last_error_);
     if (status != INFERENCE_STATUS_OK) {
       cudaEventDestroy(gpu_start);
