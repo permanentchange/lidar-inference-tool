@@ -2,9 +2,10 @@
 
 `lidar-inference-tool` is a C++17 LiDAR inference project built around TensorRT end-to-end pillar models. The repository exposes:
 
-- `libinference.so`: a shared library with a small C API for loading one engine and running decoded or final NMS-filtered detections
+- `libinference.so`: a shared library with a stable C API plus a higher-level C++ wrapper for loading one engine and running decoded or final NMS-filtered detections
 - `pillar_debug_tool`: a single-sample debug executable that loads a YAML config, runs inference, dumps intermediate tensors, and writes timing reports
-- `minimal_c_api_example`: a minimal executable under `examples/` that shows the shortest public API call flow
+- `minimal_c_api_example`: a minimal executable under `examples/` that shows the lowest-level public API call flow
+- `minimal_cpp_api_example`: a model-package-driven executable under `examples/` that shows the recommended C++ integration path
 
 The current runtime is written for PointPillars / CenterPoint-style engines with fixed binding names and a 3-task head layout.
 
@@ -15,6 +16,7 @@ This README intentionally uses repository-relative paths and placeholders such a
 ## Repository Layout
 
 - `include/inference.h`: public C API
+- `include/inference_cpp.hpp`: public C++ wrapper API
 - `src/inference_api.cpp`: shared-library entry points
 - `src/pillar_runtime.cpp`: TensorRT loading, voxelization, inference, decode, NMS, and response packing
 - `src/pillar_debug_utils.cpp`: YAML parsing, point-cloud loading, and artifact export
@@ -22,7 +24,8 @@ This README intentionally uses repository-relative paths and placeholders such a
 - `tools/onnx2engine.sh`: helper script for `trtexec`
 - `scripts/visualize_bev.py`: BEV visualization for dumped debug artifacts
 - `examples/minimal_c_api/`: minimal executable example for the public C API
-- `demo/demo.yaml`: default demo config
+- `demo/model.yaml`: example model package config for the public C++ wrapper
+- `demo/demo.yaml`: default debug-tool config
 - `demo/end2end.onnx`: example ONNX model
 - `demo/end2end.engine`: example TensorRT engine
 - `demo/pcd.bin`: example point cloud
@@ -143,6 +146,7 @@ A successful full build generates:
 - `build/libinference.so`
 - `build/pillar_debug_tool`
 - `build/minimal_c_api_example` when `BUILD_EXAMPLES=ON`
+- `build/minimal_cpp_api_example` when `BUILD_EXAMPLES=ON`
 
 ### Platform notes
 
@@ -173,7 +177,7 @@ Stub behavior:
 
 ## Quick Start
 
-The repository ships a demo config that resolves all paths relative to `demo/demo.yaml`, so the sample remains portable across machines.
+The repository ships both a model package config for the public C++ wrapper and a debug-tool config.
 
 Run one debug session:
 
@@ -181,15 +185,26 @@ Run one debug session:
 ./build/pillar_debug_tool demo/demo.yaml
 ```
 
-Run the minimal public API example against the same demo assets:
+Run the minimal C API example against the same demo assets:
 
 ```bash
 ./build/minimal_c_api_example demo/end2end.engine demo/pcd.bin
 ```
 
-The default demo config reads:
+Run the recommended C++ wrapper example with the demo model directory:
+
+```bash
+./build/minimal_cpp_api_example demo demo/pcd.bin
+```
+
+The default model package reads:
 
 - `demo/end2end.engine`
+- `demo/model.yaml`
+
+The default debug config reads:
+
+- `demo/demo.yaml`
 - `demo/pcd.bin`
 
 and writes artifacts under:
@@ -208,17 +223,46 @@ Typical console output includes:
 
 ## Examples
 
-The repository includes a standalone example under `examples/minimal_c_api/`.
+The repository includes two standalone examples under `examples/`.
 
-What it does:
+`examples/minimal_cpp_api/` shows the recommended path for a realtime C++ project:
 
-- loads a `.bin` point cloud with 5 features per point
-- creates an `InferenceHandle` with runtime parameters matching `demo/demo.yaml`
-- queries `InferenceOutputSpec`
-- allocates output buffers and runs `inference_forward`
-- prints the total detection count and up to five decoded boxes
+- load `model.yaml` from a model directory
+- create one `inference::LidarInferenceRuntime` at startup
+- reuse internal output buffers across frames
+- call `runtime->Infer(...)` for final detections
 
-Its local README is at `examples/minimal_c_api/README.md`.
+`examples/minimal_c_api/` shows the low-level C integration path:
+
+- fill `InferenceConfig` manually
+- create an `InferenceHandle`
+- allocate output buffers from `InferenceOutputSpec`
+- call `inference_forward()` or `inference_forward_nms()`
+
+Local READMEs:
+
+- `examples/minimal_cpp_api/README.md`
+- `examples/minimal_c_api/README.md`
+
+## Model Package Config
+
+The public C++ wrapper expects a model directory containing:
+
+- `model.yaml`
+- the TensorRT engine referenced by `model.engine_path`
+
+`model.yaml` is split into three sections:
+
+- `model`: engine path, point feature count, spatial ranges, pillar size, stride, label names
+- `runtime`: pillar and point capacity limits plus decode threshold
+- `postprocess`: NMS type, thresholds, and per-label filtering values
+
+The wrapper resolves relative `model.engine_path` values against the location of `model.yaml`.
+Optional override YAML files use the same schema and are applied with this precedence:
+
+- explicit code edits to the loaded `PackageConfig`
+- override YAML
+- base `model.yaml`
 
 ## Debug Config
 
@@ -340,6 +384,25 @@ Current behavior:
 - only binary PCD is supported
 - only `x`, `y`, `z` are read from the payload
 - remaining channels in the runtime input buffer are zero-padded
+
+## Public C++ Wrapper API
+
+The recommended C++ interface is declared in `include/inference_cpp.hpp`.
+
+Typical call flow:
+
+1. Place `model.yaml` and the TensorRT engine in one model directory.
+2. Call `inference::LidarInferenceRuntime::CreateFromModelDir(...)` once at startup.
+3. Keep the returned runtime on one inference thread.
+4. For each frame, fill `inference::PointCloudView` and call `runtime->Infer(...)`.
+5. Read `std::vector<inference::Detection>` results.
+
+Important semantics:
+
+- one runtime instance owns one `InferenceHandle` and reused output buffers
+- do not call the same runtime instance concurrently from multiple threads
+- `Detection::label_name` points into the runtime-owned config and stays valid while the runtime exists
+- use `LoadPackageConfig(...)` if you want to load YAML, edit typed fields in code, and then call `Create(...)`
 
 ## Public C API
 

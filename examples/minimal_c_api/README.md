@@ -1,6 +1,7 @@
 # Minimal C API Example
 
 This example shows the shortest end-to-end use of `include/inference.h` from a standalone executable.
+For the recommended higher-level C++ integration path, see `examples/minimal_cpp_api/`.
 
 ## Build
 
@@ -37,7 +38,7 @@ Arguments:
 Input expectations:
 
 - the point cloud file must contain `float32` values
-- this example uses the same runtime settings as `demo/demo.yaml`
+- this example uses the same runtime settings as `demo/model.yaml`
 - the example reads `.bin` input with 5 features per point
 - files are loaded one by one into a reused host buffer to reduce repeated allocations
 - output buffers are allocated once from `InferenceOutputSpec` and reused for every file

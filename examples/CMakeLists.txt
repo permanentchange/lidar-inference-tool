@@ -1,1 +1,2 @@
 add_subdirectory(minimal_c_api)
+add_subdirectory(minimal_cpp_api)
