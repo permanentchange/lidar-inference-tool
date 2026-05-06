@@ -212,6 +212,7 @@ else()
   )
   target_link_libraries(inference
     PRIVATE
+      iou3d_nms
       voxelization
       ${CUDA_LIBRARIES}
       ${NVINFER_LIB}

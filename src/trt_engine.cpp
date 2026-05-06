@@ -8,6 +8,7 @@
 
 #include <NvInfer.h>
 #include <NvInferRuntime.h>
+#include <NvInferVersion.h>
 
 namespace inference_internal {
 namespace {
@@ -21,6 +22,13 @@ constexpr char kCoorsName[] = "coors";
 constexpr char kBboxPredName[] = "bbox_pred0";
 constexpr char kClsScoreName[] = "cls_score0";
 constexpr char kDirClsPredName[] = "dir_cls_pred0";
+
+#if defined(NV_TENSORRT_MAJOR) && \
+    (NV_TENSORRT_MAJOR > 8 || (NV_TENSORRT_MAJOR == 8 && NV_TENSORRT_MINOR >= 5))
+#define INFERENCE_USE_TRT_TENSOR_API 1
+#else
+#define INFERENCE_USE_TRT_TENSOR_API 0
+#endif
 
 InferenceStatus SetError(std::string* out_error,
                          InferenceStatus status,
@@ -58,6 +66,58 @@ class TrtLogger : public nvinfer1::ILogger {
  private:
   std::string last_error_;
 };
+
+bool SetContextInputShape(nvinfer1::IExecutionContext* context,
+                          int binding_index,
+                          const char* tensor_name,
+                          const nvinfer1::Dims& dims) {
+  if (context == nullptr) {
+    return false;
+  }
+#if INFERENCE_USE_TRT_TENSOR_API
+  (void)binding_index;
+  return context->setInputShape(tensor_name, dims);
+#else
+  (void)tensor_name;
+  return context->setBindingDimensions(binding_index, dims);
+#endif
+}
+
+bool AreAllInputDimensionsSpecified(nvinfer1::IExecutionContext* context) {
+  if (context == nullptr) {
+    return false;
+  }
+  return context->allInputDimensionsSpecified();
+}
+
+bool SetContextTensorAddress(nvinfer1::IExecutionContext* context,
+                             const char* tensor_name,
+                             void* address) {
+  if (context == nullptr) {
+    return false;
+  }
+#if INFERENCE_USE_TRT_TENSOR_API
+  return context->setTensorAddress(tensor_name, address);
+#else
+  (void)tensor_name;
+  (void)address;
+  return true;
+#endif
+}
+
+bool EnqueueContext(nvinfer1::IExecutionContext* context,
+                    void** bindings,
+                    cudaStream_t stream) {
+  if (context == nullptr) {
+    return false;
+  }
+#if INFERENCE_USE_TRT_TENSOR_API
+  (void)bindings;
+  return context->enqueueV3(stream);
+#else
+  return context->enqueueV2(bindings, stream, nullptr);
+#endif
+}
 
 struct RuntimeDeleter {
   void operator()(nvinfer1::IRuntime* runtime) const {
@@ -363,10 +423,11 @@ InferenceStatus TrtExecutor::ConfigureShapes(const RuntimeConfig& config,
   coors_dims.d[0] = num_pillars;
   coors_dims.d[1] = 4;
 
-  if (!impl_->context->setBindingDimensions(contract_.voxels_index, voxels_dims) ||
-      !impl_->context->setBindingDimensions(contract_.num_points_index, num_points_dims) ||
-      !impl_->context->setBindingDimensions(contract_.coors_index, coors_dims) ||
-      !impl_->context->allInputDimensionsSpecified()) {
+  if (!SetContextInputShape(impl_->context.get(), contract_.voxels_index, kVoxelsName, voxels_dims) ||
+      !SetContextInputShape(impl_->context.get(), contract_.num_points_index, kNumPointsName,
+                            num_points_dims) ||
+      !SetContextInputShape(impl_->context.get(), contract_.coors_index, kCoorsName, coors_dims) ||
+      !AreAllInputDimensionsSpecified(impl_->context.get())) {
     std::ostringstream oss;
     oss << "Failed to set TensorRT binding dimensions for pillar count " << num_pillars
         << " within optimization profile [" << contract_.min_profile_pillars << ", "
@@ -383,9 +444,31 @@ InferenceStatus TrtExecutor::Enqueue(void** bindings,
     return SetError(out_error, INFERENCE_STATUS_NOT_READY,
                     "TensorRT executor is not initialized");
   }
-  if (!impl_->context->enqueueV2(bindings, stream, nullptr)) {
+#if INFERENCE_USE_TRT_TENSOR_API
+  if (!SetContextTensorAddress(impl_->context.get(), kVoxelsName,
+                               bindings[contract_.voxels_index]) ||
+      !SetContextTensorAddress(impl_->context.get(), kNumPointsName,
+                               bindings[contract_.num_points_index]) ||
+      !SetContextTensorAddress(impl_->context.get(), kCoorsName,
+                               bindings[contract_.coors_index]) ||
+      !SetContextTensorAddress(impl_->context.get(), kBboxPredName,
+                               bindings[contract_.bbox_pred_index]) ||
+      !SetContextTensorAddress(impl_->context.get(), kClsScoreName,
+                               bindings[contract_.cls_score_index]) ||
+      !SetContextTensorAddress(impl_->context.get(), kDirClsPredName,
+                               bindings[contract_.dir_cls_pred_index])) {
+    return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
+                    "Failed to bind TensorRT tensor addresses");
+  }
+#endif
+  if (!EnqueueContext(impl_->context.get(), bindings, stream)) {
+#if INFERENCE_USE_TRT_TENSOR_API
+    return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
+                    "TensorRT enqueueV3 failed");
+#else
     return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
                     "TensorRT enqueueV2 failed");
+#endif
   }
   return INFERENCE_STATUS_OK;
 }
