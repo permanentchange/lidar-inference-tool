@@ -831,16 +831,20 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
     return status;
   }
 
-  void* bindings[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
-  bindings[contract.voxels_index] = d_voxels;
-  bindings[contract.num_points_index] = d_num_points;
-  bindings[contract.coors_index] = d_coors;
-  bindings[contract.bbox_pred_index] = impl_->d_bbox_pred;
-  bindings[contract.cls_score_index] = impl_->d_cls_score;
-  bindings[contract.dir_cls_pred_index] = impl_->d_dir_cls_pred;
+  if (contract.num_bindings <= 0) {
+    return SetError(&last_error_, INFERENCE_STATUS_BACKEND_ERROR,
+                    "TensorRT engine reports no bindings");
+  }
+  std::vector<void*> bindings(static_cast<size_t>(contract.num_bindings), nullptr);
+  bindings[static_cast<size_t>(contract.voxels_index)] = d_voxels;
+  bindings[static_cast<size_t>(contract.num_points_index)] = d_num_points;
+  bindings[static_cast<size_t>(contract.coors_index)] = d_coors;
+  bindings[static_cast<size_t>(contract.bbox_pred_index)] = impl_->d_bbox_pred;
+  bindings[static_cast<size_t>(contract.cls_score_index)] = impl_->d_cls_score;
+  bindings[static_cast<size_t>(contract.dir_cls_pred_index)] = impl_->d_dir_cls_pred;
 
   cudaEventRecord(gpu_start, impl_->stream);
-  status = impl_->trt.Enqueue(bindings, impl_->stream, &last_error_);
+  status = impl_->trt.Enqueue(bindings.data(), impl_->stream, &last_error_);
   cudaEventRecord(gpu_end, impl_->stream);
   cudaEventSynchronize(gpu_end);
   cudaEventElapsedTime(&elapsed_ms, gpu_start, gpu_end);

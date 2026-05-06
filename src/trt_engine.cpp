@@ -477,10 +477,19 @@ InferenceStatus TrtExecutor::Enqueue(void** bindings,
   }
 #endif
   if (!EnqueueContext(impl_->context.get(), bindings, stream)) {
+    const std::string logger_error = impl_->logger.last_error();
 #if INFERENCE_USE_TRT_TENSOR_API
+    if (!logger_error.empty()) {
+      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
+                      "TensorRT enqueueV3 failed: " + logger_error);
+    }
     return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
                     "TensorRT enqueueV3 failed");
 #else
+    if (!logger_error.empty()) {
+      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
+                      "TensorRT enqueueV2 failed: " + logger_error);
+    }
     return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
                     "TensorRT enqueueV2 failed");
 #endif
