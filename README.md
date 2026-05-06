@@ -24,6 +24,7 @@ This README intentionally uses repository-relative paths and placeholders such a
 - `tools/onnx2engine.sh`: helper script for `trtexec`
 - `scripts/visualize_bev.py`: BEV visualization for dumped debug artifacts
 - `examples/minimal_c_api/`: minimal executable example for the public C API
+- `examples/minimal_cpp_api/`: minimal executable example for the public C++ wrapper API
 - `demo/model.yaml`: example model package config for the public C++ wrapper
 - `demo/demo.yaml`: default debug-tool config
 - `demo/end2end.onnx`: example ONNX model
@@ -211,6 +212,11 @@ and writes artifacts under:
 
 - `outputs/demo_dump`
 
+The demo assets are split on purpose:
+
+- `demo/model.yaml` is the deploy-time model package used by `LidarInferenceRuntime`
+- `demo/demo.yaml` is the debug-tool config that adds input/output paths and profiling options on top of the same core runtime settings
+
 Typical console output includes:
 
 - point-cloud load time
@@ -231,13 +237,14 @@ The repository includes two standalone examples under `examples/`.
 - create one `inference::LidarInferenceRuntime` at startup
 - reuse internal output buffers across frames
 - call `runtime->Infer(...)` for final detections
+- use `runtime->InferDecoded(...)` only when you explicitly need decoded pre-NMS candidates
 
 `examples/minimal_c_api/` shows the low-level C integration path:
 
 - fill `InferenceConfig` manually
 - create an `InferenceHandle`
 - allocate output buffers from `InferenceOutputSpec`
-- call `inference_forward()` or `inference_forward_nms()`
+- call `inference_forward_nms()` for final detections, or `inference_forward()` for decoded pre-NMS candidates
 
 Local READMEs:
 
@@ -256,6 +263,30 @@ The public C++ wrapper expects a model directory containing:
 - `model`: engine path, point feature count, spatial ranges, pillar size, stride, label names
 - `runtime`: pillar and point capacity limits plus decode threshold
 - `postprocess`: NMS type, thresholds, and per-label filtering values
+
+The current demo `model.yaml` includes:
+
+- `model.engine_path`
+- `model.num_point_features`
+- `model.point_cloud_range`
+- `model.post_center_range`
+- `model.pillar_size`
+- `model.out_size_factor`
+- `model.label_names`
+- `runtime.max_points_per_pillar`
+- `runtime.min_pillars`
+- `runtime.max_pillars`
+- `runtime.max_points`
+- `runtime.frame_num`
+- `runtime.bbox_max_num`
+- `runtime.score_threshold`
+- `postprocess.nms_type`
+- `postprocess.nms_thresh`
+- `postprocess.nms_pre_maxsize`
+- `postprocess.nms_post_maxsize`
+- `postprocess.final_score_threshold`
+- `postprocess.circle_nms_min_radius`
+- `postprocess.label_score_thresh`
 
 The wrapper resolves relative `model.engine_path` values against the location of `model.yaml`.
 Optional override YAML files use the same schema and are applied with this precedence:
@@ -308,6 +339,14 @@ Important `post_processing` fields:
 - `circle_nms_min_radius`
 - `label_names`
 - `label_score_thresh`
+
+`demo/demo.yaml` intentionally keeps debug-only fields that do not belong in the public runtime model package:
+
+- `pcd_path`
+- `dump_dir`
+- `warmup_iters`
+- `profile_iters`
+- `bev_resolution`
 
 Path handling:
 
@@ -397,12 +436,21 @@ Typical call flow:
 4. For each frame, fill `inference::PointCloudView` and call `runtime->Infer(...)`.
 5. Read `std::vector<inference::Detection>` results.
 
+Additional wrapper entry points:
+
+- `LoadPackageConfigFile(...)`: load one package config file directly
+- `LoadPackageConfig(...)`: load `<model_dir>/model.yaml` into typed structs
+- `Create(...)`: create a runtime from an already prepared `PackageConfig`
+- `InferWithPostprocess(...)`: override postprocess settings at call time while still returning final NMS-filtered detections
+- `InferDecoded(...)`: return decoded pre-NMS candidates
+
 Important semantics:
 
 - one runtime instance owns one `InferenceHandle` and reused output buffers
 - do not call the same runtime instance concurrently from multiple threads
 - `Detection::label_name` points into the runtime-owned config and stays valid while the runtime exists
 - use `LoadPackageConfig(...)` if you want to load YAML, edit typed fields in code, and then call `Create(...)`
+- `Infer()` uses the runtime's configured `postprocess` section and returns final detections after built-in NMS
 
 ## Public C API
 
@@ -486,6 +534,7 @@ Important semantics:
 - `motion_4x4` and `enable_runtime` are present in the public request struct, but the current runtime does not read them
 - `inference_get_default_postprocess_config()` returns the library's default NMS settings for the current fixed 3-label layout
 - call `inference_last_error()` after a failing API call to retrieve a human-readable backend error
+- `examples/minimal_c_api/` uses `inference_forward_nms()` by default, so its printed detections are already post-NMS results
 
 ## ONNX to TensorRT
 

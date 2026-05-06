@@ -3,6 +3,15 @@
 This example shows the shortest end-to-end use of `include/inference.h` from a standalone executable.
 For the recommended higher-level C++ integration path, see `examples/minimal_cpp_api/`.
 
+It deliberately uses the low-level API so that callers can see the exact buffer-management
+contract:
+
+- create one `InferenceHandle`
+- query `InferenceOutputSpec`
+- allocate output buffers once
+- reuse those buffers across frames
+- call `inference_forward_nms()` for final detections
+
 ## Build
 
 From the repository root:
@@ -42,6 +51,8 @@ Input expectations:
 - the example reads `.bin` input with 5 features per point
 - files are loaded one by one into a reused host buffer to reduce repeated allocations
 - output buffers are allocated once from `InferenceOutputSpec` and reused for every file
+- the example uses `inference_get_default_postprocess_config()` and `inference_forward_nms()`
+- reported detections are therefore final post-NMS results, not decoded pre-NMS candidates
 - load or inference failures are reported and skipped; the program returns nonzero if any file fails
 
 The program prints a batch summary with processed file counts, total points, total detected

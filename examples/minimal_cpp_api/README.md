@@ -6,6 +6,13 @@ This example shows the recommended high-level integration path for a C++ project
 - create one `inference::LidarInferenceRuntime` at startup
 - reuse that runtime for every point cloud frame
 
+This is the intended integration style for a realtime caller because the wrapper hides:
+
+- YAML parsing into typed config structs
+- `InferenceHandle` lifetime management
+- output buffer sizing and reuse
+- default postprocess setup
+
 ## Build
 
 From the repository root:
@@ -45,3 +52,9 @@ What the example does:
 - reuses internal output buffers across all frames
 - runs final NMS-filtered inference through `runtime->Infer(...)`
 - prints aggregate timings and a preview of the last frame detections
+
+Important semantics:
+
+- `runtime->Infer(...)` returns final detections after built-in NMS using the `postprocess` section from `model.yaml`
+- if you need decoded pre-NMS candidates instead, use `runtime->InferDecoded(...)`
+- one runtime instance should be owned by one inference thread; create multiple runtime instances for concurrent inference
