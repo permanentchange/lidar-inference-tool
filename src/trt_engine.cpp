@@ -23,8 +23,7 @@ constexpr char kBboxPredName[] = "bbox_pred0";
 constexpr char kClsScoreName[] = "cls_score0";
 constexpr char kDirClsPredName[] = "dir_cls_pred0";
 
-#if defined(NV_TENSORRT_MAJOR) && \
-    (NV_TENSORRT_MAJOR > 8 || (NV_TENSORRT_MAJOR == 8 && NV_TENSORRT_MINOR >= 5))
+#if defined(NV_TENSORRT_MAJOR) && NV_TENSORRT_MAJOR >= 10
 #define INFERENCE_USE_TRT_TENSOR_API 1
 #else
 #define INFERENCE_USE_TRT_TENSOR_API 0
@@ -79,7 +78,15 @@ bool SetContextInputShape(nvinfer1::IExecutionContext* context,
   return context->setInputShape(tensor_name, dims);
 #else
   (void)tensor_name;
-  return context->setBindingDimensions(binding_index, dims);
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+  const bool ok = context->setBindingDimensions(binding_index, dims);
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+  return ok;
 #endif
 }
 
@@ -115,7 +122,15 @@ bool EnqueueContext(nvinfer1::IExecutionContext* context,
   (void)bindings;
   return context->enqueueV3(stream);
 #else
-  return context->enqueueV2(bindings, stream, nullptr);
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+  const bool ok = context->enqueueV2(bindings, stream, nullptr);
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+  return ok;
 #endif
 }
 
