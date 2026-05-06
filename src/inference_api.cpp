@@ -1,12 +1,16 @@
 #include "pillar_runtime.hpp"
 
+#include <algorithm>
 #include <memory>
 #include <new>
 #include <string>
 
 using inference_internal::ParseRuntimeConfig;
+using inference_internal::ParsePostprocessConfig;
 using inference_internal::PillarRuntime;
+using inference_internal::PostprocessConfig;
 using inference_internal::RuntimeConfig;
+using inference_internal::SetDefaultPostprocessConfig;
 
 struct InferenceHandle {
   std::unique_ptr<PillarRuntime> runtime;
@@ -84,6 +88,25 @@ InferenceStatus inference_get_output_spec(const InferenceHandle* handle,
   return INFERENCE_STATUS_OK;
 }
 
+InferenceStatus inference_get_default_postprocess_config(
+    InferencePostprocessConfig* out_config) {
+  if (out_config == nullptr) {
+    return INFERENCE_STATUS_INVALID_ARGUMENT;
+  }
+  PostprocessConfig config;
+  SetDefaultPostprocessConfig(&config);
+  out_config->nms_type = config.nms_type;
+  out_config->nms_thresh = config.nms_thresh;
+  out_config->nms_pre_maxsize = config.nms_pre_maxsize;
+  out_config->nms_post_maxsize = config.nms_post_maxsize;
+  out_config->final_score_threshold = config.final_score_threshold;
+  std::copy(config.label_score_thresh.begin(), config.label_score_thresh.end(),
+            out_config->label_score_thresh);
+  std::copy(config.circle_nms_min_radius.begin(), config.circle_nms_min_radius.end(),
+            out_config->circle_nms_min_radius);
+  return INFERENCE_STATUS_OK;
+}
+
 InferenceStatus inference_forward(InferenceHandle* handle,
                                   const InferenceRequest* request,
                                   InferenceResponse* response) {
@@ -95,6 +118,39 @@ InferenceStatus inference_forward(InferenceHandle* handle,
   response->label_count = 0;
   response->freespace_count = 0;
   InferenceStatus status = handle->runtime->Forward(*request, response, nullptr, nullptr);
+  handle->last_error = handle->runtime->last_error();
+  return status;
+}
+
+InferenceStatus inference_forward_nms(InferenceHandle* handle,
+                                      const InferenceRequest* request,
+                                      const InferencePostprocessConfig* postprocess,
+                                      InferenceResponse* response) {
+  if (handle == nullptr || handle->runtime == nullptr || request == nullptr || response == nullptr) {
+    return INFERENCE_STATUS_INVALID_ARGUMENT;
+  }
+
+  PostprocessConfig internal_config;
+  if (postprocess == nullptr) {
+    SetDefaultPostprocessConfig(&internal_config);
+  } else {
+    InferenceStatus parse_status =
+        ParsePostprocessConfig(*postprocess, &internal_config, &handle->last_error);
+    if (parse_status != INFERENCE_STATUS_OK) {
+      response->cls_count = 0;
+      response->box_count = 0;
+      response->label_count = 0;
+      response->freespace_count = 0;
+      return parse_status;
+    }
+  }
+
+  response->cls_count = 0;
+  response->box_count = 0;
+  response->label_count = 0;
+  response->freespace_count = 0;
+  InferenceStatus status =
+      handle->runtime->ForwardNms(*request, internal_config, response, nullptr, nullptr);
   handle->last_error = handle->runtime->last_error();
   return status;
 }

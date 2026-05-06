@@ -2,7 +2,7 @@
 
 `lidar-inference-tool` is a C++17 LiDAR inference project built around TensorRT end-to-end pillar models. The repository exposes:
 
-- `libinference.so`: a shared library with a small C API for loading one engine and running decoded detections
+- `libinference.so`: a shared library with a small C API for loading one engine and running decoded or final NMS-filtered detections
 - `pillar_debug_tool`: a single-sample debug executable that loads a YAML config, runs inference, dumps intermediate tensors, and writes timing reports
 - `minimal_c_api_example`: a minimal executable under `examples/` that shows the shortest public API call flow
 
@@ -16,8 +16,8 @@ This README intentionally uses repository-relative paths and placeholders such a
 
 - `include/inference.h`: public C API
 - `src/inference_api.cpp`: shared-library entry points
-- `src/pillar_runtime.cpp`: TensorRT loading, voxelization, inference, decode, and response packing
-- `src/pillar_debug_utils.cpp`: YAML parsing, point-cloud loading, NMS, and artifact export
+- `src/pillar_runtime.cpp`: TensorRT loading, voxelization, inference, decode, NMS, and response packing
+- `src/pillar_debug_utils.cpp`: YAML parsing, point-cloud loading, and artifact export
 - `tools/pillar_debug_tool.cpp`: debug CLI entry point
 - `tools/onnx2engine.sh`: helper script for `trtexec`
 - `scripts/visualize_bev.py`: BEV visualization for dumped debug artifacts
@@ -27,7 +27,7 @@ This README intentionally uses repository-relative paths and placeholders such a
 - `demo/end2end.engine`: example TensorRT engine
 - `demo/pcd.bin`: example point cloud
 - `third_party/voxelize/`: vendored CUDA voxelization module
-- `third_party/iou3d_nms/`: low-level IoU / NMS module used by the debug tool
+- `third_party/iou3d_nms/`: low-level IoU / NMS module used by the runtime and debug tool
 
 ## Runtime Contract
 
@@ -350,7 +350,9 @@ Exported functions:
 
 - `inference_create`
 - `inference_get_output_spec`
+- `inference_get_default_postprocess_config`
 - `inference_forward`
+- `inference_forward_nms`
 - `inference_reset`
 - `inference_destroy`
 - `inference_last_error`
@@ -360,7 +362,7 @@ Typical call flow:
 1. Fill an `InferenceConfig` and call `inference_create()`.
 2. Call `inference_get_output_spec()` to learn the required output capacities.
 3. Allocate response buffers using those element counts.
-4. Fill an `InferenceRequest` with tightly packed point data and call `inference_forward()`.
+4. Fill an `InferenceRequest` with tightly packed point data and call `inference_forward_nms()` for final detections, or `inference_forward()` for decoded pre-NMS candidates.
 5. Read `cls_count`, `box_count`, `label_count`, and `freespace_count` from the response.
 6. Call `inference_destroy()` when done.
 
@@ -383,6 +385,9 @@ float* cls_preds = malloc(spec.cls_count * sizeof(float));
 float* box_preds = malloc(spec.box_count * sizeof(float));
 int* label_preds = malloc(spec.label_count * sizeof(int));
 
+InferencePostprocessConfig postprocess = {0};
+inference_get_default_postprocess_config(&postprocess);
+
 InferenceRequest request = {0};
 request.points = points;
 request.point_count = point_count;
@@ -396,7 +401,7 @@ response.box_capacity = spec.box_count;
 response.label_preds = label_preds;
 response.label_capacity = spec.label_count;
 
-InferenceStatus status = inference_forward(handle, &request, &response);
+InferenceStatus status = inference_forward_nms(handle, &request, &postprocess, &response);
 if (status != INFERENCE_STATUS_OK) {
   const char* err = inference_last_error(handle);
 }
@@ -407,12 +412,16 @@ inference_destroy(handle);
 Important semantics:
 
 - `InferenceOutputSpec` and all `*_capacity` fields use element counts, not byte sizes
+- `InferenceOutputSpec` is a safe upper bound for both `inference_forward()` and `inference_forward_nms()`
+- `inference_forward()` returns decoded pre-NMS candidates
+- `inference_forward_nms()` returns final detections after built-in NMS
 - `box_preds` stores decoded boxes as `[x, y, z, dx, dy, dz, yaw]`
 - `label_preds` stores 1-based task ids
 - `box_count` is the number of float elements in `box_preds`, so it is `7 * cls_count`
 - `freespace_count` is always `0` in the current implementation
 - `freespace` is optional and is only zero-filled if a caller supplies that buffer
 - `motion_4x4` and `enable_runtime` are present in the public request struct, but the current runtime does not read them
+- `inference_get_default_postprocess_config()` returns the library's default NMS settings for the current fixed 3-label layout
 - call `inference_last_error()` after a failing API call to retrieve a human-readable backend error
 
 ## ONNX to TensorRT

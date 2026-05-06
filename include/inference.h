@@ -10,7 +10,8 @@
  * 1. Fill an ::InferenceConfig and call ::inference_create().
  * 2. Call ::inference_get_output_spec() to learn the maximum response buffer sizes.
  * 3. Allocate output buffers using element counts from ::InferenceOutputSpec.
- * 4. Fill an ::InferenceRequest and call ::inference_forward().
+ * 4. Fill an ::InferenceRequest and call ::inference_forward_nms() for final detections, or
+ *    ::inference_forward() for decoded pre-NMS candidates.
  * 5. Read output counts from ::InferenceResponse and then call ::inference_destroy().
  *
  * The current runtime targets PointPillars / CenterPoint-style engines with fixed tensor names and
@@ -37,6 +38,14 @@ typedef enum InferenceStatus {
   /** The library was built without TensorRT support or the requested operation is unavailable. */
   INFERENCE_STATUS_NOT_SUPPORTED = 4,
 } InferenceStatus;
+
+/** NMS mode used by ::InferencePostprocessConfig. */
+typedef enum InferenceNmsType {
+  /** Apply IoU-based BEV NMS using the built-in IoU/NMS backend. */
+  INFERENCE_NMS_IOU_BEV = 0,
+  /** Apply per-label circle NMS using center distance thresholds. */
+  INFERENCE_NMS_CIRCLE = 1,
+} InferenceNmsType;
 
 /**
  * @brief Configuration used to create one inference runtime.
@@ -74,9 +83,32 @@ typedef struct InferenceConfig {
 } InferenceConfig;
 
 /**
+ * @brief Post-processing configuration for final NMS-filtered detections.
+ *
+ * Arrays are fixed to the current three exported labels: car, pedestrian, cyclist.
+ */
+typedef struct InferencePostprocessConfig {
+  /** NMS algorithm to apply to decoded candidates. See ::InferenceNmsType. */
+  int nms_type;
+  /** IoU threshold used by ::INFERENCE_NMS_IOU_BEV. */
+  float nms_thresh;
+  /** Maximum number of pre-NMS candidates considered by IoU BEV NMS. */
+  int nms_pre_maxsize;
+  /** Maximum number of post-NMS detections kept. */
+  int nms_post_maxsize;
+  /** Final score threshold applied to detections returned by ::inference_forward_nms(). */
+  float final_score_threshold;
+  /** Per-label score thresholds used before IoU BEV NMS. */
+  float label_score_thresh[3];
+  /** Per-label center-distance thresholds used by circle NMS. */
+  float circle_nms_min_radius[3];
+} InferencePostprocessConfig;
+
+/**
  * @brief Maximum output sizes required by the current runtime configuration.
  *
- * All counts are element counts, not byte sizes.
+ * All counts are element counts, not byte sizes. The capacities returned here are safe upper
+ * bounds for both ::inference_forward() and ::inference_forward_nms().
  */
 typedef struct InferenceOutputSpec {
   /** Maximum decoded candidate count across all tasks for one forward pass. */
@@ -115,15 +147,15 @@ typedef struct InferenceRequest {
  * capacities. On return, the runtime fills the corresponding *_count fields.
  */
 typedef struct InferenceResponse {
-  /** Decoded detection scores. Required when decoded candidate count is greater than 0. */
+  /** Detection scores. Required when produced detection count is greater than 0. */
   float* cls_preds;
   /** Capacity of ::cls_preds in float elements. Must be >= produced ::cls_count. */
   size_t cls_capacity;
-  /** Decoded boxes laid out as [x, y, z, dx, dy, dz, yaw]. */
+  /** Boxes laid out as [x, y, z, dx, dy, dz, yaw]. */
   float* box_preds;
   /** Capacity of ::box_preds in float elements. Must be >= produced ::box_count. */
   size_t box_capacity;
-  /** Decoded 1-based task labels. Required when decoded candidate count is greater than 0. */
+  /** 1-based task labels. Required when produced detection count is greater than 0. */
   int* label_preds;
   /** Capacity of ::label_preds in int elements. Must be >= produced ::label_count. */
   size_t label_capacity;
@@ -162,6 +194,14 @@ InferenceStatus inference_create(const InferenceConfig* config,
 InferenceStatus inference_get_output_spec(const InferenceHandle* handle,
                                           InferenceOutputSpec* out_spec);
 /**
+ * @brief Fill one ::InferencePostprocessConfig with library defaults.
+ *
+ * @param out_config Output structure receiving default post-processing values.
+ * @return ::INFERENCE_STATUS_OK on success, otherwise ::INFERENCE_STATUS_INVALID_ARGUMENT.
+ */
+InferenceStatus inference_get_default_postprocess_config(
+    InferencePostprocessConfig* out_config);
+/**
  * @brief Run one forward pass and decode detections into caller-provided buffers.
  *
  * Before the call, the caller must provide response buffer pointers and capacities. The runtime
@@ -178,6 +218,25 @@ InferenceStatus inference_get_output_spec(const InferenceHandle* handle,
 InferenceStatus inference_forward(InferenceHandle* handle,
                                   const InferenceRequest* request,
                                   InferenceResponse* response);
+/**
+ * @brief Run one forward pass and return final detections after built-in NMS.
+ *
+ * Before the call, the caller must provide response buffer pointers and capacities. The runtime
+ * resets all output counts to 0 before validation and execution. The output capacities returned by
+ * ::inference_get_output_spec() are safe upper bounds for this API. Pass a null
+ * ::InferencePostprocessConfig pointer to use the library defaults.
+ *
+ * @param handle Valid handle returned by ::inference_create().
+ * @param request Input request. Must be non-null.
+ * @param postprocess Optional post-processing configuration. Null selects library defaults.
+ * @param response Caller-owned output buffers and output counts. Must be non-null.
+ * @return ::INFERENCE_STATUS_OK on success, or an error status on validation or backend failure.
+ *         Call ::inference_last_error() for a human-readable error string after failure.
+ */
+InferenceStatus inference_forward_nms(InferenceHandle* handle,
+                                      const InferenceRequest* request,
+                                      const InferencePostprocessConfig* postprocess,
+                                      InferenceResponse* response);
 /**
  * @brief Reset internal runtime state associated with a handle.
  *

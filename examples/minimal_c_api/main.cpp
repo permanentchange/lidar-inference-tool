@@ -139,6 +139,16 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  InferencePostprocessConfig postprocess{};
+  const InferenceStatus postprocess_status =
+      inference_get_default_postprocess_config(&postprocess);
+  if (postprocess_status != INFERENCE_STATUS_OK) {
+    std::cerr << "inference_get_default_postprocess_config failed with status "
+              << postprocess_status << ": " << inference_last_error(handle) << "\n";
+    inference_destroy(handle);
+    return 1;
+  }
+
   std::vector<float> cls_preds(spec.cls_count, 0.0f);
   std::vector<float> box_preds(spec.box_count, 0.0f);
   std::vector<int> label_preds(spec.label_count, 0);
@@ -197,14 +207,15 @@ int main(int argc, char** argv) {
     response.freespace_count = 0;
 
     const auto infer_start = Clock::now();
-    const InferenceStatus forward_status = inference_forward(handle, &request, &response);
+    const InferenceStatus forward_status =
+        inference_forward_nms(handle, &request, &postprocess, &response);
     const auto infer_end = Clock::now();
     total_infer_ms += std::chrono::duration<double, std::milli>(infer_end - infer_start).count();
 
     if (forward_status != INFERENCE_STATUS_OK) {
       ++failed_files;
       std::ostringstream oss;
-      oss << point_cloud_path << ": inference_forward failed with status " << forward_status
+      oss << point_cloud_path << ": inference_forward_nms failed with status " << forward_status
           << ": " << inference_last_error(handle);
       failure_messages.push_back(oss.str());
       continue;

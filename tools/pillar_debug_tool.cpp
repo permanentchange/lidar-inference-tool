@@ -213,8 +213,8 @@ int main(int argc, char** argv) {
                                  label_preds.begin() + static_cast<long>(response.label_count));
   debug_candidates.boxes.assign(box_preds.begin(), box_preds.begin() + static_cast<long>(response.box_count));
   debug.decoded_candidates = debug_candidates;
-  status = inference_internal::RunClassAgnosticNms(debug_candidates, config,
-                                                   &debug.final_nms_outputs, &error);
+  status = inference_internal::RunToolPostprocessNms(debug_candidates, config,
+                                                     &debug.final_nms_outputs, &error);
   if (status != INFERENCE_STATUS_OK) {
     std::cerr << "NMS failed: " << error << "\n";
     return 1;

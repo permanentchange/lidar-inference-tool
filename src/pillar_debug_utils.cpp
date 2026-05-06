@@ -17,8 +17,6 @@
 
 #include <yaml-cpp/yaml.h>
 
-#include "iou3d_nms_api.h"
-
 namespace inference_internal {
 namespace {
 
@@ -118,10 +116,6 @@ std::string ResolveConfigRelativePath(const std::filesystem::path& config_path,
   return (base_dir / raw_path).lexically_normal().string();
 }
 
-bool UseCircleNms(const ToolConfig& config) {
-  return NormalizeNmsType(config.nms_type) == "circle";
-}
-
 template <typename T>
 InferenceStatus WriteNpy(const std::filesystem::path& path,
                          const T* data,
@@ -188,104 +182,6 @@ std::string BuildNumericSummary(const std::string& name,
   }
   oss << "\n    }";
   return oss.str();
-}
-
-void ApplyPreMaxsize(std::vector<float>* scores,
-                     std::vector<float>* boxes,
-                     std::vector<int>* labels,
-                     int pre_maxsize) {
-  if (pre_maxsize <= 0 || scores == nullptr || boxes == nullptr || labels == nullptr ||
-      scores->size() <= static_cast<size_t>(pre_maxsize)) {
-    return;
-  }
-  std::vector<size_t> indices(scores->size());
-  std::iota(indices.begin(), indices.end(), 0);
-  std::sort(indices.begin(), indices.end(),
-            [&](size_t lhs, size_t rhs) { return (*scores)[lhs] > (*scores)[rhs]; });
-
-  std::vector<float> new_scores;
-  std::vector<float> new_boxes;
-  std::vector<int> new_labels;
-  new_scores.reserve(pre_maxsize);
-  new_boxes.reserve(static_cast<size_t>(pre_maxsize) * kBoxDim);
-  new_labels.reserve(pre_maxsize);
-  for (int i = 0; i < pre_maxsize; ++i) {
-    const size_t src = indices[static_cast<size_t>(i)];
-    new_scores.push_back((*scores)[src]);
-    new_labels.push_back((*labels)[src]);
-    new_boxes.insert(new_boxes.end(), boxes->begin() + static_cast<long>(src * kBoxDim),
-                     boxes->begin() + static_cast<long>((src + 1) * kBoxDim));
-  }
-  scores->swap(new_scores);
-  boxes->swap(new_boxes);
-  labels->swap(new_labels);
-}
-
-std::vector<size_t> CircleNmsKeep(const std::vector<float>& scores,
-                                  const std::vector<float>& boxes,
-                                  float distance_threshold,
-                                  int post_maxsize) {
-  std::vector<size_t> order(scores.size());
-  std::iota(order.begin(), order.end(), 0);
-  std::sort(order.begin(), order.end(),
-            [&](size_t lhs, size_t rhs) { return scores[lhs] > scores[rhs]; });
-
-  std::vector<size_t> keep;
-  keep.reserve(order.size());
-  std::vector<uint8_t> suppressed(scores.size(), 0);
-  for (size_t order_index = 0; order_index < order.size(); ++order_index) {
-    const size_t index = order[order_index];
-    if (suppressed[index] != 0U) {
-      continue;
-    }
-    keep.push_back(index);
-    for (size_t compare_index = order_index + 1; compare_index < order.size(); ++compare_index) {
-      const size_t other = order[compare_index];
-      if (suppressed[other] != 0U) {
-        continue;
-      }
-      const float dx = boxes[index * kBoxDim + 0] - boxes[other * kBoxDim + 0];
-      const float dy = boxes[index * kBoxDim + 1] - boxes[other * kBoxDim + 1];
-      const float squared_distance = dx * dx + dy * dy;
-      if (squared_distance <= distance_threshold) {
-        suppressed[other] = 1U;
-      }
-    }
-    if (post_maxsize > 0 && keep.size() >= static_cast<size_t>(post_maxsize)) {
-      break;
-    }
-  }
-  return keep;
-}
-
-void AppendBoxes(const std::vector<float>& source_boxes,
-                 size_t source_index,
-                 std::vector<float>* target_boxes) {
-  target_boxes->insert(target_boxes->end(),
-                       source_boxes.begin() + static_cast<long>(source_index * kBoxDim),
-                       source_boxes.begin() + static_cast<long>((source_index + 1) * kBoxDim));
-}
-
-void FilterByScoreThreshold(CandidateDetections* detections, float score_threshold) {
-  if (detections == nullptr || score_threshold <= 0.0f) {
-    return;
-  }
-
-  CandidateDetections filtered;
-  filtered.scores.reserve(detections->scores.size());
-  filtered.labels.reserve(detections->labels.size());
-  filtered.boxes.reserve(detections->boxes.size());
-  for (size_t i = 0; i < detections->scores.size(); ++i) {
-    if (detections->scores[i] < score_threshold) {
-      continue;
-    }
-    filtered.scores.push_back(detections->scores[i]);
-    filtered.labels.push_back(detections->labels[i]);
-    AppendBoxes(detections->boxes, i, &filtered.boxes);
-  }
-  detections->scores.swap(filtered.scores);
-  detections->labels.swap(filtered.labels);
-  detections->boxes.swap(filtered.boxes);
 }
 
 InferenceStatus LoadBinaryPcdFile(const std::string& path,
@@ -508,84 +404,21 @@ InferenceStatus LoadPcdFile(const std::string& path,
   return LoadBinaryPcdFile(path, num_point_features, max_points, out_points, out_error);
 }
 
-InferenceStatus RunClassAgnosticNms(const CandidateDetections& candidates,
-                                    const ToolConfig& config,
-                                    CandidateDetections* out_result,
-                                    std::string* out_error) {
-  if (out_result == nullptr) {
-    return INFERENCE_STATUS_INVALID_ARGUMENT;
-  }
-
-  if (UseCircleNms(config)) {
-    out_result->scores.clear();
-    out_result->boxes.clear();
-    out_result->labels.clear();
-
-    for (int label = 1; label <= kLabelCount; ++label) {
-      CandidateDetections per_label;
-      per_label.scores.reserve(candidates.scores.size());
-      per_label.labels.reserve(candidates.labels.size());
-      per_label.boxes.reserve(candidates.boxes.size());
-      for (size_t i = 0; i < candidates.scores.size(); ++i) {
-        if (candidates.labels[i] != label) {
-          continue;
-        }
-        per_label.scores.push_back(candidates.scores[i]);
-        per_label.labels.push_back(label);
-        AppendBoxes(candidates.boxes, i, &per_label.boxes);
-      }
-      const std::vector<size_t> keep =
-          CircleNmsKeep(per_label.scores, per_label.boxes,
-                        config.circle_nms_min_radius[static_cast<size_t>(label - 1)],
-                        config.nms_post_maxsize);
-      for (const size_t kept_index : keep) {
-        out_result->scores.push_back(per_label.scores[kept_index]);
-        out_result->labels.push_back(label);
-        AppendBoxes(per_label.boxes, kept_index, &out_result->boxes);
-      }
-    }
-    FilterByScoreThreshold(out_result, config.final_score_threshold);
-    return INFERENCE_STATUS_OK;
-  }
-
-  std::vector<float> scores;
-  std::vector<float> boxes;
-  std::vector<int> labels;
-  scores.reserve(candidates.scores.size());
-  boxes.reserve(candidates.boxes.size());
-  labels.reserve(candidates.labels.size());
-  for (size_t i = 0; i < candidates.scores.size(); ++i) {
-    const int label = candidates.labels[i];
-    if (label < 1 || label > kLabelCount) {
-      continue;
-    }
-    if (candidates.scores[i] < config.label_score_thresh[static_cast<size_t>(label - 1)]) {
-      continue;
-    }
-    scores.push_back(candidates.scores[i]);
-    labels.push_back(label);
-    AppendBoxes(candidates.boxes, i, &boxes);
-  }
-  ApplyPreMaxsize(&scores, &boxes, &labels, config.nms_pre_maxsize);
-  std::vector<long> keep(scores.size(), 0);
-  const int keep_count = scores.empty() ? 0 :
-      nms_gpu(boxes.data(), keep.data(), config.nms_thresh, static_cast<int>(scores.size()));
-  const size_t final_count = std::min(static_cast<size_t>(keep_count),
-                                      static_cast<size_t>(config.nms_post_maxsize));
-
-  out_result->scores.clear();
-  out_result->boxes.clear();
-  out_result->labels.clear();
-  out_result->scores.reserve(final_count);
-  out_result->boxes.reserve(final_count * kBoxDim);
-  out_result->labels.reserve(final_count);
-  for (size_t i = 0; i < final_count; ++i) {
-    const long src = keep[i];
-    out_result->scores.push_back(scores[static_cast<size_t>(src)]);
-    out_result->labels.push_back(labels[static_cast<size_t>(src)]);
-    AppendBoxes(boxes, static_cast<size_t>(src), &out_result->boxes);
-  }
-  return INFERENCE_STATUS_OK;
+InferenceStatus RunToolPostprocessNms(const CandidateDetections& candidates,
+                                      const ToolConfig& config,
+                                      CandidateDetections* out_result,
+                                      std::string* out_error) {
+  PostprocessConfig postprocess;
+  SetDefaultPostprocessConfig(&postprocess);
+  postprocess.nms_type =
+      NormalizeNmsType(config.nms_type) == "circle" ? INFERENCE_NMS_CIRCLE : INFERENCE_NMS_IOU_BEV;
+  postprocess.nms_thresh = config.nms_thresh;
+  postprocess.nms_pre_maxsize = config.nms_pre_maxsize;
+  postprocess.nms_post_maxsize = config.nms_post_maxsize;
+  postprocess.final_score_threshold = config.final_score_threshold;
+  postprocess.circle_nms_min_radius = config.circle_nms_min_radius;
+  postprocess.label_score_thresh = config.label_score_thresh;
+  return RunPostprocessNms(candidates, postprocess, out_result, out_error);
 }
 
 InferenceStatus SaveDebugArtifacts(const DebugArtifacts& debug,

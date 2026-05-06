@@ -22,11 +22,33 @@ InferenceStatus inference_get_output_spec(const InferenceHandle* handle,
   return INFERENCE_STATUS_NOT_SUPPORTED;
 }
 
+InferenceStatus inference_get_default_postprocess_config(
+    InferencePostprocessConfig* out_config) {
+  (void)out_config;
+  return INFERENCE_STATUS_NOT_SUPPORTED;
+}
+
 InferenceStatus inference_forward(InferenceHandle* handle,
                                   const InferenceRequest* request,
                                   InferenceResponse* response) {
   (void)handle;
   (void)request;
+  if (response != nullptr) {
+    response->cls_count = 0;
+    response->box_count = 0;
+    response->label_count = 0;
+    response->freespace_count = 0;
+  }
+  return INFERENCE_STATUS_NOT_SUPPORTED;
+}
+
+InferenceStatus inference_forward_nms(InferenceHandle* handle,
+                                      const InferenceRequest* request,
+                                      const InferencePostprocessConfig* postprocess,
+                                      InferenceResponse* response) {
+  (void)handle;
+  (void)request;
+  (void)postprocess;
   if (response != nullptr) {
     response->cls_count = 0;
     response->box_count = 0;

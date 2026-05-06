@@ -26,6 +26,16 @@ struct RuntimeConfig {
   float score_threshold = 0.1f;
 };
 
+struct PostprocessConfig {
+  InferenceNmsType nms_type = INFERENCE_NMS_IOU_BEV;
+  float nms_thresh = 0.25f;
+  int nms_pre_maxsize = 2048;
+  int nms_post_maxsize = 256;
+  float final_score_threshold = 0.3f;
+  std::array<float, 3> circle_nms_min_radius{{4.0f, 12.0f, 10.0f}};
+  std::array<float, 3> label_score_thresh{{0.45f, 0.3f, 0.45f}};
+};
+
 struct StageTimings {
   double pillarize_ms = 0.0;
   double h2d_prepare_ms = 0.0;
@@ -101,6 +111,10 @@ struct ToolConfig {
 InferenceStatus ParseRuntimeConfig(const InferenceConfig& config,
                                    RuntimeConfig* out_config,
                                    std::string* out_error);
+void SetDefaultPostprocessConfig(PostprocessConfig* out_config);
+InferenceStatus ParsePostprocessConfig(const InferencePostprocessConfig& config,
+                                       PostprocessConfig* out_config,
+                                       std::string* out_error);
 InferenceOutputSpec MakeOutputSpec(int task_count, int bbox_max_num);
 
 class PillarRuntime {
@@ -113,12 +127,22 @@ class PillarRuntime {
                           InferenceResponse* response,
                           DebugArtifacts* debug,
                           StageTimings* timings);
+  InferenceStatus ForwardNms(const InferenceRequest& request,
+                             const PostprocessConfig& postprocess,
+                             InferenceResponse* response,
+                             DebugArtifacts* debug,
+                             StageTimings* timings);
   InferenceOutputSpec output_spec() const { return output_spec_; }
   const std::string& last_error() const { return last_error_; }
   void Reset();
 
  private:
   struct Impl;
+  InferenceStatus ForwardInternal(const InferenceRequest& request,
+                                  const PostprocessConfig* postprocess,
+                                  InferenceResponse* response,
+                                  DebugArtifacts* debug,
+                                  StageTimings* timings);
 
   RuntimeConfig config_;
   InferenceOutputSpec output_spec_{};
@@ -134,10 +158,14 @@ InferenceStatus LoadPcdFile(const std::string& path,
                             int max_points,
                             std::vector<float>* out_points,
                             std::string* out_error);
-InferenceStatus RunClassAgnosticNms(const CandidateDetections& candidates,
-                                    const ToolConfig& config,
-                                    CandidateDetections* out_result,
-                                    std::string* out_error);
+InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
+                                  const PostprocessConfig& config,
+                                  CandidateDetections* out_result,
+                                  std::string* out_error);
+InferenceStatus RunToolPostprocessNms(const CandidateDetections& candidates,
+                                      const ToolConfig& config,
+                                      CandidateDetections* out_result,
+                                      std::string* out_error);
 InferenceStatus SaveDebugArtifacts(const DebugArtifacts& debug,
                                    const ToolConfig& config,
                                    std::string* out_error);
