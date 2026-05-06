@@ -544,10 +544,37 @@ Use the helper script to build an engine and then run a quick `trtexec` profile:
 bash tools/onnx2engine.sh <onnx_path> <engine_path> <min_points> <opt_points> <max_points> [fp32|fp16|int8]
 ```
 
+Show the built-in help:
+
+```bash
+bash tools/onnx2engine.sh --help
+```
+
+Arguments:
+
+- `<onnx_path>`: input ONNX model path
+- `<engine_path>`: output TensorRT engine path
+- `<min_points>`: minimum optimization-profile pillar/point count
+- `<opt_points>`: optimal optimization-profile pillar/point count
+- `<max_points>`: maximum optimization-profile pillar/point count
+- `[precision]`: optional precision mode, one of `fp32`, `fp16`, `int8`, default `fp16`
+
+The helper assumes the current repository contract:
+
+- `voxels`: `<N>x20x5`
+- `num_points`: `<N>`
+- `coors`: `<N>x4`
+
 FP16 example:
 
 ```bash
-bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end.engine 10000 40000 50000 fp16
+bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end.engine 10000 40000 50000
+```
+
+FP32 example:
+
+```bash
+bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end_fp32.engine 10000 40000 50000 fp32
 ```
 
 INT8 example for a quantized / Q-DQ ONNX model:
@@ -560,8 +587,12 @@ Requirements and behavior:
 
 - `trtexec` must be available in `PATH`
 - the ONNX file must already exist
+- `<min_points>`, `<opt_points>`, and `<max_points>` must be positive integers
+- the helper requires `min_points <= opt_points <= max_points`
 - the generated engine must preserve the current external binding contract: `voxels=float32`, `num_points=int32`, `coors=int32`, outputs `float32`
 - the generated engine must keep a pillar-count optimization profile compatible with the runtime min/max settings
 - `int8` export assumes the ONNX graph is already quantized or otherwise buildable by TensorRT without adding a calibration path in this helper
+- the script prints the resolved min/opt/max TensorRT shapes before it starts building
 - if the target engine already exists, regeneration is skipped
-- the script always runs a follow-up `trtexec --loadEngine ... --dumpProfile --verbose` pass
+- the script still runs a follow-up `trtexec --loadEngine ... --dumpProfile --verbose` pass against the existing engine
+- the final profiling pass always uses the opt shape
