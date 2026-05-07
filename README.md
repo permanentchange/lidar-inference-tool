@@ -22,6 +22,7 @@ This README intentionally uses repository-relative paths and placeholders such a
 - `src/pillar_debug_utils.cpp`: YAML parsing, point-cloud loading, and artifact export
 - `tools/pillar_debug_tool.cpp`: debug CLI entry point
 - `tools/onnx2engine.sh`: helper script for `trtexec`
+- `tools/run_pillar_debug.sh`: recommended wrapper for launching `pillar_debug_tool` with the build-local third-party libraries first in `LD_LIBRARY_PATH`
 - `scripts/visualize_bev.py`: BEV visualization for dumped debug artifacts
 - `examples/minimal_c_api/`: minimal executable example for the public C API
 - `examples/minimal_cpp_api/`: minimal executable example for the public C++ wrapper API
@@ -183,7 +184,13 @@ The repository ships both a model package config for the public C++ wrapper and 
 Run one debug session:
 
 ```bash
-./build/pillar_debug_tool demo/demo.yaml
+./tools/run_pillar_debug.sh
+```
+
+To run a different debug config, pass it explicitly:
+
+```bash
+./tools/run_pillar_debug.sh path/to/config.yaml
 ```
 
 Run the minimal C API example against the same demo assets:
@@ -202,6 +209,8 @@ The default model package reads:
 
 - `demo/end2end.engine`
 - `demo/model.yaml`
+
+The wrapper script is recommended because interactive shells may prepend unrelated library directories in `LD_LIBRARY_PATH`. `tools/run_pillar_debug.sh` forces the repository's freshly built `third_party/iou3d_nms` and `third_party/voxelize` shared libraries to win lookup order before launching the debug binary.
 
 The default debug config reads:
 

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -148,6 +149,15 @@ int main(int argc, char** argv) {
   if (argc != 2) {
     std::cerr << "Usage: pillar_debug_tool <config.yaml>\n";
     return 1;
+  }
+
+  const char* ld_library_path = std::getenv("LD_LIBRARY_PATH");
+  if (ld_library_path != nullptr &&
+      std::string(ld_library_path).find("IGV/devel/lib") != std::string::npos) {
+    std::cerr
+        << "Warning: LD_LIBRARY_PATH contains IGV/devel/lib. If debug inference fails with "
+        << "TensorRT enqueueV2 binding errors, prefer ./tools/run_pillar_debug.sh so the "
+        << "repository's build-local iou3d_nms and voxelization libraries are loaded first.\n";
   }
 
   std::string error;
