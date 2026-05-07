@@ -173,6 +173,7 @@ if(MISSING_GPU_DEPS)
       "${MISSING_GPU_DEPS_TEXT}")
     add_library(inference SHARED
       src/inference_stub.cpp
+      src/inference_cpp_stub.cpp
     )
     target_include_directories(inference
       PUBLIC
@@ -202,6 +203,7 @@ else()
 
   add_library(inference SHARED
     src/inference_api.cpp
+    src/inference_cpp.cpp
     src/pillar_runtime.cpp
     src/trt_engine.cpp
   )
@@ -213,17 +215,22 @@ else()
       ${INFERENCE_PRIVATE_INCLUDE_DIR}
       ${TENSORRT_INCLUDE_DIR}
       ${CUDA_INCLUDE_DIRS}
+      ${YAML_CPP_INCLUDE_DIR}
   )
   target_link_libraries(inference
     PRIVATE
+      iou3d_nms
       voxelization
       ${CUDA_LIBRARIES}
       ${NVINFER_LIB}
       ${NVINFER_PLUGIN_LIB}
+      ${YAML_CPP_LIBRARY}
   )
 
   add_executable(pillar_debug_tool
     tools/pillar_debug_tool.cpp
+    src/inference_api.cpp
+    src/inference_cpp.cpp
     src/pillar_runtime.cpp
     src/trt_engine.cpp
     src/pillar_debug_utils.cpp

@@ -2,9 +2,9 @@
 
 `lidar-inference-tool` is a C++17 LiDAR inference project built around TensorRT end-to-end pillar models. The repository exposes:
 
-- `libinference.so`: a shared library with a small C API for loading one engine and running decoded detections
-- `pillar_debug_tool`: a single-sample debug executable that loads a YAML config, runs inference, dumps intermediate tensors, and writes timing reports
-- `minimal_c_api_example`: a minimal executable under `examples/` that shows the shortest public API call flow
+- `libinference.so`: a shared library exposing the recommended C++ wrapper for loading one model package and running decoded or final NMS-filtered detections
+- `pillar_debug_tool`: a single-sample debug executable that loads one model directory plus one point cloud, runs inference, dumps intermediate tensors, and writes timing reports
+- `minimal_cpp_api_example`: a model-package-driven executable under `examples/` that shows the recommended C++ integration path
 
 The current runtime is written for PointPillars / CenterPoint-style engines with fixed binding names and a 3-task head layout.
 
@@ -14,20 +14,22 @@ This README intentionally uses repository-relative paths and placeholders such a
 
 ## Repository Layout
 
-- `include/inference.h`: public C API
-- `src/inference_api.cpp`: shared-library entry points
-- `src/pillar_runtime.cpp`: TensorRT loading, voxelization, inference, decode, and response packing
-- `src/pillar_debug_utils.cpp`: YAML parsing, point-cloud loading, NMS, and artifact export
+- `include/inference_cpp.hpp`: public C++ wrapper API
+- `include/inference.h`: internal C compatibility header used by the wrapper and runtime implementation
+- `src/inference_api.cpp`: internal compatibility-layer entry points used by the wrapper
+- `src/pillar_runtime.cpp`: TensorRT loading, voxelization, inference, decode, NMS, and response packing
+- `src/pillar_debug_utils.cpp`: debug-tool config assembly, point-cloud loading, and artifact export
 - `tools/pillar_debug_tool.cpp`: debug CLI entry point
 - `tools/onnx2engine.sh`: helper script for `trtexec`
+- `tools/run_pillar_debug.sh`: recommended wrapper for launching `pillar_debug_tool` with the build-local third-party libraries first in `LD_LIBRARY_PATH`
 - `scripts/visualize_bev.py`: BEV visualization for dumped debug artifacts
-- `examples/minimal_c_api/`: minimal executable example for the public C API
-- `demo/demo.yaml`: default demo config
+- `examples/minimal_cpp_api/`: minimal executable example for the public C++ wrapper API
+- `demo/model.yaml`: example model package config for the public C++ wrapper
 - `demo/end2end.onnx`: example ONNX model
 - `demo/end2end.engine`: example TensorRT engine
 - `demo/pcd.bin`: example point cloud
 - `third_party/voxelize/`: vendored CUDA voxelization module
-- `third_party/iou3d_nms/`: low-level IoU / NMS module used by the debug tool
+- `third_party/iou3d_nms/`: low-level IoU / NMS module used by the runtime and debug tool
 
 ## Runtime Contract
 
@@ -54,7 +56,7 @@ Additional assumptions enforced by the runtime:
 - `bbox_pred0` must have `8 * task_count` channels
 - `dir_cls_pred0` must have `2 * task_count` channels
 - the current decode path expects 3 tasks
-- decoded labels are `1`, `2`, `3` inside the C API, mapped by default to `car`, `pedestrian`, `cyclist`
+- decoded labels are internally represented as `1`, `2`, `3`, mapped by default to `car`, `pedestrian`, `cyclist`
 
 Initialization fails if the engine bindings, dtypes, optimization profile, or channel layout do not match these expectations.
 
@@ -142,7 +144,7 @@ A successful full build generates:
 
 - `build/libinference.so`
 - `build/pillar_debug_tool`
-- `build/minimal_c_api_example` when `BUILD_EXAMPLES=ON`
+- `build/minimal_cpp_api_example` when `BUILD_EXAMPLES=ON`
 
 ### Platform notes
 
@@ -173,28 +175,31 @@ Stub behavior:
 
 ## Quick Start
 
-The repository ships a demo config that resolves all paths relative to `demo/demo.yaml`, so the sample remains portable across machines.
-
 Run one debug session:
 
 ```bash
-./build/pillar_debug_tool demo/demo.yaml
+./tools/run_pillar_debug.sh demo demo/pcd.bin
 ```
 
-Run the minimal public API example against the same demo assets:
+Write artifacts to a custom output directory:
 
 ```bash
-./build/minimal_c_api_example demo/end2end.engine demo/pcd.bin
+./tools/run_pillar_debug.sh demo demo/pcd.bin outputs/demo_dump
 ```
 
-The default demo config reads:
+Run the recommended C++ wrapper example with the demo model directory:
 
+```bash
+./build/minimal_cpp_api_example demo demo/pcd.bin
+```
+
+The wrapper script is recommended because interactive shells may prepend unrelated library directories in `LD_LIBRARY_PATH`. `tools/run_pillar_debug.sh` forces the repository's freshly built `third_party/iou3d_nms` and `third_party/voxelize` shared libraries to win lookup order before launching the debug binary.
+
+The demo assets used by both the public C++ API and the debug tool are:
+
+- `demo/model.yaml`
 - `demo/end2end.engine`
 - `demo/pcd.bin`
-
-and writes artifacts under:
-
-- `outputs/demo_dump`
 
 Typical console output includes:
 
@@ -208,72 +213,101 @@ Typical console output includes:
 
 ## Examples
 
-The repository includes a standalone example under `examples/minimal_c_api/`.
+The repository includes one standalone example under `examples/`.
 
-What it does:
+`examples/minimal_cpp_api/` shows the recommended path for a realtime C++ project:
 
-- loads a `.bin` point cloud with 5 features per point
-- creates an `InferenceHandle` with runtime parameters matching `demo/demo.yaml`
-- queries `InferenceOutputSpec`
-- allocates output buffers and runs `inference_forward`
-- prints the total detection count and up to five decoded boxes
+- load `model.yaml` from a model directory
+- create one `inference::LidarInferenceRuntime` at startup
+- reuse internal output buffers across frames
+- call `runtime->Infer(...)` for final detections
+- use `runtime->InferDecoded(...)` only when you explicitly need decoded pre-NMS candidates
 
-Its local README is at `examples/minimal_c_api/README.md`.
+Local README:
 
-## Debug Config
+- `examples/minimal_cpp_api/README.md`
 
-`pillar_debug_tool` expects one YAML file:
+## Model Package Config
+
+The public C++ wrapper expects a model directory containing:
+
+- `model.yaml`
+- the TensorRT engine referenced by `model.engine_path`
+
+`model.yaml` is split into three sections:
+
+- `model`: engine path, point feature count, spatial ranges, pillar size, stride, label names
+- `runtime`: pillar and point capacity limits plus decode threshold
+- `postprocess`: NMS type, thresholds, and per-label filtering values
+
+The current demo `model.yaml` includes:
+
+- `model.engine_path`
+- `model.num_point_features`
+- `model.point_cloud_range`
+- `model.post_center_range`
+- `model.pillar_size`
+- `model.out_size_factor`
+- `model.label_names`
+- `runtime.max_points_per_pillar`
+- `runtime.min_pillars`
+- `runtime.max_pillars`
+- `runtime.max_points`
+- `runtime.frame_num`
+- `runtime.bbox_max_num`
+- `runtime.score_threshold`
+- `postprocess.nms_type`
+- `postprocess.nms_thresh`
+- `postprocess.nms_pre_maxsize`
+- `postprocess.nms_post_maxsize`
+- `postprocess.final_score_threshold`
+- `postprocess.circle_nms_min_radius`
+- `postprocess.label_score_thresh`
+
+The wrapper resolves relative `model.engine_path` values against the location of `model.yaml`.
+Optional override YAML files use the same schema and are applied with this precedence:
+
+- explicit code edits to the loaded `PackageConfig`
+- override YAML
+- base `model.yaml`
+
+## Debug CLI
+
+`pillar_debug_tool` now follows the same model-directory entry style as the public C++ wrapper:
 
 ```bash
-./build/pillar_debug_tool <config.yaml>
+./build/pillar_debug_tool <model_dir> <pcd_path> [dump_dir]
 ```
 
-Top-level fields:
+Supported options:
 
-- `engine_path`: TensorRT engine path
-- `pcd_path`: input point cloud path
-- `dump_dir`: output directory for `.npy` / `.json` artifacts
-- `warmup_iters`: number of warmup runs before profiling
-- `profile_iters`: number of profiled runs
-- `bev_resolution`: stored for visualization-oriented workflows
-- `runtime`: voxelization and decode settings
-- `post_processing`: debug NMS and final filtering settings
+- `--warmup N`
+- `--profile N`
+- `--bev-resolution X`
+- `--override-config PATH`
 
-Important `runtime` fields:
+Examples:
 
-- `max_points`
-- `frame_num`
-- `num_point_features`
-- `point_cloud_range`
-- `post_center_range`
-- `pillar_size`
-- `max_points_per_pillar`
-- `min_pillars`
-- `max_pillars`
-- `bbox_max_num`
-- `out_size_factor`
-- `score_threshold`
+```bash
+./build/pillar_debug_tool demo demo/pcd.bin
+./build/pillar_debug_tool demo demo/pcd.bin outputs/demo_dump --warmup 10 --profile 100
+./build/pillar_debug_tool demo demo/pcd.bin outputs/demo_dump --override-config overrides/model_override.yaml
+```
 
-Important `post_processing` fields:
+Behavior:
 
-- `nms_type`
-- `nms_thresh`
-- `nms_pre_maxsize`
-- `nms_post_maxsize`
-- `final_score_threshold`
-- `circle_nms_min_radius`
-- `label_names`
-- `label_score_thresh`
+- `model_dir` must contain `model.yaml`
+- runtime and postprocess settings come from `<model_dir>/model.yaml`
+- `pcd_path` is the input point cloud for this one debug run
+- `dump_dir` controls where `.npy` and `.json` artifacts are written
+- `override_config_path` applies the same package-schema YAML override used by the public C++ wrapper
 
-Path handling:
+Default values:
 
-- `engine_path`, `pcd_path`, and `dump_dir` are resolved relative to the YAML file if they are not absolute
-- using repository-relative paths is recommended for portability and privacy
-
-NMS behavior:
-
-- when `nms_type` is `circle`, the tool applies per-label circle NMS using `circle_nms_min_radius`
-- for any other `nms_type`, the tool uses the CUDA IoU NMS path from `third_party/iou3d_nms`
+- `dump_dir`: `outputs/pillar_debug`
+- `warmup_iters`: `10`
+- `profile_iters`: `50`
+- `bev_resolution`: `0.2`
 
 ## Debug Artifacts
 
@@ -299,7 +333,7 @@ A successful debug run writes these files into `dump_dir`:
 Notes:
 
 - `result.json` contains final detections after the debug tool's NMS stage
-- `result.json` writes a zero-based `label` field plus `label_name`; this differs from the C API output, which uses `1..3`
+- `result.json` writes a zero-based `label` field plus `label_name`; this differs from the internal response label ids, which use `1..3`
 - `metadata.json` contains timing data and tensor summaries
 - `timings.json` contains both the single-run timing breakdown and aggregated profile statistics
 
@@ -308,10 +342,11 @@ Notes:
 After a debug run, generate BEV plots with:
 
 ```bash
-python3 scripts/visualize_bev.py demo/demo.yaml
+python3 scripts/visualize_bev.py demo outputs/pillar_debug
 ```
 
-The script reads `dump_dir` from the YAML config and produces:
+The script reads `demo/model.yaml` for the point-cloud range and uses the given `dump_dir`.
+It produces:
 
 - `01_input_points_bev.png`
 - `02_heatmap_bev.png`
@@ -341,79 +376,33 @@ Current behavior:
 - only `x`, `y`, `z` are read from the payload
 - remaining channels in the runtime input buffer are zero-padded
 
-## Public C API
+## Public C++ API
 
-The public interface is declared in `include/inference.h`, and that header now contains the
-canonical field-by-field and function-by-function contract.
-
-Exported functions:
-
-- `inference_create`
-- `inference_get_output_spec`
-- `inference_forward`
-- `inference_reset`
-- `inference_destroy`
-- `inference_last_error`
+The recommended C++ interface is declared in `include/inference_cpp.hpp`.
 
 Typical call flow:
 
-1. Fill an `InferenceConfig` and call `inference_create()`.
-2. Call `inference_get_output_spec()` to learn the required output capacities.
-3. Allocate response buffers using those element counts.
-4. Fill an `InferenceRequest` with tightly packed point data and call `inference_forward()`.
-5. Read `cls_count`, `box_count`, `label_count`, and `freespace_count` from the response.
-6. Call `inference_destroy()` when done.
+1. Place `model.yaml` and the TensorRT engine in one model directory.
+2. Call `inference::LidarInferenceRuntime::CreateFromModelDir(...)` once at startup.
+3. Keep the returned runtime on one inference thread.
+4. For each frame, fill `inference::PointCloudView` and call `runtime->Infer(...)`.
+5. Read `std::vector<inference::Detection>` results.
 
-Minimal example:
+Additional wrapper entry points:
 
-```c
-#include "inference.h"
-
-InferenceHandle* handle = NULL;
-InferenceConfig config = {0};
-/* fill config.end2end_file and runtime parameters */
-if (inference_create(&config, &handle) != INFERENCE_STATUS_OK) {
-  return 1;
-}
-
-InferenceOutputSpec spec = {0};
-inference_get_output_spec(handle, &spec);
-
-float* cls_preds = malloc(spec.cls_count * sizeof(float));
-float* box_preds = malloc(spec.box_count * sizeof(float));
-int* label_preds = malloc(spec.label_count * sizeof(int));
-
-InferenceRequest request = {0};
-request.points = points;
-request.point_count = point_count;
-request.enable_runtime = 1;
-
-InferenceResponse response = {0};
-response.cls_preds = cls_preds;
-response.cls_capacity = spec.cls_count;
-response.box_preds = box_preds;
-response.box_capacity = spec.box_count;
-response.label_preds = label_preds;
-response.label_capacity = spec.label_count;
-
-InferenceStatus status = inference_forward(handle, &request, &response);
-if (status != INFERENCE_STATUS_OK) {
-  const char* err = inference_last_error(handle);
-}
-
-inference_destroy(handle);
-```
+- `LoadPackageConfigFile(...)`: load one package config file directly
+- `LoadPackageConfig(...)`: load `<model_dir>/model.yaml` into typed structs
+- `Create(...)`: create a runtime from an already prepared `PackageConfig`
+- `InferWithPostprocess(...)`: override postprocess settings at call time while still returning final NMS-filtered detections
+- `InferDecoded(...)`: return decoded pre-NMS candidates
 
 Important semantics:
 
-- `InferenceOutputSpec` and all `*_capacity` fields use element counts, not byte sizes
-- `box_preds` stores decoded boxes as `[x, y, z, dx, dy, dz, yaw]`
-- `label_preds` stores 1-based task ids
-- `box_count` is the number of float elements in `box_preds`, so it is `7 * cls_count`
-- `freespace_count` is always `0` in the current implementation
-- `freespace` is optional and is only zero-filled if a caller supplies that buffer
-- `motion_4x4` and `enable_runtime` are present in the public request struct, but the current runtime does not read them
-- call `inference_last_error()` after a failing API call to retrieve a human-readable backend error
+- one runtime instance owns one `InferenceHandle` and reused output buffers
+- do not call the same runtime instance concurrently from multiple threads
+- `Detection::label_name` points into the runtime-owned config and stays valid while the runtime exists
+- use `LoadPackageConfig(...)` if you want to load YAML, edit typed fields in code, and then call `Create(...)`
+- `Infer()` uses the runtime's configured `postprocess` section and returns final detections after built-in NMS
 
 ## ONNX to TensorRT
 
@@ -423,10 +412,37 @@ Use the helper script to build an engine and then run a quick `trtexec` profile:
 bash tools/onnx2engine.sh <onnx_path> <engine_path> <min_points> <opt_points> <max_points> [fp32|fp16|int8]
 ```
 
+Show the built-in help:
+
+```bash
+bash tools/onnx2engine.sh --help
+```
+
+Arguments:
+
+- `<onnx_path>`: input ONNX model path
+- `<engine_path>`: output TensorRT engine path
+- `<min_points>`: minimum optimization-profile pillar/point count
+- `<opt_points>`: optimal optimization-profile pillar/point count
+- `<max_points>`: maximum optimization-profile pillar/point count
+- `[precision]`: optional precision mode, one of `fp32`, `fp16`, `int8`, default `fp16`
+
+The helper assumes the current repository contract:
+
+- `voxels`: `<N>x20x5`
+- `num_points`: `<N>`
+- `coors`: `<N>x4`
+
 FP16 example:
 
 ```bash
-bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end.engine 10000 40000 50000 fp16
+bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end.engine 10000 40000 50000
+```
+
+FP32 example:
+
+```bash
+bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end_fp32.engine 10000 40000 50000 fp32
 ```
 
 INT8 example for a quantized / Q-DQ ONNX model:
@@ -439,8 +455,12 @@ Requirements and behavior:
 
 - `trtexec` must be available in `PATH`
 - the ONNX file must already exist
+- `<min_points>`, `<opt_points>`, and `<max_points>` must be positive integers
+- the helper requires `min_points <= opt_points <= max_points`
 - the generated engine must preserve the current external binding contract: `voxels=float32`, `num_points=int32`, `coors=int32`, outputs `float32`
 - the generated engine must keep a pillar-count optimization profile compatible with the runtime min/max settings
 - `int8` export assumes the ONNX graph is already quantized or otherwise buildable by TensorRT without adding a calibration path in this helper
+- the script prints the resolved min/opt/max TensorRT shapes before it starts building
 - if the target engine already exists, regeneration is skipped
-- the script always runs a follow-up `trtexec --loadEngine ... --dumpProfile --verbose` pass
+- the script still runs a follow-up `trtexec --loadEngine ... --dumpProfile --verbose` pass against the existing engine
+- the final profiling pass always uses the opt shape

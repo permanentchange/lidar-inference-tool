@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -11,6 +12,125 @@
 #include <vector>
 
 namespace {
+
+struct CliOptions {
+  std::string model_dir;
+  std::string pcd_path;
+  std::string dump_dir = "outputs/pillar_debug";
+  std::string override_config_path;
+  int warmup_iters = 10;
+  int profile_iters = 50;
+  float bev_resolution = 0.2f;
+};
+
+void PrintUsage(const char* program) {
+  std::cerr
+      << "Usage: " << program
+      << " <model_dir> <pcd_path> [dump_dir] [--warmup N] [--profile N]"
+      << " [--bev-resolution X] [--override-config PATH]\n";
+}
+
+bool ParseInt(const std::string& value, int* out_value) {
+  try {
+    size_t parsed = 0;
+    const int result = std::stoi(value, &parsed);
+    if (parsed != value.size()) {
+      return false;
+    }
+    *out_value = result;
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool ParseFloat(const std::string& value, float* out_value) {
+  try {
+    size_t parsed = 0;
+    const float result = std::stof(value, &parsed);
+    if (parsed != value.size()) {
+      return false;
+    }
+    *out_value = result;
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool ParseCliOptions(int argc, char** argv, CliOptions* out_options, std::string* out_error) {
+  if (argc < 3) {
+    if (out_error != nullptr) {
+      *out_error = "model_dir and pcd_path are required";
+    }
+    return false;
+  }
+
+  CliOptions options;
+  int arg_index = 1;
+  options.model_dir = argv[arg_index++];
+  options.pcd_path = argv[arg_index++];
+
+  if (arg_index < argc && std::string(argv[arg_index]).rfind("--", 0) != 0) {
+    options.dump_dir = argv[arg_index++];
+  }
+
+  while (arg_index < argc) {
+    const std::string arg = argv[arg_index++];
+    if (arg == "--warmup") {
+      if (arg_index >= argc || !ParseInt(argv[arg_index++], &options.warmup_iters)) {
+        if (out_error != nullptr) {
+          *out_error = "Invalid value for --warmup";
+        }
+        return false;
+      }
+    } else if (arg == "--profile") {
+      if (arg_index >= argc || !ParseInt(argv[arg_index++], &options.profile_iters)) {
+        if (out_error != nullptr) {
+          *out_error = "Invalid value for --profile";
+        }
+        return false;
+      }
+    } else if (arg == "--bev-resolution") {
+      if (arg_index >= argc || !ParseFloat(argv[arg_index++], &options.bev_resolution)) {
+        if (out_error != nullptr) {
+          *out_error = "Invalid value for --bev-resolution";
+        }
+        return false;
+      }
+    } else if (arg == "--override-config") {
+      if (arg_index >= argc) {
+        if (out_error != nullptr) {
+          *out_error = "Missing path for --override-config";
+        }
+        return false;
+      }
+      options.override_config_path = argv[arg_index++];
+    } else if (arg == "--help" || arg == "-h") {
+      PrintUsage(argv[0]);
+      std::exit(0);
+    } else {
+      if (out_error != nullptr) {
+        *out_error = "Unknown argument: " + arg;
+      }
+      return false;
+    }
+  }
+
+  *out_options = options;
+  return true;
+}
+
+void WarnAboutConflictingLibraries() {
+  const char* ld_library_path = std::getenv("LD_LIBRARY_PATH");
+  if (ld_library_path != nullptr &&
+      std::string(ld_library_path).find("IGV/devel/lib") != std::string::npos) {
+    std::cerr
+        << "Warning: LD_LIBRARY_PATH contains IGV/devel/lib. If debug inference fails with "
+        << "TensorRT enqueueV2 binding errors, prefer ./tools/run_pillar_debug.sh so the "
+        << "repository's build-local iou3d_nms and voxelization libraries are loaded first.\n";
+  }
+}
 
 struct ProfileBucket {
   std::string name;
@@ -142,18 +262,63 @@ bool WriteTimingsJson(const inference_internal::ToolConfig& config,
   return true;
 }
 
+InferenceRequest MakeRequest(const std::vector<float>& points, int num_point_features) {
+  InferenceRequest request{};
+  request.points = points.data();
+  request.point_count = static_cast<int>(points.size() / static_cast<size_t>(num_point_features));
+  request.motion_4x4 = nullptr;
+  request.enable_runtime = 1;
+  return request;
+}
+
+void ResetResponseCounts(InferenceResponse* response) {
+  response->cls_count = 0;
+  response->box_count = 0;
+  response->label_count = 0;
+  response->freespace_count = 0;
+}
+
+void PrintSingleRunSummary(double pcd_load_ms,
+                           int input_points,
+                           const inference_internal::DebugArtifacts& debug) {
+  std::cout << "Debug run complete.\n";
+  std::cout << "pcd_load: " << pcd_load_ms << " ms\n";
+  std::cout << "input_points: " << input_points << "\n";
+  std::cout << "pillar_count: " << debug.pillar_inputs.num_pillars << "\n";
+  std::cout << "decoded_candidates: " << debug.decoded_candidates.scores.size() << "\n";
+  std::cout << "final_nms_boxes: " << debug.final_nms_outputs.scores.size() << "\n";
+  std::cout << "Single-run timings:\n";
+  std::cout << "  pillarize=" << debug.timings.pillarize_ms << " ms\n";
+  std::cout << "  h2d_prepare=" << debug.timings.h2d_prepare_ms << " ms\n";
+  std::cout << "  trt_forward=" << debug.timings.trt_forward_ms << " ms\n";
+  std::cout << "  d2h_collect=" << debug.timings.d2h_collect_ms << " ms\n";
+  std::cout << "  decode=" << debug.timings.decode_ms << " ms\n";
+  std::cout << "  output_pack=" << debug.timings.output_pack_ms << " ms\n";
+  std::cout << "  total_forward=" << debug.timings.total_forward_ms << " ms\n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc != 2) {
-    std::cerr << "Usage: pillar_debug_tool <config.yaml>\n";
+  if (argc < 2) {
+    PrintUsage(argv[0]);
     return 1;
   }
 
+  WarnAboutConflictingLibraries();
+
+  CliOptions options;
   std::string error;
+  if (!ParseCliOptions(argc, argv, &options, &error)) {
+    std::cerr << error << "\n";
+    PrintUsage(argv[0]);
+    return 1;
+  }
+
   inference_internal::ToolConfig config;
-  InferenceStatus status =
-      inference_internal::LoadToolConfig(argv[1], &config, &error);
+  InferenceStatus status = inference_internal::LoadToolConfigFromModelDir(
+      options.model_dir, options.pcd_path, options.dump_dir, options.override_config_path,
+      options.warmup_iters, options.profile_iters, options.bev_resolution, &config, &error);
   if (status != INFERENCE_STATUS_OK) {
     std::cerr << "Failed to load tool config: " << error << "\n";
     return 1;
@@ -183,11 +348,7 @@ int main(int argc, char** argv) {
   std::vector<float> box_preds(spec.box_count, 0.0f);
   std::vector<int> label_preds(spec.label_count, 0);
 
-  InferenceRequest request{};
-  request.points = points.data();
-  request.point_count = static_cast<int>(points.size() / config.runtime.num_point_features);
-  request.motion_4x4 = nullptr;
-  request.enable_runtime = 1;
+  const InferenceRequest request = MakeRequest(points, config.runtime.num_point_features);
 
   InferenceResponse response{};
   response.cls_preds = cls_preds.data();
@@ -213,8 +374,8 @@ int main(int argc, char** argv) {
                                  label_preds.begin() + static_cast<long>(response.label_count));
   debug_candidates.boxes.assign(box_preds.begin(), box_preds.begin() + static_cast<long>(response.box_count));
   debug.decoded_candidates = debug_candidates;
-  status = inference_internal::RunClassAgnosticNms(debug_candidates, config,
-                                                   &debug.final_nms_outputs, &error);
+  status = inference_internal::RunToolPostprocessNms(debug_candidates, config,
+                                                     &debug.final_nms_outputs, &error);
   if (status != INFERENCE_STATUS_OK) {
     std::cerr << "NMS failed: " << error << "\n";
     return 1;
@@ -226,26 +387,10 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  std::cout << "Debug run complete.\n";
-  std::cout << "pcd_load: " << pcd_load_ms << " ms\n";
-  std::cout << "input_points: " << request.point_count << "\n";
-  std::cout << "pillar_count: " << debug.pillar_inputs.num_pillars << "\n";
-  std::cout << "decoded_candidates: " << debug.decoded_candidates.scores.size() << "\n";
-  std::cout << "final_nms_boxes: " << debug.final_nms_outputs.scores.size() << "\n";
-  std::cout << "Single-run timings:\n";
-  std::cout << "  pillarize=" << debug.timings.pillarize_ms << " ms\n";
-  std::cout << "  h2d_prepare=" << debug.timings.h2d_prepare_ms << " ms\n";
-  std::cout << "  trt_forward=" << debug.timings.trt_forward_ms << " ms\n";
-  std::cout << "  d2h_collect=" << debug.timings.d2h_collect_ms << " ms\n";
-  std::cout << "  decode=" << debug.timings.decode_ms << " ms\n";
-  std::cout << "  output_pack=" << debug.timings.output_pack_ms << " ms\n";
-  std::cout << "  total_forward=" << debug.timings.total_forward_ms << " ms\n";
+  PrintSingleRunSummary(pcd_load_ms, request.point_count, debug);
 
   for (int i = 0; i < config.warmup_iters; ++i) {
-    response.cls_count = 0;
-    response.box_count = 0;
-    response.label_count = 0;
-    response.freespace_count = 0;
+    ResetResponseCounts(&response);
     status = runtime.Forward(request, &response, nullptr, nullptr);
     if (status != INFERENCE_STATUS_OK) {
       std::cerr << "Warmup forward failed: " << runtime.last_error() << "\n";
@@ -270,14 +415,9 @@ int main(int argc, char** argv) {
   total_values.reserve(config.profile_iters);
 
   for (int i = 0; i < config.profile_iters; ++i) {
-    response.cls_count = 0;
-    response.box_count = 0;
-    response.label_count = 0;
-    response.freespace_count = 0;
+    ResetResponseCounts(&response);
     inference_internal::StageTimings timing;
     const auto pack_start = std::chrono::steady_clock::now();
-    request.points = points.data();
-    request.point_count = static_cast<int>(points.size() / config.runtime.num_point_features);
     const auto pack_end = std::chrono::steady_clock::now();
     input_pack_values[static_cast<size_t>(i)] =
         std::chrono::duration<double, std::milli>(pack_end - pack_start).count();

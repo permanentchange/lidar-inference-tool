@@ -15,15 +15,20 @@
 #include <type_traits>
 #include <vector>
 
-#include <yaml-cpp/yaml.h>
-
-#include "iou3d_nms_api.h"
-
 namespace inference_internal {
 namespace {
 
 constexpr int kBoxDim = 7;
 constexpr int kLabelCount = 3;
+
+InferenceStatus SetError(std::string* out_error,
+                         InferenceStatus status,
+                         const std::string& message) {
+  if (out_error != nullptr) {
+    *out_error = message;
+  }
+  return status;
+}
 
 template <typename T>
 std::string DtypeTag();
@@ -100,26 +105,34 @@ std::string NormalizeNmsType(const std::string& value) {
   return normalized;
 }
 
-std::string ResolveConfigRelativePath(const std::filesystem::path& config_path,
-                                      const std::string& value) {
-  if (value.empty()) {
-    return value;
-  }
-
-  const std::filesystem::path raw_path(value);
-  if (raw_path.is_absolute()) {
-    return raw_path.lexically_normal().string();
-  }
-
-  const std::filesystem::path base_dir = config_path.parent_path();
-  if (base_dir.empty()) {
-    return raw_path.lexically_normal().string();
-  }
-  return (base_dir / raw_path).lexically_normal().string();
+RuntimeConfig RuntimeConfigFromPackage(const inference::PackageConfig& package) {
+  RuntimeConfig runtime;
+  runtime.end2end_file = package.model.engine_path;
+  runtime.point_cloud_range = package.model.point_cloud_range;
+  runtime.post_center_range = package.model.post_center_range;
+  runtime.pillar_size = package.model.pillar_size;
+  runtime.max_points_per_pillar = package.runtime.max_points_per_pillar;
+  runtime.min_pillars = package.runtime.min_pillars;
+  runtime.max_pillars = package.runtime.max_pillars;
+  runtime.max_points = package.runtime.max_points;
+  runtime.frame_num = package.runtime.frame_num;
+  runtime.num_point_features = package.model.num_point_features;
+  runtime.bbox_max_num = package.runtime.bbox_max_num;
+  runtime.out_size_factor = package.model.out_size_factor;
+  runtime.score_threshold = package.runtime.score_threshold;
+  return runtime;
 }
 
-bool UseCircleNms(const ToolConfig& config) {
-  return NormalizeNmsType(config.nms_type) == "circle";
+PostprocessConfig PostprocessConfigFromPackage(const inference::PackageConfig& package) {
+  PostprocessConfig postprocess;
+  postprocess.nms_type = package.postprocess.nms_type;
+  postprocess.nms_thresh = package.postprocess.nms_thresh;
+  postprocess.nms_pre_maxsize = package.postprocess.nms_pre_maxsize;
+  postprocess.nms_post_maxsize = package.postprocess.nms_post_maxsize;
+  postprocess.final_score_threshold = package.postprocess.final_score_threshold;
+  postprocess.circle_nms_min_radius = package.postprocess.circle_nms_min_radius;
+  postprocess.label_score_thresh = package.postprocess.label_score_thresh;
+  return postprocess;
 }
 
 template <typename T>
@@ -188,104 +201,6 @@ std::string BuildNumericSummary(const std::string& name,
   }
   oss << "\n    }";
   return oss.str();
-}
-
-void ApplyPreMaxsize(std::vector<float>* scores,
-                     std::vector<float>* boxes,
-                     std::vector<int>* labels,
-                     int pre_maxsize) {
-  if (pre_maxsize <= 0 || scores == nullptr || boxes == nullptr || labels == nullptr ||
-      scores->size() <= static_cast<size_t>(pre_maxsize)) {
-    return;
-  }
-  std::vector<size_t> indices(scores->size());
-  std::iota(indices.begin(), indices.end(), 0);
-  std::sort(indices.begin(), indices.end(),
-            [&](size_t lhs, size_t rhs) { return (*scores)[lhs] > (*scores)[rhs]; });
-
-  std::vector<float> new_scores;
-  std::vector<float> new_boxes;
-  std::vector<int> new_labels;
-  new_scores.reserve(pre_maxsize);
-  new_boxes.reserve(static_cast<size_t>(pre_maxsize) * kBoxDim);
-  new_labels.reserve(pre_maxsize);
-  for (int i = 0; i < pre_maxsize; ++i) {
-    const size_t src = indices[static_cast<size_t>(i)];
-    new_scores.push_back((*scores)[src]);
-    new_labels.push_back((*labels)[src]);
-    new_boxes.insert(new_boxes.end(), boxes->begin() + static_cast<long>(src * kBoxDim),
-                     boxes->begin() + static_cast<long>((src + 1) * kBoxDim));
-  }
-  scores->swap(new_scores);
-  boxes->swap(new_boxes);
-  labels->swap(new_labels);
-}
-
-std::vector<size_t> CircleNmsKeep(const std::vector<float>& scores,
-                                  const std::vector<float>& boxes,
-                                  float distance_threshold,
-                                  int post_maxsize) {
-  std::vector<size_t> order(scores.size());
-  std::iota(order.begin(), order.end(), 0);
-  std::sort(order.begin(), order.end(),
-            [&](size_t lhs, size_t rhs) { return scores[lhs] > scores[rhs]; });
-
-  std::vector<size_t> keep;
-  keep.reserve(order.size());
-  std::vector<uint8_t> suppressed(scores.size(), 0);
-  for (size_t order_index = 0; order_index < order.size(); ++order_index) {
-    const size_t index = order[order_index];
-    if (suppressed[index] != 0U) {
-      continue;
-    }
-    keep.push_back(index);
-    for (size_t compare_index = order_index + 1; compare_index < order.size(); ++compare_index) {
-      const size_t other = order[compare_index];
-      if (suppressed[other] != 0U) {
-        continue;
-      }
-      const float dx = boxes[index * kBoxDim + 0] - boxes[other * kBoxDim + 0];
-      const float dy = boxes[index * kBoxDim + 1] - boxes[other * kBoxDim + 1];
-      const float squared_distance = dx * dx + dy * dy;
-      if (squared_distance <= distance_threshold) {
-        suppressed[other] = 1U;
-      }
-    }
-    if (post_maxsize > 0 && keep.size() >= static_cast<size_t>(post_maxsize)) {
-      break;
-    }
-  }
-  return keep;
-}
-
-void AppendBoxes(const std::vector<float>& source_boxes,
-                 size_t source_index,
-                 std::vector<float>* target_boxes) {
-  target_boxes->insert(target_boxes->end(),
-                       source_boxes.begin() + static_cast<long>(source_index * kBoxDim),
-                       source_boxes.begin() + static_cast<long>((source_index + 1) * kBoxDim));
-}
-
-void FilterByScoreThreshold(CandidateDetections* detections, float score_threshold) {
-  if (detections == nullptr || score_threshold <= 0.0f) {
-    return;
-  }
-
-  CandidateDetections filtered;
-  filtered.scores.reserve(detections->scores.size());
-  filtered.labels.reserve(detections->labels.size());
-  filtered.boxes.reserve(detections->boxes.size());
-  for (size_t i = 0; i < detections->scores.size(); ++i) {
-    if (detections->scores[i] < score_threshold) {
-      continue;
-    }
-    filtered.scores.push_back(detections->scores[i]);
-    filtered.labels.push_back(detections->labels[i]);
-    AppendBoxes(detections->boxes, i, &filtered.boxes);
-  }
-  detections->scores.swap(filtered.scores);
-  detections->labels.swap(filtered.labels);
-  detections->boxes.swap(filtered.boxes);
 }
 
 InferenceStatus LoadBinaryPcdFile(const std::string& path,
@@ -412,77 +327,48 @@ InferenceStatus LoadFloatBinFile(const std::string& path,
 
 }  // namespace
 
-InferenceStatus LoadToolConfig(const std::string& path,
-                               ToolConfig* out_config,
-                               std::string* out_error) {
+InferenceStatus LoadToolConfigFromModelDir(const std::string& model_dir,
+                                           const std::string& pcd_path,
+                                           const std::string& dump_dir,
+                                           const std::string& override_config_path,
+                                           int warmup_iters,
+                                           int profile_iters,
+                                           float bev_resolution,
+                                           ToolConfig* out_config,
+                                           std::string* out_error) {
   if (out_config == nullptr) {
     return INFERENCE_STATUS_INVALID_ARGUMENT;
   }
 
-  const std::filesystem::path config_path(path);
-  YAML::Node node = YAML::LoadFile(path);
-  out_config->engine_path = ResolveConfigRelativePath(
-      config_path, node["engine_path"].as<std::string>());
-  out_config->pcd_path = ResolveConfigRelativePath(
-      config_path, node["pcd_path"].as<std::string>());
-  out_config->dump_dir = ResolveConfigRelativePath(
-      config_path, node["dump_dir"].as<std::string>());
-  out_config->warmup_iters = node["warmup_iters"].as<int>(10);
-  out_config->profile_iters = node["profile_iters"].as<int>(50);
-  out_config->bev_resolution = node["bev_resolution"].as<float>(0.2f);
-  out_config->nms_type = NormalizeNmsType(
-      node["post_processing"]["nms_type"].as<std::string>(out_config->nms_type));
-  out_config->nms_thresh = node["post_processing"]["nms_thresh"].as<float>(0.25f);
-  out_config->nms_pre_maxsize = node["post_processing"]["nms_pre_maxsize"].as<int>(2048);
-  out_config->nms_post_maxsize = node["post_processing"]["nms_post_maxsize"].as<int>(256);
-  out_config->final_score_threshold =
-      node["post_processing"]["final_score_threshold"].as<float>(0.3f);
+  out_config->model_dir = std::filesystem::path(model_dir).lexically_normal().string();
+  out_config->override_config_path =
+      std::filesystem::path(override_config_path).lexically_normal().string();
+  out_config->pcd_path = std::filesystem::path(pcd_path).lexically_normal().string();
+  out_config->dump_dir = std::filesystem::path(dump_dir).lexically_normal().string();
+  out_config->warmup_iters = warmup_iters;
+  out_config->profile_iters = profile_iters;
+  out_config->bev_resolution = bev_resolution;
 
-  const YAML::Node label_thresh = node["post_processing"]["label_score_thresh"];
-  out_config->label_score_thresh = {
-      label_thresh["1"].as<float>(0.45f),
-      label_thresh["2"].as<float>(0.3f),
-      label_thresh["3"].as<float>(0.45f),
-  };
-  const YAML::Node circle_radius = node["post_processing"]["circle_nms_min_radius"];
-  if (circle_radius && circle_radius.IsSequence()) {
-    for (size_t i = 0; i < kLabelCount && i < circle_radius.size(); ++i) {
-      out_config->circle_nms_min_radius[i] = circle_radius[i].as<float>();
-    }
+  if (out_config->model_dir.empty() || out_config->pcd_path.empty() || out_config->dump_dir.empty()) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "model_dir, pcd_path, and dump_dir must be configured");
   }
-  const YAML::Node label_names = node["post_processing"]["label_names"];
-  if (label_names && label_names.IsSequence()) {
-    for (size_t i = 0; i < kLabelCount && i < label_names.size(); ++i) {
-      out_config->label_names[i] = label_names[i].as<std::string>();
-    }
+  if (warmup_iters < 0 || profile_iters <= 0) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "warmup_iters must be >= 0 and profile_iters must be > 0");
+  }
+  if (bev_resolution <= 0.0f) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "bev_resolution must be positive");
   }
 
-  RuntimeConfig& runtime = out_config->runtime;
-  runtime.end2end_file = out_config->engine_path;
-  runtime.max_points = node["runtime"]["max_points"].as<int>(300000);
-  runtime.frame_num = node["runtime"]["frame_num"].as<int>(1);
-  runtime.num_point_features = node["runtime"]["num_point_features"].as<int>(5);
-  runtime.max_points_per_pillar = node["runtime"]["max_points_per_pillar"].as<int>(20);
-  runtime.min_pillars = node["runtime"]["min_pillars"].as<int>(100);
-  runtime.max_pillars = node["runtime"]["max_pillars"].as<int>(50000);
-  runtime.bbox_max_num = node["runtime"]["bbox_max_num"].as<int>(500);
-  runtime.out_size_factor = node["runtime"]["out_size_factor"].as<int>(4);
-  runtime.score_threshold = node["runtime"]["score_threshold"].as<float>(0.1f);
-
-  for (size_t i = 0; i < 6; ++i) {
-    runtime.point_cloud_range[i] = node["runtime"]["point_cloud_range"][i].as<float>();
-    runtime.post_center_range[i] = node["runtime"]["post_center_range"][i].as<float>();
-  }
-  for (size_t i = 0; i < 3; ++i) {
-    runtime.pillar_size[i] = node["runtime"]["pillar_size"][i].as<float>();
+  InferenceStatus status = inference::LidarInferenceRuntime::LoadPackageConfig(
+      out_config->model_dir, &out_config->package, out_error, out_config->override_config_path);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
   }
 
-  if (out_config->engine_path.empty() || out_config->pcd_path.empty() || out_config->dump_dir.empty()) {
-    if (out_error != nullptr) {
-      *out_error = "engine_path, pcd_path, and dump_dir must be configured";
-    }
-    return INFERENCE_STATUS_INVALID_ARGUMENT;
-  }
+  out_config->runtime = RuntimeConfigFromPackage(out_config->package);
   return INFERENCE_STATUS_OK;
 }
 
@@ -508,84 +394,12 @@ InferenceStatus LoadPcdFile(const std::string& path,
   return LoadBinaryPcdFile(path, num_point_features, max_points, out_points, out_error);
 }
 
-InferenceStatus RunClassAgnosticNms(const CandidateDetections& candidates,
-                                    const ToolConfig& config,
-                                    CandidateDetections* out_result,
-                                    std::string* out_error) {
-  if (out_result == nullptr) {
-    return INFERENCE_STATUS_INVALID_ARGUMENT;
-  }
-
-  if (UseCircleNms(config)) {
-    out_result->scores.clear();
-    out_result->boxes.clear();
-    out_result->labels.clear();
-
-    for (int label = 1; label <= kLabelCount; ++label) {
-      CandidateDetections per_label;
-      per_label.scores.reserve(candidates.scores.size());
-      per_label.labels.reserve(candidates.labels.size());
-      per_label.boxes.reserve(candidates.boxes.size());
-      for (size_t i = 0; i < candidates.scores.size(); ++i) {
-        if (candidates.labels[i] != label) {
-          continue;
-        }
-        per_label.scores.push_back(candidates.scores[i]);
-        per_label.labels.push_back(label);
-        AppendBoxes(candidates.boxes, i, &per_label.boxes);
-      }
-      const std::vector<size_t> keep =
-          CircleNmsKeep(per_label.scores, per_label.boxes,
-                        config.circle_nms_min_radius[static_cast<size_t>(label - 1)],
-                        config.nms_post_maxsize);
-      for (const size_t kept_index : keep) {
-        out_result->scores.push_back(per_label.scores[kept_index]);
-        out_result->labels.push_back(label);
-        AppendBoxes(per_label.boxes, kept_index, &out_result->boxes);
-      }
-    }
-    FilterByScoreThreshold(out_result, config.final_score_threshold);
-    return INFERENCE_STATUS_OK;
-  }
-
-  std::vector<float> scores;
-  std::vector<float> boxes;
-  std::vector<int> labels;
-  scores.reserve(candidates.scores.size());
-  boxes.reserve(candidates.boxes.size());
-  labels.reserve(candidates.labels.size());
-  for (size_t i = 0; i < candidates.scores.size(); ++i) {
-    const int label = candidates.labels[i];
-    if (label < 1 || label > kLabelCount) {
-      continue;
-    }
-    if (candidates.scores[i] < config.label_score_thresh[static_cast<size_t>(label - 1)]) {
-      continue;
-    }
-    scores.push_back(candidates.scores[i]);
-    labels.push_back(label);
-    AppendBoxes(candidates.boxes, i, &boxes);
-  }
-  ApplyPreMaxsize(&scores, &boxes, &labels, config.nms_pre_maxsize);
-  std::vector<long> keep(scores.size(), 0);
-  const int keep_count = scores.empty() ? 0 :
-      nms_gpu(boxes.data(), keep.data(), config.nms_thresh, static_cast<int>(scores.size()));
-  const size_t final_count = std::min(static_cast<size_t>(keep_count),
-                                      static_cast<size_t>(config.nms_post_maxsize));
-
-  out_result->scores.clear();
-  out_result->boxes.clear();
-  out_result->labels.clear();
-  out_result->scores.reserve(final_count);
-  out_result->boxes.reserve(final_count * kBoxDim);
-  out_result->labels.reserve(final_count);
-  for (size_t i = 0; i < final_count; ++i) {
-    const long src = keep[i];
-    out_result->scores.push_back(scores[static_cast<size_t>(src)]);
-    out_result->labels.push_back(labels[static_cast<size_t>(src)]);
-    AppendBoxes(boxes, static_cast<size_t>(src), &out_result->boxes);
-  }
-  return INFERENCE_STATUS_OK;
+InferenceStatus RunToolPostprocessNms(const CandidateDetections& candidates,
+                                      const ToolConfig& config,
+                                      CandidateDetections* out_result,
+                                      std::string* out_error) {
+  PostprocessConfig postprocess = PostprocessConfigFromPackage(config.package);
+  return RunPostprocessNms(candidates, postprocess, out_result, out_error);
 }
 
 InferenceStatus SaveDebugArtifacts(const DebugArtifacts& debug,
@@ -719,7 +533,8 @@ InferenceStatus SaveDebugArtifacts(const DebugArtifacts& debug,
     result_json << "],\n";
     result_json << "      \"score\": " << debug.final_nms_outputs.scores[i] << ",\n";
     result_json << "      \"label\": " << static_cast<int>(label_index) << ",\n";
-    result_json << "      \"label_name\": \"" << JsonEscape(config.label_names[label_index]) << "\"\n";
+    result_json << "      \"label_name\": \""
+                << JsonEscape(config.package.model.label_names[label_index]) << "\"\n";
     result_json << "    }";
     if (i + 1 < debug.final_nms_outputs.scores.size()) {
       result_json << ",";

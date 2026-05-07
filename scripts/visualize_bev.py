@@ -5,8 +5,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 import numpy as np
-import yaml
-
 LABEL_NAMES = {
     1: "car",
     2: "pedestrian",
@@ -18,18 +16,12 @@ LABEL_COLORS = {
     2: "#ff8c42",
     3: "#7cff6b",
 }
+def load_model_config(model_dir: Path):
+    model_yaml = model_dir / "model.yaml"
+    with model_yaml.open("r", encoding="utf-8") as f:
+        import yaml
 
-
-def load_config(path: Path):
-    with path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f)
-
-
-def resolve_config_path(config_path: Path, value: str) -> Path:
-    candidate = Path(value)
-    if candidate.is_absolute():
-        return candidate
-    return config_path.parent / candidate
 
 
 def make_extent(pc_range):
@@ -109,12 +101,13 @@ def save_figure(fig, path: Path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("config", type=Path)
+    parser.add_argument("model_dir", type=Path)
+    parser.add_argument("dump_dir", type=Path)
     args = parser.parse_args()
 
-    cfg = load_config(args.config)
-    dump_dir = resolve_config_path(args.config, cfg["dump_dir"])
-    pc_range = cfg["runtime"]["point_cloud_range"]
+    cfg = load_model_config(args.model_dir)
+    dump_dir = args.dump_dir
+    pc_range = cfg["model"]["point_cloud_range"]
     extent = make_extent(pc_range)
 
     points = np.load(dump_dir / "input_points.npy")
