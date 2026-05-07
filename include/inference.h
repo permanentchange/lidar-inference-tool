@@ -4,9 +4,12 @@
 
 /**
  * @file inference.h
- * @brief Public C API for loading one TensorRT end-to-end pillar engine and running inference.
+ * @brief Internal C compatibility API for loading one TensorRT end-to-end pillar engine and running inference.
  *
- * Typical call flow:
+ * This header is kept for internal compatibility. External integrations should prefer
+ * `include/inference_cpp.hpp`.
+ *
+ * Typical internal call flow:
  * 1. Fill an ::InferenceConfig and call ::inference_create().
  * 2. Call ::inference_get_output_spec() to learn the maximum response buffer sizes.
  * 3. Allocate output buffers using element counts from ::InferenceOutputSpec.

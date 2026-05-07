@@ -2,9 +2,8 @@
 
 `lidar-inference-tool` is a C++17 LiDAR inference project built around TensorRT end-to-end pillar models. The repository exposes:
 
-- `libinference.so`: a shared library with a stable C API plus a higher-level C++ wrapper for loading one engine and running decoded or final NMS-filtered detections
+- `libinference.so`: a shared library exposing the recommended C++ wrapper for loading one model package and running decoded or final NMS-filtered detections
 - `pillar_debug_tool`: a single-sample debug executable that loads a YAML config, runs inference, dumps intermediate tensors, and writes timing reports
-- `minimal_c_api_example`: a minimal executable under `examples/` that shows the lowest-level public API call flow
 - `minimal_cpp_api_example`: a model-package-driven executable under `examples/` that shows the recommended C++ integration path
 
 The current runtime is written for PointPillars / CenterPoint-style engines with fixed binding names and a 3-task head layout.
@@ -15,16 +14,15 @@ This README intentionally uses repository-relative paths and placeholders such a
 
 ## Repository Layout
 
-- `include/inference.h`: public C API
 - `include/inference_cpp.hpp`: public C++ wrapper API
-- `src/inference_api.cpp`: shared-library entry points
+- `include/inference.h`: internal C compatibility header used by the wrapper and runtime implementation
+- `src/inference_api.cpp`: internal compatibility-layer entry points used by the wrapper
 - `src/pillar_runtime.cpp`: TensorRT loading, voxelization, inference, decode, NMS, and response packing
 - `src/pillar_debug_utils.cpp`: YAML parsing, point-cloud loading, and artifact export
 - `tools/pillar_debug_tool.cpp`: debug CLI entry point
 - `tools/onnx2engine.sh`: helper script for `trtexec`
 - `tools/run_pillar_debug.sh`: recommended wrapper for launching `pillar_debug_tool` with the build-local third-party libraries first in `LD_LIBRARY_PATH`
 - `scripts/visualize_bev.py`: BEV visualization for dumped debug artifacts
-- `examples/minimal_c_api/`: minimal executable example for the public C API
 - `examples/minimal_cpp_api/`: minimal executable example for the public C++ wrapper API
 - `demo/model.yaml`: example model package config for the public C++ wrapper
 - `demo/demo.yaml`: default debug-tool config
@@ -59,7 +57,7 @@ Additional assumptions enforced by the runtime:
 - `bbox_pred0` must have `8 * task_count` channels
 - `dir_cls_pred0` must have `2 * task_count` channels
 - the current decode path expects 3 tasks
-- decoded labels are `1`, `2`, `3` inside the C API, mapped by default to `car`, `pedestrian`, `cyclist`
+- decoded labels are internally represented as `1`, `2`, `3`, mapped by default to `car`, `pedestrian`, `cyclist`
 
 Initialization fails if the engine bindings, dtypes, optimization profile, or channel layout do not match these expectations.
 
@@ -147,7 +145,6 @@ A successful full build generates:
 
 - `build/libinference.so`
 - `build/pillar_debug_tool`
-- `build/minimal_c_api_example` when `BUILD_EXAMPLES=ON`
 - `build/minimal_cpp_api_example` when `BUILD_EXAMPLES=ON`
 
 ### Platform notes
@@ -193,12 +190,6 @@ To run a different debug config, pass it explicitly:
 ./tools/run_pillar_debug.sh path/to/config.yaml
 ```
 
-Run the minimal C API example against the same demo assets:
-
-```bash
-./build/minimal_c_api_example demo/end2end.engine demo/pcd.bin
-```
-
 Run the recommended C++ wrapper example with the demo model directory:
 
 ```bash
@@ -238,7 +229,7 @@ Typical console output includes:
 
 ## Examples
 
-The repository includes two standalone examples under `examples/`.
+The repository includes one standalone example under `examples/`.
 
 `examples/minimal_cpp_api/` shows the recommended path for a realtime C++ project:
 
@@ -248,17 +239,9 @@ The repository includes two standalone examples under `examples/`.
 - call `runtime->Infer(...)` for final detections
 - use `runtime->InferDecoded(...)` only when you explicitly need decoded pre-NMS candidates
 
-`examples/minimal_c_api/` shows the low-level C integration path:
-
-- fill `InferenceConfig` manually
-- create an `InferenceHandle`
-- allocate output buffers from `InferenceOutputSpec`
-- call `inference_forward_nms()` for final detections
-
-Local READMEs:
+Local README:
 
 - `examples/minimal_cpp_api/README.md`
-- `examples/minimal_c_api/README.md`
 
 ## Model Package Config
 
@@ -391,7 +374,7 @@ A successful debug run writes these files into `dump_dir`:
 Notes:
 
 - `result.json` contains final detections after the debug tool's NMS stage
-- `result.json` writes a zero-based `label` field plus `label_name`; this differs from the C API output, which uses `1..3`
+- `result.json` writes a zero-based `label` field plus `label_name`; this differs from the internal response label ids, which use `1..3`
 - `metadata.json` contains timing data and tensor summaries
 - `timings.json` contains both the single-run timing breakdown and aggregated profile statistics
 
@@ -433,7 +416,7 @@ Current behavior:
 - only `x`, `y`, `z` are read from the payload
 - remaining channels in the runtime input buffer are zero-padded
 
-## Public C++ Wrapper API
+## Public C++ API
 
 The recommended C++ interface is declared in `include/inference_cpp.hpp`.
 
@@ -460,90 +443,6 @@ Important semantics:
 - `Detection::label_name` points into the runtime-owned config and stays valid while the runtime exists
 - use `LoadPackageConfig(...)` if you want to load YAML, edit typed fields in code, and then call `Create(...)`
 - `Infer()` uses the runtime's configured `postprocess` section and returns final detections after built-in NMS
-
-## Public C API
-
-The public interface is declared in `include/inference.h`, and that header now contains the
-canonical field-by-field and function-by-function contract.
-
-Exported functions:
-
-- `inference_create`
-- `inference_get_output_spec`
-- `inference_get_default_postprocess_config`
-- `inference_forward`
-- `inference_forward_nms`
-- `inference_reset`
-- `inference_destroy`
-- `inference_last_error`
-
-Typical call flow:
-
-1. Fill an `InferenceConfig` and call `inference_create()`.
-2. Call `inference_get_output_spec()` to learn the required output capacities.
-3. Allocate response buffers using those element counts.
-4. Fill an `InferenceRequest` with tightly packed point data and call `inference_forward_nms()` for final detections, or `inference_forward()` for decoded pre-NMS candidates.
-5. Read `cls_count`, `box_count`, `label_count`, and `freespace_count` from the response.
-6. Call `inference_destroy()` when done.
-
-Minimal example:
-
-```c
-#include "inference.h"
-
-InferenceHandle* handle = NULL;
-InferenceConfig config = {0};
-/* fill config.end2end_file and runtime parameters */
-if (inference_create(&config, &handle) != INFERENCE_STATUS_OK) {
-  return 1;
-}
-
-InferenceOutputSpec spec = {0};
-inference_get_output_spec(handle, &spec);
-
-float* cls_preds = malloc(spec.cls_count * sizeof(float));
-float* box_preds = malloc(spec.box_count * sizeof(float));
-int* label_preds = malloc(spec.label_count * sizeof(int));
-
-InferencePostprocessConfig postprocess = {0};
-inference_get_default_postprocess_config(&postprocess);
-
-InferenceRequest request = {0};
-request.points = points;
-request.point_count = point_count;
-request.enable_runtime = 1;
-
-InferenceResponse response = {0};
-response.cls_preds = cls_preds;
-response.cls_capacity = spec.cls_count;
-response.box_preds = box_preds;
-response.box_capacity = spec.box_count;
-response.label_preds = label_preds;
-response.label_capacity = spec.label_count;
-
-InferenceStatus status = inference_forward_nms(handle, &request, &postprocess, &response);
-if (status != INFERENCE_STATUS_OK) {
-  const char* err = inference_last_error(handle);
-}
-
-inference_destroy(handle);
-```
-
-Important semantics:
-
-- `InferenceOutputSpec` and all `*_capacity` fields use element counts, not byte sizes
-- `InferenceOutputSpec` is a safe upper bound for both `inference_forward()` and `inference_forward_nms()`
-- `inference_forward()` returns decoded pre-NMS candidates
-- `inference_forward_nms()` returns final detections after built-in NMS
-- `box_preds` stores decoded boxes as `[x, y, z, dx, dy, dz, yaw]`
-- `label_preds` stores 1-based task ids
-- `box_count` is the number of float elements in `box_preds`, so it is `7 * cls_count`
-- `freespace_count` is always `0` in the current implementation
-- `freespace` is optional and is only zero-filled if a caller supplies that buffer
-- `motion_4x4` and `enable_runtime` are present in the public request struct, but the current runtime does not read them
-- `inference_get_default_postprocess_config()` returns the library's default NMS settings for the current fixed 3-label layout
-- call `inference_last_error()` after a failing API call to retrieve a human-readable backend error
-- `examples/minimal_c_api/` uses `inference_forward_nms()` by default, so its printed detections are already post-NMS results
 
 ## ONNX to TensorRT
 
