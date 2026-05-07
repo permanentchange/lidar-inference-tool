@@ -3,7 +3,7 @@
 `lidar-inference-tool` is a C++17 LiDAR inference project built around TensorRT end-to-end pillar models. The repository exposes:
 
 - `libinference.so`: a shared library exposing the recommended C++ wrapper for loading one model package and running decoded or final NMS-filtered detections
-- `pillar_debug_tool`: a single-sample debug executable that loads a YAML config, runs inference, dumps intermediate tensors, and writes timing reports
+- `pillar_debug_tool`: a single-sample debug executable that loads one model directory plus one point cloud, runs inference, dumps intermediate tensors, and writes timing reports
 - `minimal_cpp_api_example`: a model-package-driven executable under `examples/` that shows the recommended C++ integration path
 
 The current runtime is written for PointPillars / CenterPoint-style engines with fixed binding names and a 3-task head layout.
@@ -18,14 +18,13 @@ This README intentionally uses repository-relative paths and placeholders such a
 - `include/inference.h`: internal C compatibility header used by the wrapper and runtime implementation
 - `src/inference_api.cpp`: internal compatibility-layer entry points used by the wrapper
 - `src/pillar_runtime.cpp`: TensorRT loading, voxelization, inference, decode, NMS, and response packing
-- `src/pillar_debug_utils.cpp`: YAML parsing, point-cloud loading, and artifact export
+- `src/pillar_debug_utils.cpp`: debug-tool config assembly, point-cloud loading, and artifact export
 - `tools/pillar_debug_tool.cpp`: debug CLI entry point
 - `tools/onnx2engine.sh`: helper script for `trtexec`
 - `tools/run_pillar_debug.sh`: recommended wrapper for launching `pillar_debug_tool` with the build-local third-party libraries first in `LD_LIBRARY_PATH`
 - `scripts/visualize_bev.py`: BEV visualization for dumped debug artifacts
 - `examples/minimal_cpp_api/`: minimal executable example for the public C++ wrapper API
 - `demo/model.yaml`: example model package config for the public C++ wrapper
-- `demo/demo.yaml`: default debug-tool config
 - `demo/end2end.onnx`: example ONNX model
 - `demo/end2end.engine`: example TensorRT engine
 - `demo/pcd.bin`: example point cloud
@@ -176,18 +175,16 @@ Stub behavior:
 
 ## Quick Start
 
-The repository ships both a model package config for the public C++ wrapper and a debug-tool config.
-
 Run one debug session:
 
 ```bash
-./tools/run_pillar_debug.sh
+./tools/run_pillar_debug.sh demo demo/pcd.bin
 ```
 
-To run a different debug config, pass it explicitly:
+Write artifacts to a custom output directory:
 
 ```bash
-./tools/run_pillar_debug.sh path/to/config.yaml
+./tools/run_pillar_debug.sh demo demo/pcd.bin outputs/demo_dump
 ```
 
 Run the recommended C++ wrapper example with the demo model directory:
@@ -196,26 +193,13 @@ Run the recommended C++ wrapper example with the demo model directory:
 ./build/minimal_cpp_api_example demo demo/pcd.bin
 ```
 
-The default model package reads:
-
-- `demo/end2end.engine`
-- `demo/model.yaml`
-
 The wrapper script is recommended because interactive shells may prepend unrelated library directories in `LD_LIBRARY_PATH`. `tools/run_pillar_debug.sh` forces the repository's freshly built `third_party/iou3d_nms` and `third_party/voxelize` shared libraries to win lookup order before launching the debug binary.
 
-The default debug config reads:
+The demo assets used by both the public C++ API and the debug tool are:
 
-- `demo/demo.yaml`
+- `demo/model.yaml`
+- `demo/end2end.engine`
 - `demo/pcd.bin`
-
-and writes artifacts under:
-
-- `outputs/demo_dump`
-
-The demo assets are split on purpose:
-
-- `demo/model.yaml` is the deploy-time model package used by `LidarInferenceRuntime`
-- `demo/demo.yaml` is the debug-tool config that adds input/output paths and profiling options on top of the same core runtime settings
 
 Typical console output includes:
 
@@ -287,68 +271,43 @@ Optional override YAML files use the same schema and are applied with this prece
 - override YAML
 - base `model.yaml`
 
-## Debug Config
+## Debug CLI
 
-`pillar_debug_tool` expects one YAML file:
+`pillar_debug_tool` now follows the same model-directory entry style as the public C++ wrapper:
 
 ```bash
-./build/pillar_debug_tool <config.yaml>
+./build/pillar_debug_tool <model_dir> <pcd_path> [dump_dir]
 ```
 
-Top-level fields:
+Supported options:
 
-- `engine_path`: TensorRT engine path
-- `pcd_path`: input point cloud path
-- `dump_dir`: output directory for `.npy` / `.json` artifacts
-- `warmup_iters`: number of warmup runs before profiling
-- `profile_iters`: number of profiled runs
-- `bev_resolution`: stored for visualization-oriented workflows
-- `runtime`: voxelization and decode settings
-- `post_processing`: debug NMS and final filtering settings
+- `--warmup N`
+- `--profile N`
+- `--bev-resolution X`
+- `--override-config PATH`
 
-Important `runtime` fields:
+Examples:
 
-- `max_points`
-- `frame_num`
-- `num_point_features`
-- `point_cloud_range`
-- `post_center_range`
-- `pillar_size`
-- `max_points_per_pillar`
-- `min_pillars`
-- `max_pillars`
-- `bbox_max_num`
-- `out_size_factor`
-- `score_threshold`
+```bash
+./build/pillar_debug_tool demo demo/pcd.bin
+./build/pillar_debug_tool demo demo/pcd.bin outputs/demo_dump --warmup 10 --profile 100
+./build/pillar_debug_tool demo demo/pcd.bin outputs/demo_dump --override-config overrides/model_override.yaml
+```
 
-Important `post_processing` fields:
+Behavior:
 
-- `nms_type`
-- `nms_thresh`
-- `nms_pre_maxsize`
-- `nms_post_maxsize`
-- `final_score_threshold`
-- `circle_nms_min_radius`
-- `label_names`
-- `label_score_thresh`
+- `model_dir` must contain `model.yaml`
+- runtime and postprocess settings come from `<model_dir>/model.yaml`
+- `pcd_path` is the input point cloud for this one debug run
+- `dump_dir` controls where `.npy` and `.json` artifacts are written
+- `override_config_path` applies the same package-schema YAML override used by the public C++ wrapper
 
-`demo/demo.yaml` intentionally keeps debug-only fields that do not belong in the public runtime model package:
+Default values:
 
-- `pcd_path`
-- `dump_dir`
-- `warmup_iters`
-- `profile_iters`
-- `bev_resolution`
-
-Path handling:
-
-- `engine_path`, `pcd_path`, and `dump_dir` are resolved relative to the YAML file if they are not absolute
-- using repository-relative paths is recommended for portability and privacy
-
-NMS behavior:
-
-- when `nms_type` is `circle`, the tool applies per-label circle NMS using `circle_nms_min_radius`
-- for any other `nms_type`, the tool uses the CUDA IoU NMS path from `third_party/iou3d_nms`
+- `dump_dir`: `outputs/pillar_debug`
+- `warmup_iters`: `10`
+- `profile_iters`: `50`
+- `bev_resolution`: `0.2`
 
 ## Debug Artifacts
 
@@ -383,10 +342,11 @@ Notes:
 After a debug run, generate BEV plots with:
 
 ```bash
-python3 scripts/visualize_bev.py demo/demo.yaml
+python3 scripts/visualize_bev.py demo outputs/pillar_debug
 ```
 
-The script reads `dump_dir` from the YAML config and produces:
+The script reads `demo/model.yaml` for the point-cloud range and uses the given `dump_dir`.
+It produces:
 
 - `01_input_points_bev.png`
 - `02_heatmap_bev.png`

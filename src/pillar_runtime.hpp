@@ -1,6 +1,6 @@
 #pragma once
 
-#include "inference.h"
+#include "inference_cpp.hpp"
 
 #include <array>
 #include <cstdint>
@@ -91,21 +91,15 @@ struct DebugArtifacts {
 };
 
 struct ToolConfig {
+  inference::PackageConfig package;
   RuntimeConfig runtime;
-  std::string engine_path;
+  std::string model_dir;
+  std::string override_config_path;
   std::string pcd_path;
   std::string dump_dir;
   int warmup_iters = 10;
   int profile_iters = 50;
   float bev_resolution = 0.2f;
-  std::string nms_type = "class_agnostic";
-  float nms_thresh = 0.25f;
-  int nms_pre_maxsize = 2048;
-  int nms_post_maxsize = 256;
-  float final_score_threshold = 0.3f;
-  std::array<float, 3> circle_nms_min_radius{{4.0f, 12.0f, 10.0f}};
-  std::array<float, 3> label_score_thresh{{0.45f, 0.3f, 0.45f}};
-  std::array<std::string, 3> label_names{{"car", "per", "cyc"}};
 };
 
 InferenceStatus ParseRuntimeConfig(const InferenceConfig& config,
@@ -150,9 +144,15 @@ class PillarRuntime {
   std::unique_ptr<Impl> impl_;
 };
 
-InferenceStatus LoadToolConfig(const std::string& path,
-                               ToolConfig* out_config,
-                               std::string* out_error);
+InferenceStatus LoadToolConfigFromModelDir(const std::string& model_dir,
+                                           const std::string& pcd_path,
+                                           const std::string& dump_dir,
+                                           const std::string& override_config_path,
+                                           int warmup_iters,
+                                           int profile_iters,
+                                           float bev_resolution,
+                                           ToolConfig* out_config,
+                                           std::string* out_error);
 InferenceStatus LoadPcdFile(const std::string& path,
                             int num_point_features,
                             int max_points,

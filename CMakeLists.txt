@@ -222,6 +222,8 @@ else()
 
   add_executable(pillar_debug_tool
     tools/pillar_debug_tool.cpp
+    src/inference_api.cpp
+    src/inference_cpp.cpp
     src/pillar_runtime.cpp
     src/trt_engine.cpp
     src/pillar_debug_utils.cpp

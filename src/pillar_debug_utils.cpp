@@ -15,13 +15,20 @@
 #include <type_traits>
 #include <vector>
 
-#include <yaml-cpp/yaml.h>
-
 namespace inference_internal {
 namespace {
 
 constexpr int kBoxDim = 7;
 constexpr int kLabelCount = 3;
+
+InferenceStatus SetError(std::string* out_error,
+                         InferenceStatus status,
+                         const std::string& message) {
+  if (out_error != nullptr) {
+    *out_error = message;
+  }
+  return status;
+}
 
 template <typename T>
 std::string DtypeTag();
@@ -98,22 +105,34 @@ std::string NormalizeNmsType(const std::string& value) {
   return normalized;
 }
 
-std::string ResolveConfigRelativePath(const std::filesystem::path& config_path,
-                                      const std::string& value) {
-  if (value.empty()) {
-    return value;
-  }
+RuntimeConfig RuntimeConfigFromPackage(const inference::PackageConfig& package) {
+  RuntimeConfig runtime;
+  runtime.end2end_file = package.model.engine_path;
+  runtime.point_cloud_range = package.model.point_cloud_range;
+  runtime.post_center_range = package.model.post_center_range;
+  runtime.pillar_size = package.model.pillar_size;
+  runtime.max_points_per_pillar = package.runtime.max_points_per_pillar;
+  runtime.min_pillars = package.runtime.min_pillars;
+  runtime.max_pillars = package.runtime.max_pillars;
+  runtime.max_points = package.runtime.max_points;
+  runtime.frame_num = package.runtime.frame_num;
+  runtime.num_point_features = package.model.num_point_features;
+  runtime.bbox_max_num = package.runtime.bbox_max_num;
+  runtime.out_size_factor = package.model.out_size_factor;
+  runtime.score_threshold = package.runtime.score_threshold;
+  return runtime;
+}
 
-  const std::filesystem::path raw_path(value);
-  if (raw_path.is_absolute()) {
-    return raw_path.lexically_normal().string();
-  }
-
-  const std::filesystem::path base_dir = config_path.parent_path();
-  if (base_dir.empty()) {
-    return raw_path.lexically_normal().string();
-  }
-  return (base_dir / raw_path).lexically_normal().string();
+PostprocessConfig PostprocessConfigFromPackage(const inference::PackageConfig& package) {
+  PostprocessConfig postprocess;
+  postprocess.nms_type = package.postprocess.nms_type;
+  postprocess.nms_thresh = package.postprocess.nms_thresh;
+  postprocess.nms_pre_maxsize = package.postprocess.nms_pre_maxsize;
+  postprocess.nms_post_maxsize = package.postprocess.nms_post_maxsize;
+  postprocess.final_score_threshold = package.postprocess.final_score_threshold;
+  postprocess.circle_nms_min_radius = package.postprocess.circle_nms_min_radius;
+  postprocess.label_score_thresh = package.postprocess.label_score_thresh;
+  return postprocess;
 }
 
 template <typename T>
@@ -308,77 +327,48 @@ InferenceStatus LoadFloatBinFile(const std::string& path,
 
 }  // namespace
 
-InferenceStatus LoadToolConfig(const std::string& path,
-                               ToolConfig* out_config,
-                               std::string* out_error) {
+InferenceStatus LoadToolConfigFromModelDir(const std::string& model_dir,
+                                           const std::string& pcd_path,
+                                           const std::string& dump_dir,
+                                           const std::string& override_config_path,
+                                           int warmup_iters,
+                                           int profile_iters,
+                                           float bev_resolution,
+                                           ToolConfig* out_config,
+                                           std::string* out_error) {
   if (out_config == nullptr) {
     return INFERENCE_STATUS_INVALID_ARGUMENT;
   }
 
-  const std::filesystem::path config_path(path);
-  YAML::Node node = YAML::LoadFile(path);
-  out_config->engine_path = ResolveConfigRelativePath(
-      config_path, node["engine_path"].as<std::string>());
-  out_config->pcd_path = ResolveConfigRelativePath(
-      config_path, node["pcd_path"].as<std::string>());
-  out_config->dump_dir = ResolveConfigRelativePath(
-      config_path, node["dump_dir"].as<std::string>());
-  out_config->warmup_iters = node["warmup_iters"].as<int>(10);
-  out_config->profile_iters = node["profile_iters"].as<int>(50);
-  out_config->bev_resolution = node["bev_resolution"].as<float>(0.2f);
-  out_config->nms_type = NormalizeNmsType(
-      node["post_processing"]["nms_type"].as<std::string>(out_config->nms_type));
-  out_config->nms_thresh = node["post_processing"]["nms_thresh"].as<float>(0.25f);
-  out_config->nms_pre_maxsize = node["post_processing"]["nms_pre_maxsize"].as<int>(2048);
-  out_config->nms_post_maxsize = node["post_processing"]["nms_post_maxsize"].as<int>(256);
-  out_config->final_score_threshold =
-      node["post_processing"]["final_score_threshold"].as<float>(0.3f);
+  out_config->model_dir = std::filesystem::path(model_dir).lexically_normal().string();
+  out_config->override_config_path =
+      std::filesystem::path(override_config_path).lexically_normal().string();
+  out_config->pcd_path = std::filesystem::path(pcd_path).lexically_normal().string();
+  out_config->dump_dir = std::filesystem::path(dump_dir).lexically_normal().string();
+  out_config->warmup_iters = warmup_iters;
+  out_config->profile_iters = profile_iters;
+  out_config->bev_resolution = bev_resolution;
 
-  const YAML::Node label_thresh = node["post_processing"]["label_score_thresh"];
-  out_config->label_score_thresh = {
-      label_thresh["1"].as<float>(0.45f),
-      label_thresh["2"].as<float>(0.3f),
-      label_thresh["3"].as<float>(0.45f),
-  };
-  const YAML::Node circle_radius = node["post_processing"]["circle_nms_min_radius"];
-  if (circle_radius && circle_radius.IsSequence()) {
-    for (size_t i = 0; i < kLabelCount && i < circle_radius.size(); ++i) {
-      out_config->circle_nms_min_radius[i] = circle_radius[i].as<float>();
-    }
+  if (out_config->model_dir.empty() || out_config->pcd_path.empty() || out_config->dump_dir.empty()) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "model_dir, pcd_path, and dump_dir must be configured");
   }
-  const YAML::Node label_names = node["post_processing"]["label_names"];
-  if (label_names && label_names.IsSequence()) {
-    for (size_t i = 0; i < kLabelCount && i < label_names.size(); ++i) {
-      out_config->label_names[i] = label_names[i].as<std::string>();
-    }
+  if (warmup_iters < 0 || profile_iters <= 0) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "warmup_iters must be >= 0 and profile_iters must be > 0");
+  }
+  if (bev_resolution <= 0.0f) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "bev_resolution must be positive");
   }
 
-  RuntimeConfig& runtime = out_config->runtime;
-  runtime.end2end_file = out_config->engine_path;
-  runtime.max_points = node["runtime"]["max_points"].as<int>(300000);
-  runtime.frame_num = node["runtime"]["frame_num"].as<int>(1);
-  runtime.num_point_features = node["runtime"]["num_point_features"].as<int>(5);
-  runtime.max_points_per_pillar = node["runtime"]["max_points_per_pillar"].as<int>(20);
-  runtime.min_pillars = node["runtime"]["min_pillars"].as<int>(100);
-  runtime.max_pillars = node["runtime"]["max_pillars"].as<int>(50000);
-  runtime.bbox_max_num = node["runtime"]["bbox_max_num"].as<int>(500);
-  runtime.out_size_factor = node["runtime"]["out_size_factor"].as<int>(4);
-  runtime.score_threshold = node["runtime"]["score_threshold"].as<float>(0.1f);
-
-  for (size_t i = 0; i < 6; ++i) {
-    runtime.point_cloud_range[i] = node["runtime"]["point_cloud_range"][i].as<float>();
-    runtime.post_center_range[i] = node["runtime"]["post_center_range"][i].as<float>();
-  }
-  for (size_t i = 0; i < 3; ++i) {
-    runtime.pillar_size[i] = node["runtime"]["pillar_size"][i].as<float>();
+  InferenceStatus status = inference::LidarInferenceRuntime::LoadPackageConfig(
+      out_config->model_dir, &out_config->package, out_error, out_config->override_config_path);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
   }
 
-  if (out_config->engine_path.empty() || out_config->pcd_path.empty() || out_config->dump_dir.empty()) {
-    if (out_error != nullptr) {
-      *out_error = "engine_path, pcd_path, and dump_dir must be configured";
-    }
-    return INFERENCE_STATUS_INVALID_ARGUMENT;
-  }
+  out_config->runtime = RuntimeConfigFromPackage(out_config->package);
   return INFERENCE_STATUS_OK;
 }
 
@@ -408,16 +398,7 @@ InferenceStatus RunToolPostprocessNms(const CandidateDetections& candidates,
                                       const ToolConfig& config,
                                       CandidateDetections* out_result,
                                       std::string* out_error) {
-  PostprocessConfig postprocess;
-  SetDefaultPostprocessConfig(&postprocess);
-  postprocess.nms_type =
-      NormalizeNmsType(config.nms_type) == "circle" ? INFERENCE_NMS_CIRCLE : INFERENCE_NMS_IOU_BEV;
-  postprocess.nms_thresh = config.nms_thresh;
-  postprocess.nms_pre_maxsize = config.nms_pre_maxsize;
-  postprocess.nms_post_maxsize = config.nms_post_maxsize;
-  postprocess.final_score_threshold = config.final_score_threshold;
-  postprocess.circle_nms_min_radius = config.circle_nms_min_radius;
-  postprocess.label_score_thresh = config.label_score_thresh;
+  PostprocessConfig postprocess = PostprocessConfigFromPackage(config.package);
   return RunPostprocessNms(candidates, postprocess, out_result, out_error);
 }
 
@@ -552,7 +533,8 @@ InferenceStatus SaveDebugArtifacts(const DebugArtifacts& debug,
     result_json << "],\n";
     result_json << "      \"score\": " << debug.final_nms_outputs.scores[i] << ",\n";
     result_json << "      \"label\": " << static_cast<int>(label_index) << ",\n";
-    result_json << "      \"label_name\": \"" << JsonEscape(config.label_names[label_index]) << "\"\n";
+    result_json << "      \"label_name\": \""
+                << JsonEscape(config.package.model.label_names[label_index]) << "\"\n";
     result_json << "    }";
     if (i + 1 < debug.final_nms_outputs.scores.size()) {
       result_json << ",";
