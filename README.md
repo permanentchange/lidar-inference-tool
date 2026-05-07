@@ -253,7 +253,7 @@ The repository includes two standalone examples under `examples/`.
 - fill `InferenceConfig` manually
 - create an `InferenceHandle`
 - allocate output buffers from `InferenceOutputSpec`
-- call `inference_forward_nms()` for final detections, or `inference_forward()` for decoded pre-NMS candidates
+- call `inference_forward_nms()` for final detections
 
 Local READMEs:
 

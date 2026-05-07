@@ -1,17 +1,12 @@
 # Minimal C++ API Example
 
-This example shows the recommended high-level integration path for a C++ project:
+This example shows the smallest high-level C++ integration path for the library:
 
-- place `model.yaml` and the TensorRT engine referenced by `model.engine_path` in one model directory
-- create one `inference::LidarInferenceRuntime` at startup
-- reuse that runtime for every point cloud frame
-
-This is the intended integration style for a realtime caller because the wrapper hides:
-
-- YAML parsing into typed config structs
-- `InferenceHandle` lifetime management
-- output buffer sizing and reuse
-- default postprocess setup
+- load `model.yaml` from a model directory
+- create one `inference::LidarInferenceRuntime`
+- load one float32 `.bin` point cloud
+- call `runtime->Infer(...)`
+- print the final detections
 
 ## Build
 
@@ -34,24 +29,17 @@ Use the repository demo model package:
 ./build/minimal_cpp_api_example demo demo/pcd.bin
 ```
 
-Process multiple point clouds in one run:
-
-```bash
-./build/minimal_cpp_api_example demo demo/pcd.bin demo/pcd.bin
-```
-
 Arguments:
 
 - `<model_dir>`: directory containing `model.yaml` and the TensorRT engine
-- `<pcd_bin_path>`: one or more float32 `.bin` point cloud paths
+- `<pcd_bin_path>`: one float32 `.bin` point cloud path
 
-What the example does:
+Core API flow shown by the example:
 
-- loads `demo/model.yaml`
-- creates one runtime via `CreateFromModelDir`
-- reuses internal output buffers across all frames
-- runs final NMS-filtered inference through `runtime->Infer(...)`
-- prints aggregate timings and a preview of the last frame detections
+- `inference::LidarInferenceRuntime::CreateFromModelDir(...)`
+- `inference::PointCloudView`
+- `runtime->Infer(...)`
+- `std::vector<inference::Detection>` for the final NMS-filtered result
 
 Important semantics:
 
