@@ -146,9 +146,10 @@ find_library(NVINFER_PLUGIN_LIB nvinfer_plugin
   PATH_SUFFIXES ${TENSORRT_LIBRARY_SUFFIXES}
   NO_DEFAULT_PATH)
 
-set(INFERENCE_PUBLIC_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include)
-set(INFERENCE_PRIVATE_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
-set(INFERENCE_PUBLIC_INCLUDE_DIR_INSTALL ${CMAKE_INSTALL_INCLUDEDIR})
+include(GNUInstallDirs)
+set(INFERENCE_PUBLIC_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
+set(INFERENCE_PRIVATE_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src")
+set(INFERENCE_PUBLIC_INCLUDE_DIR_INSTALL "include")
 
 set(MISSING_GPU_DEPS)
 if(NOT CUDA_FOUND)
@@ -262,10 +263,7 @@ endif()
 # ===================== CPack (DEB) Packaging =====================
 set(install_targets
   inference
-  voxelization
 )
-
-include(GNUInstallDirs)
 
 # ===================== 安装规则 =====================
 install(TARGETS ${install_targets}
@@ -277,7 +275,7 @@ install(TARGETS ${install_targets}
 
 # 头文件
 install(DIRECTORY ${INFERENCE_PUBLIC_INCLUDE_DIR}/
-  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/${PROJECT_NAME}"
 )
 
 # 其他

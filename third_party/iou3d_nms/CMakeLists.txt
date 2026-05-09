@@ -26,11 +26,12 @@ include_directories(
   include
 )
 
-add_library(iou3d_nms SHARED
+add_library(iou3d_nms STATIC
   iou3d_cpu.cpp
   iou3d_nms_api.cpp
   ${NVCC_FILES}
 )
+set_target_properties(iou3d_nms PROPERTIES POSITION_INDEPENDENT_CODE ON )
 
 if(CUDA_FOUND)
   target_compile_definitions(iou3d_nms PRIVATE HAVE_CUDA_ENABLE)

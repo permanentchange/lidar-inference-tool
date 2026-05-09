@@ -27,11 +27,12 @@ include_directories(
   include
 )
 
-add_library(voxelization SHARED
+add_library(voxelization STATIC
   voxelization.cpp
   ${VOXELIZE_NVCC_FILES}
   ${PREPROCESS_NVCC_FILES}
 )
+set_target_properties(voxelization PROPERTIES POSITION_INDEPENDENT_CODE ON )
 
 if(CUDA_FOUND)
   target_compile_definitions(voxelization PUBLIC HAVE_CUDA_ENABLE)
