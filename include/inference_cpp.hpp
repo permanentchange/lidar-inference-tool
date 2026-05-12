@@ -10,8 +10,12 @@
 
 namespace inference {
 
-constexpr size_t kLabelCount = 3;
 constexpr size_t kBoxDimension = 7;
+
+enum class DecodeMode {
+  kLegacy = 0,
+  kCenterPoint = 1,
+};
 
 struct ModelConfig {
   std::string engine_path;
@@ -20,7 +24,12 @@ struct ModelConfig {
   std::array<float, 3> pillar_size{{0.1f, 0.1f, 8.0f}};
   int num_point_features = 5;
   int out_size_factor = 4;
-  std::array<std::string, kLabelCount> label_names{{"car", "pedestrian", "cyclist"}};
+  DecodeMode decode_mode = DecodeMode::kLegacy;
+  int bbox_code_size = 7;
+  bool norm_bbox = false;
+  bool has_velocity = false;
+  std::vector<std::string> label_names{"car", "pedestrian", "cyclist"};
+  std::vector<int> task_num_classes{1, 1, 1};
 };
 
 struct RuntimeConfig {
@@ -39,8 +48,8 @@ struct PostprocessConfig {
   int nms_pre_maxsize = 2048;
   int nms_post_maxsize = 256;
   float final_score_threshold = 0.3f;
-  std::array<float, kLabelCount> label_score_thresh{{0.45f, 0.3f, 0.45f}};
-  std::array<float, kLabelCount> circle_nms_min_radius{{4.0f, 12.0f, 10.0f}};
+  std::vector<float> label_score_thresh{0.45f, 0.3f, 0.45f};
+  std::vector<float> circle_nms_min_radius{4.0f, 12.0f, 10.0f};
 };
 
 struct PackageConfig {

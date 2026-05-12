@@ -47,6 +47,18 @@ std::string NormalizeNmsType(const std::string& value) {
   return normalized;
 }
 
+std::string NormalizeIdentifier(const std::string& value) {
+  std::string normalized = value;
+  std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                 [](unsigned char ch) {
+                   if (ch == '-' || ch == ' ') {
+                     return '_';
+                   }
+                   return static_cast<char>(std::tolower(ch));
+                 });
+  return normalized;
+}
+
 InferenceStatus ParseNmsType(const std::string& value,
                              InferenceNmsType* out_type,
                              std::string* out_error) {
@@ -63,8 +75,32 @@ InferenceStatus ParseNmsType(const std::string& value,
     *out_type = INFERENCE_NMS_IOU_BEV;
     return INFERENCE_STATUS_OK;
   }
+  if (normalized == "rotate" || normalized == "rotated") {
+    *out_type = INFERENCE_NMS_IOU_BEV;
+    return INFERENCE_STATUS_OK;
+  }
   return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                   "Unsupported postprocess.nms_type: " + value);
+}
+
+InferenceStatus ParseDecodeMode(const std::string& value,
+                                DecodeMode* out_mode,
+                                std::string* out_error) {
+  if (out_mode == nullptr) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, "out_mode is null");
+  }
+  const std::string normalized = NormalizeIdentifier(value);
+  if (normalized.empty() || normalized == "legacy") {
+    *out_mode = DecodeMode::kLegacy;
+    return INFERENCE_STATUS_OK;
+  }
+  if (normalized == "centerpoint" || normalized == "centerpoint_mmdeploy" ||
+      normalized == "mmdeploy" || normalized == "centerpoint_mmdeploy_unified") {
+    *out_mode = DecodeMode::kCenterPoint;
+    return INFERENCE_STATUS_OK;
+  }
+  return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                  "Unsupported model.decode_mode: " + value);
 }
 
 template <size_t N>
@@ -86,43 +122,78 @@ InferenceStatus LoadFloatArray(const YAML::Node& node,
   return INFERENCE_STATUS_OK;
 }
 
-template <size_t N>
-InferenceStatus LoadStringArray(const YAML::Node& node,
-                                const char* field_name,
-                                std::array<std::string, N>* out_values,
-                                std::string* out_error) {
+InferenceStatus LoadStringVector(const YAML::Node& node,
+                                 const char* field_name,
+                                 std::vector<std::string>* out_values,
+                                 std::string* out_error) {
   if (!node) {
     return INFERENCE_STATUS_OK;
   }
-  if (!node.IsSequence() || node.size() != N) {
+  if (!node.IsSequence() || node.size() == 0) {
     std::ostringstream oss;
-    oss << field_name << " must be a sequence of " << N << " strings";
+    oss << field_name << " must be a non-empty sequence of strings";
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
   }
-  for (size_t i = 0; i < N; ++i) {
-    (*out_values)[i] = node[i].as<std::string>();
+  out_values->clear();
+  out_values->reserve(node.size());
+  for (size_t i = 0; i < node.size(); ++i) {
+    out_values->push_back(node[i].as<std::string>());
   }
   return INFERENCE_STATUS_OK;
 }
 
-template <size_t N>
-InferenceStatus LoadThresholdArray(const YAML::Node& node,
-                                   const char* field_name,
-                                   std::array<float, N>* out_values,
-                                   std::string* out_error) {
+InferenceStatus LoadIntVector(const YAML::Node& node,
+                              const char* field_name,
+                              std::vector<int>* out_values,
+                              std::string* out_error) {
+  if (!node) {
+    return INFERENCE_STATUS_OK;
+  }
+  if (!node.IsSequence() || node.size() == 0) {
+    std::ostringstream oss;
+    oss << field_name << " must be a non-empty sequence of integers";
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+  }
+  out_values->clear();
+  out_values->reserve(node.size());
+  for (size_t i = 0; i < node.size(); ++i) {
+    out_values->push_back(node[i].as<int>());
+  }
+  return INFERENCE_STATUS_OK;
+}
+
+InferenceStatus LoadThresholdVector(const YAML::Node& node,
+                                    const char* field_name,
+                                    std::vector<float>* out_values,
+                                    std::string* out_error) {
   if (!node) {
     return INFERENCE_STATUS_OK;
   }
   if (node.IsSequence()) {
-    return LoadFloatArray(node, field_name, out_values, out_error);
+    out_values->clear();
+    out_values->reserve(node.size());
+    for (size_t i = 0; i < node.size(); ++i) {
+      out_values->push_back(node[i].as<float>());
+    }
+    return INFERENCE_STATUS_OK;
   }
   if (!node.IsMap()) {
     std::ostringstream oss;
     oss << field_name << " must be either a sequence or a map";
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
   }
-  for (size_t i = 0; i < N; ++i) {
-    const std::string key = std::to_string(i + 1);
+
+  if (out_values->empty()) {
+    size_t max_index = 0;
+    for (auto it = node.begin(); it != node.end(); ++it) {
+      const size_t index = static_cast<size_t>(std::stoul(it->first.as<std::string>()));
+      max_index = std::max(max_index, index);
+    }
+    out_values->assign(max_index, 0.0f);
+  }
+
+  for (size_t i = 0; i < out_values->size(); ++i) {
+    const std::string key = std::to_string(i + 1U);
     if (node[key]) {
       (*out_values)[i] = node[key].as<float>();
     }
@@ -130,16 +201,62 @@ InferenceStatus LoadThresholdArray(const YAML::Node& node,
   return INFERENCE_STATUS_OK;
 }
 
+void NormalizeTaskLayout(ModelConfig* model) {
+  if (model == nullptr) {
+    return;
+  }
+  if (model->decode_mode == DecodeMode::kCenterPoint) {
+    if (model->task_num_classes.empty()) {
+      model->task_num_classes.assign(model->label_names.size(), 1);
+    }
+    if (model->bbox_code_size <= 0) {
+      model->bbox_code_size = model->has_velocity ? 9 : 7;
+    }
+  } else if (model->task_num_classes.empty()) {
+    model->task_num_classes = {1, 1, 1};
+  }
+}
+
 InferenceStatus ValidatePackageConfig(const PackageConfig& config, std::string* out_error) {
   if (config.model.engine_path.empty()) {
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                     "model.engine_path must be configured");
+  }
+  if (config.model.label_names.empty()) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "model.label_names must not be empty");
   }
   for (size_t i = 0; i < config.model.label_names.size(); ++i) {
     if (config.model.label_names[i].empty()) {
       std::ostringstream oss;
       oss << "model.label_names[" << i << "] must not be empty";
       return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+    }
+  }
+  if (config.model.decode_mode == DecodeMode::kCenterPoint) {
+    if (config.model.task_num_classes.empty()) {
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                      "model.task_num_classes must not be empty in CenterPoint mode");
+    }
+    int total_classes = 0;
+    for (size_t i = 0; i < config.model.task_num_classes.size(); ++i) {
+      if (config.model.task_num_classes[i] <= 0) {
+        std::ostringstream oss;
+        oss << "model.task_num_classes[" << i << "] must be positive";
+        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+      }
+      total_classes += config.model.task_num_classes[i];
+    }
+    if (total_classes != static_cast<int>(config.model.label_names.size())) {
+      std::ostringstream oss;
+      oss << "Sum(model.task_num_classes)=" << total_classes
+          << " does not match model.label_names.size()="
+          << config.model.label_names.size();
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+    }
+    if (config.model.bbox_code_size < static_cast<int>(kBoxDimension)) {
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                      "model.bbox_code_size must be at least 7 in CenterPoint mode");
     }
   }
   for (const float value : config.postprocess.label_score_thresh) {
@@ -161,6 +278,15 @@ InferenceStatus ValidatePackageConfig(const PackageConfig& config, std::string* 
   if (config.postprocess.nms_thresh < 0.0f || config.postprocess.final_score_threshold < 0.0f) {
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                     "postprocess thresholds must be non-negative");
+  }
+  if (config.model.decode_mode == DecodeMode::kCenterPoint &&
+      config.postprocess.nms_type == INFERENCE_NMS_CIRCLE &&
+      config.postprocess.circle_nms_min_radius.size() != config.model.task_num_classes.size()) {
+    std::ostringstream oss;
+    oss << "postprocess.circle_nms_min_radius must have one value per task in CenterPoint mode, "
+        << "expected " << config.model.task_num_classes.size()
+        << " got " << config.postprocess.circle_nms_min_radius.size();
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
   }
   return INFERENCE_STATUS_OK;
 }
@@ -193,6 +319,22 @@ InferenceStatus ApplyPackageConfigNode(const YAML::Node& root,
     if (model["out_size_factor"]) {
       out_config->model.out_size_factor = model["out_size_factor"].as<int>();
     }
+    if (model["decode_mode"]) {
+      InferenceStatus status = ParseDecodeMode(model["decode_mode"].as<std::string>(),
+                                               &out_config->model.decode_mode, out_error);
+      if (status != INFERENCE_STATUS_OK) {
+        return status;
+      }
+    }
+    if (model["bbox_code_size"]) {
+      out_config->model.bbox_code_size = model["bbox_code_size"].as<int>();
+    }
+    if (model["norm_bbox"]) {
+      out_config->model.norm_bbox = model["norm_bbox"].as<bool>();
+    }
+    if (model["has_velocity"]) {
+      out_config->model.has_velocity = model["has_velocity"].as<bool>();
+    }
 
     InferenceStatus status =
         LoadFloatArray(model["point_cloud_range"], "model.point_cloud_range",
@@ -210,11 +352,17 @@ InferenceStatus ApplyPackageConfigNode(const YAML::Node& root,
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
-    status = LoadStringArray(model["label_names"], "model.label_names",
-                             &out_config->model.label_names, out_error);
+    status = LoadStringVector(model["label_names"], "model.label_names",
+                              &out_config->model.label_names, out_error);
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
+    status = LoadIntVector(model["task_num_classes"], "model.task_num_classes",
+                           &out_config->model.task_num_classes, out_error);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    NormalizeTaskLayout(&out_config->model);
   }
 
   const YAML::Node runtime = root["runtime"];
@@ -275,15 +423,15 @@ InferenceStatus ApplyPackageConfigNode(const YAML::Node& root,
     }
 
     InferenceStatus status =
-        LoadThresholdArray(postprocess["label_score_thresh"],
-                           "postprocess.label_score_thresh",
-                           &out_config->postprocess.label_score_thresh, out_error);
+        LoadThresholdVector(postprocess["label_score_thresh"],
+                            "postprocess.label_score_thresh",
+                            &out_config->postprocess.label_score_thresh, out_error);
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
-    status = LoadThresholdArray(postprocess["circle_nms_min_radius"],
-                                "postprocess.circle_nms_min_radius",
-                                &out_config->postprocess.circle_nms_min_radius, out_error);
+    status = LoadThresholdVector(postprocess["circle_nms_min_radius"],
+                                 "postprocess.circle_nms_min_radius",
+                                 &out_config->postprocess.circle_nms_min_radius, out_error);
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
@@ -339,6 +487,7 @@ InferenceStatus LoadPackageConfigFromPath(const std::filesystem::path& config_pa
       }
     }
 
+    NormalizeTaskLayout(&config.model);
     status = ValidatePackageConfig(config, out_error);
     if (status != INFERENCE_STATUS_OK) {
       return status;
@@ -379,10 +528,17 @@ InferencePostprocessConfig ToCPostprocessConfig(const PostprocessConfig& config)
   c_config.nms_pre_maxsize = config.nms_pre_maxsize;
   c_config.nms_post_maxsize = config.nms_post_maxsize;
   c_config.final_score_threshold = config.final_score_threshold;
-  std::copy(config.label_score_thresh.begin(), config.label_score_thresh.end(),
-            c_config.label_score_thresh);
-  std::copy(config.circle_nms_min_radius.begin(), config.circle_nms_min_radius.end(),
-            c_config.circle_nms_min_radius);
+  const size_t label_count =
+      std::min(config.label_score_thresh.size(),
+               sizeof(c_config.label_score_thresh) / sizeof(c_config.label_score_thresh[0]));
+  std::copy_n(config.label_score_thresh.begin(), static_cast<long>(label_count),
+              c_config.label_score_thresh);
+  const size_t radius_count =
+      std::min(config.circle_nms_min_radius.size(),
+               sizeof(c_config.circle_nms_min_radius) /
+                   sizeof(c_config.circle_nms_min_radius[0]));
+  std::copy_n(config.circle_nms_min_radius.begin(), static_cast<long>(radius_count),
+              c_config.circle_nms_min_radius);
   return c_config;
 }
 

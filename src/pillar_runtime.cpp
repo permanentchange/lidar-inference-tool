@@ -89,6 +89,18 @@ struct MinScoreCompare {
   }
 };
 
+struct HeatmapEntry {
+  float score = 0.0f;
+  int class_index = 0;
+  int spatial_index = 0;
+};
+
+struct MinHeatmapScoreCompare {
+  bool operator()(const HeatmapEntry& lhs, const HeatmapEntry& rhs) const {
+    return lhs.score > rhs.score;
+  }
+};
+
 void ApplyPreMaxsize(std::vector<float>* scores,
                      std::vector<float>* boxes,
                      std::vector<int>* labels,
@@ -244,10 +256,32 @@ InferenceStatus BuildPillars(const RuntimeConfig& config,
   return status;
 }
 
-InferenceStatus DecodeOutputs(const RuntimeConfig& config,
-                              const RawHeadView& raw_outputs,
-                              CandidateDetections* out_candidates,
-                              std::string* out_error) {
+void SortCandidatesDescending(CandidateDetections* out_candidates) {
+  if (out_candidates == nullptr) {
+    return;
+  }
+  std::vector<size_t> order(out_candidates->scores.size());
+  std::iota(order.begin(), order.end(), 0);
+  std::sort(order.begin(), order.end(), [&](size_t lhs, size_t rhs) {
+    return out_candidates->scores[lhs] > out_candidates->scores[rhs];
+  });
+
+  CandidateDetections sorted;
+  sorted.scores.reserve(order.size());
+  sorted.labels.reserve(order.size());
+  sorted.boxes.reserve(order.size() * kBoxDim);
+  for (size_t index : order) {
+    sorted.scores.push_back(out_candidates->scores[index]);
+    sorted.labels.push_back(out_candidates->labels[index]);
+    AppendBoxes(out_candidates->boxes, index, &sorted.boxes);
+  }
+  *out_candidates = std::move(sorted);
+}
+
+InferenceStatus DecodeLegacyOutputs(const RuntimeConfig& config,
+                                    const RawHeadView& raw_outputs,
+                                    CandidateDetections* out_candidates,
+                                    std::string* out_error) {
   if (out_candidates == nullptr) {
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                     "out_candidates is null");
@@ -350,26 +384,153 @@ InferenceStatus DecodeOutputs(const RuntimeConfig& config,
     }
   }
 
-  std::vector<size_t> order(out_candidates->scores.size());
-  std::iota(order.begin(), order.end(), 0);
-  std::sort(order.begin(), order.end(), [&](size_t lhs, size_t rhs) {
-    return out_candidates->scores[lhs] > out_candidates->scores[rhs];
-  });
-
-  CandidateDetections sorted;
-  sorted.scores.reserve(order.size());
-  sorted.labels.reserve(order.size());
-  sorted.boxes.reserve(order.size() * kBoxDim);
-  for (size_t index : order) {
-    sorted.scores.push_back(out_candidates->scores[index]);
-    sorted.labels.push_back(out_candidates->labels[index]);
-    const size_t box_offset = index * kBoxDim;
-    sorted.boxes.insert(sorted.boxes.end(),
-                        out_candidates->boxes.begin() + static_cast<long>(box_offset),
-                        out_candidates->boxes.begin() + static_cast<long>(box_offset + kBoxDim));
-  }
-  *out_candidates = std::move(sorted);
+  SortCandidatesDescending(out_candidates);
   return INFERENCE_STATUS_OK;
+}
+
+InferenceStatus DecodeCenterPointOutputs(const RuntimeConfig& config,
+                                         const RawHeadView& raw_outputs,
+                                         CandidateDetections* out_candidates,
+                                         std::string* out_error) {
+  if (out_candidates == nullptr) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "out_candidates is null");
+  }
+  out_candidates->scores.clear();
+  out_candidates->boxes.clear();
+  out_candidates->labels.clear();
+
+  const int task_count = raw_outputs.task_count;
+  const int height = raw_outputs.height;
+  const int width = raw_outputs.width;
+  const int hw = height * width;
+  if (task_count <= 0 || height <= 0 || width <= 0) {
+    return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
+                    "Raw outputs have invalid dimensions");
+  }
+  if (config.task_num_classes.size() != static_cast<size_t>(task_count)) {
+    return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
+                    "CenterPoint task layout does not match engine contract");
+  }
+
+  out_candidates->scores.reserve(static_cast<size_t>(task_count) * config.bbox_max_num);
+  out_candidates->boxes.reserve(static_cast<size_t>(task_count) * config.bbox_max_num * kBoxDim);
+  out_candidates->labels.reserve(static_cast<size_t>(task_count) * config.bbox_max_num);
+
+  int class_offset = 0;
+  for (int task_id = 0; task_id < task_count; ++task_id) {
+    const int task_classes = config.task_num_classes[static_cast<size_t>(task_id)];
+    const float* heat =
+        raw_outputs.cls_score + static_cast<size_t>(class_offset) * static_cast<size_t>(hw);
+    const float* bbox = raw_outputs.bbox_pred +
+                        static_cast<size_t>(task_id) * kBBoxChannelsPerTask * static_cast<size_t>(hw);
+    const float* dir = raw_outputs.dir_cls_pred +
+                       static_cast<size_t>(task_id) * kDirChannelsPerTask * static_cast<size_t>(hw);
+
+    std::priority_queue<HeatmapEntry, std::vector<HeatmapEntry>, MinHeatmapScoreCompare> topk_heap;
+    for (int class_index = 0; class_index < task_classes; ++class_index) {
+      const float* class_heat = heat + static_cast<size_t>(class_index) * static_cast<size_t>(hw);
+      for (int spatial_index = 0; spatial_index < hw; ++spatial_index) {
+        if (!std::isfinite(class_heat[spatial_index])) {
+          continue;
+        }
+        const float score = Sigmoid(class_heat[spatial_index]);
+        if (!std::isfinite(score)) {
+          continue;
+        }
+        if (topk_heap.size() < static_cast<size_t>(config.bbox_max_num)) {
+          topk_heap.push({score, class_index, spatial_index});
+        } else if (score > topk_heap.top().score) {
+          topk_heap.pop();
+          topk_heap.push({score, class_index, spatial_index});
+        }
+      }
+    }
+
+    std::vector<HeatmapEntry> topk;
+    topk.reserve(topk_heap.size());
+    while (!topk_heap.empty()) {
+      topk.push_back(topk_heap.top());
+      topk_heap.pop();
+    }
+    std::sort(topk.begin(), topk.end(), [](const HeatmapEntry& lhs, const HeatmapEntry& rhs) {
+      return lhs.score > rhs.score;
+    });
+
+    for (const HeatmapEntry& entry : topk) {
+      if (!std::isfinite(entry.score) || entry.score <= config.score_threshold) {
+        continue;
+      }
+      const int y_idx = entry.spatial_index / width;
+      const int x_idx = entry.spatial_index % width;
+      const float reg_x = bbox[0 * hw + entry.spatial_index];
+      const float reg_y = bbox[1 * hw + entry.spatial_index];
+      const float height_value = bbox[2 * hw + entry.spatial_index];
+      const float dim_x =
+          config.norm_bbox ? SafeExp(bbox[3 * hw + entry.spatial_index])
+                           : bbox[3 * hw + entry.spatial_index];
+      const float dim_y =
+          config.norm_bbox ? SafeExp(bbox[4 * hw + entry.spatial_index])
+                           : bbox[4 * hw + entry.spatial_index];
+      const float dim_z =
+          config.norm_bbox ? SafeExp(bbox[5 * hw + entry.spatial_index])
+                           : bbox[5 * hw + entry.spatial_index];
+      const float rot_sine = dir[0 * hw + entry.spatial_index];
+      const float rot_cosine = dir[1 * hw + entry.spatial_index];
+      const float yaw = std::atan2(rot_sine, rot_cosine);
+
+      const float center_x =
+          (static_cast<float>(x_idx) + reg_x) * config.out_size_factor * config.pillar_size[0] +
+          config.point_cloud_range[0];
+      const float center_y =
+          (static_cast<float>(y_idx) + reg_y) * config.out_size_factor * config.pillar_size[1] +
+          config.point_cloud_range[1];
+      const float center_z = height_value;
+      if (!std::isfinite(center_x) || !std::isfinite(center_y) || !std::isfinite(center_z) ||
+          !std::isfinite(dim_x) || !std::isfinite(dim_y) || !std::isfinite(dim_z) ||
+          !std::isfinite(yaw)) {
+        continue;
+      }
+
+      if (center_x < config.post_center_range[0] || center_x > config.post_center_range[3] ||
+          center_y < config.post_center_range[1] || center_y > config.post_center_range[4] ||
+          center_z < config.post_center_range[2] || center_z > config.post_center_range[5]) {
+        continue;
+      }
+
+      out_candidates->scores.push_back(entry.score);
+      out_candidates->labels.push_back(class_offset + entry.class_index + 1);
+      out_candidates->boxes.push_back(center_x);
+      out_candidates->boxes.push_back(center_y);
+      out_candidates->boxes.push_back(center_z);
+      out_candidates->boxes.push_back(dim_x);
+      out_candidates->boxes.push_back(dim_y);
+      out_candidates->boxes.push_back(dim_z);
+      out_candidates->boxes.push_back(yaw);
+    }
+    class_offset += task_classes;
+  }
+  return INFERENCE_STATUS_OK;
+}
+
+void ShiftBoxesToBottomCentered(CandidateDetections* detections) {
+  if (detections == nullptr) {
+    return;
+  }
+  for (size_t i = 0; i < detections->scores.size(); ++i) {
+    const size_t box_offset = i * kBoxDim;
+    detections->boxes[box_offset + 2] -= detections->boxes[box_offset + 5] * 0.5f;
+  }
+}
+
+InferenceStatus DecodeOutputs(const RuntimeConfig& config,
+                              const RawHeadView& raw_outputs,
+                              CandidateDetections* out_candidates,
+                              std::string* out_error) {
+  if (config.decode_mode == inference::DecodeMode::kCenterPoint) {
+    return DecodeCenterPointOutputs(config, raw_outputs, out_candidates, out_error);
+  }
+  return DecodeLegacyOutputs(config, raw_outputs, out_candidates, out_error);
 }
 
 InferenceStatus CopyOutputsToResponse(const CandidateDetections& candidates,
@@ -462,6 +623,12 @@ InferenceStatus ParseRuntimeConfig(const InferenceConfig& config,
   out_config->bbox_max_num = config.bbox_max_num;
   out_config->out_size_factor = config.out_size_factor;
   out_config->score_threshold = config.score_threshold;
+  out_config->decode_mode = inference::DecodeMode::kLegacy;
+  out_config->bbox_code_size = kBoxDim;
+  out_config->norm_bbox = false;
+  out_config->has_velocity = false;
+  out_config->task_num_classes = {1, 1, 1};
+  out_config->label_count = kLabelCount;
   return INFERENCE_STATUS_OK;
 }
 
@@ -515,6 +682,7 @@ InferenceStatus ParsePostprocessConfig(const InferencePostprocessConfig& config,
 
 InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
                                   const PostprocessConfig& config,
+                                  const RuntimeConfig& runtime_config,
                                   CandidateDetections* out_result,
                                   std::string* out_error) {
   if (out_result == nullptr) {
@@ -528,6 +696,62 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
   if (config.nms_pre_maxsize <= 0 || config.nms_post_maxsize <= 0) {
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                     "NMS maxsize must be positive");
+  }
+  if (runtime_config.decode_mode == inference::DecodeMode::kCenterPoint) {
+    out_result->scores.clear();
+    out_result->boxes.clear();
+    out_result->labels.clear();
+
+    int class_offset = 0;
+    for (size_t task_index = 0; task_index < runtime_config.task_num_classes.size(); ++task_index) {
+      const int task_classes = runtime_config.task_num_classes[task_index];
+      CandidateDetections per_task;
+      per_task.scores.reserve(candidates.scores.size());
+      per_task.labels.reserve(candidates.labels.size());
+      per_task.boxes.reserve(candidates.boxes.size());
+      for (size_t i = 0; i < candidates.scores.size(); ++i) {
+        const int label = candidates.labels[i];
+        if (label < class_offset + 1 || label > class_offset + task_classes) {
+          continue;
+        }
+        per_task.scores.push_back(candidates.scores[i]);
+        per_task.labels.push_back(label);
+        AppendBoxes(candidates.boxes, i, &per_task.boxes);
+      }
+      if (config.nms_type == INFERENCE_NMS_CIRCLE) {
+        const float radius = task_index < config.circle_nms_min_radius.size()
+                                 ? config.circle_nms_min_radius[task_index]
+                                 : 0.0f;
+        const std::vector<size_t> keep =
+            CircleNmsKeep(per_task.scores, per_task.boxes, radius, config.nms_post_maxsize);
+        for (size_t kept_index : keep) {
+          out_result->scores.push_back(per_task.scores[kept_index]);
+          out_result->labels.push_back(per_task.labels[kept_index]);
+          AppendBoxes(per_task.boxes, kept_index, &out_result->boxes);
+        }
+      } else {
+        ApplyPreMaxsize(&per_task.scores, &per_task.boxes, &per_task.labels,
+                        config.nms_pre_maxsize);
+        std::vector<long> keep(per_task.scores.size(), 0);
+        const int keep_count =
+            per_task.scores.empty()
+                ? 0
+                : nms_gpu(per_task.boxes.data(), keep.data(), config.nms_thresh,
+                          static_cast<int>(per_task.scores.size()));
+        const size_t final_count = std::min(static_cast<size_t>(keep_count),
+                                            static_cast<size_t>(config.nms_post_maxsize));
+        for (size_t i = 0; i < final_count; ++i) {
+          const size_t src = static_cast<size_t>(keep[i]);
+          out_result->scores.push_back(per_task.scores[src]);
+          out_result->labels.push_back(per_task.labels[src]);
+          AppendBoxes(per_task.boxes, src, &out_result->boxes);
+        }
+      }
+      class_offset += task_classes;
+    }
+    FilterByScoreThreshold(out_result, config.final_score_threshold);
+    ShiftBoxesToBottomCentered(out_result);
+    return INFERENCE_STATUS_OK;
   }
   if (config.nms_type == INFERENCE_NMS_CIRCLE) {
     out_result->scores.clear();
@@ -891,6 +1115,7 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
   raw_outputs.dir_channels = contract.dir_channels;
   raw_outputs.height = contract.height;
   raw_outputs.width = contract.width;
+  raw_outputs.task_count = contract.task_count;
   if (debug != nullptr) {
     debug->raw_outputs.bbox_pred = impl_->h_bbox_pred;
     debug->raw_outputs.cls_score = impl_->h_cls_score;
@@ -900,6 +1125,7 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
     debug->raw_outputs.dir_channels = raw_outputs.dir_channels;
     debug->raw_outputs.height = raw_outputs.height;
     debug->raw_outputs.width = raw_outputs.width;
+    debug->raw_outputs.task_count = raw_outputs.task_count;
   }
 
   CandidateDetections candidates;
@@ -918,7 +1144,7 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
   const CandidateDetections* output_detections = &candidates;
   CandidateDetections final_detections;
   if (postprocess != nullptr) {
-    status = RunPostprocessNms(candidates, *postprocess, &final_detections, &last_error_);
+    status = RunPostprocessNms(candidates, *postprocess, config_, &final_detections, &last_error_);
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }

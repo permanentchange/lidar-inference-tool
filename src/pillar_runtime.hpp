@@ -24,6 +24,12 @@ struct RuntimeConfig {
   int bbox_max_num = 500;
   int out_size_factor = 4;
   float score_threshold = 0.1f;
+  inference::DecodeMode decode_mode = inference::DecodeMode::kLegacy;
+  int bbox_code_size = 7;
+  bool norm_bbox = false;
+  bool has_velocity = false;
+  std::vector<int> task_num_classes;
+  int label_count = 0;
 };
 
 struct PostprocessConfig {
@@ -32,8 +38,8 @@ struct PostprocessConfig {
   int nms_pre_maxsize = 2048;
   int nms_post_maxsize = 256;
   float final_score_threshold = 0.3f;
-  std::array<float, 3> circle_nms_min_radius{{4.0f, 12.0f, 10.0f}};
-  std::array<float, 3> label_score_thresh{{0.45f, 0.3f, 0.45f}};
+  std::vector<float> circle_nms_min_radius{4.0f, 12.0f, 10.0f};
+  std::vector<float> label_score_thresh{0.45f, 0.3f, 0.45f};
 };
 
 struct StageTimings {
@@ -62,6 +68,7 @@ struct RawHeadOutputs {
   int dir_channels = 0;
   int height = 0;
   int width = 0;
+  int task_count = 0;
 };
 
 struct RawHeadView {
@@ -73,6 +80,7 @@ struct RawHeadView {
   int dir_channels = 0;
   int height = 0;
   int width = 0;
+  int task_count = 0;
 };
 
 struct CandidateDetections {
@@ -160,6 +168,7 @@ InferenceStatus LoadPcdFile(const std::string& path,
                             std::string* out_error);
 InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
                                   const PostprocessConfig& config,
+                                  const RuntimeConfig& runtime_config,
                                   CandidateDetections* out_result,
                                   std::string* out_error);
 InferenceStatus RunToolPostprocessNms(const CandidateDetections& candidates,

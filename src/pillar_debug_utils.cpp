@@ -19,8 +19,6 @@ namespace inference_internal {
 namespace {
 
 constexpr int kBoxDim = 7;
-constexpr int kLabelCount = 3;
-
 InferenceStatus SetError(std::string* out_error,
                          InferenceStatus status,
                          const std::string& message) {
@@ -120,6 +118,12 @@ RuntimeConfig RuntimeConfigFromPackage(const inference::PackageConfig& package) 
   runtime.bbox_max_num = package.runtime.bbox_max_num;
   runtime.out_size_factor = package.model.out_size_factor;
   runtime.score_threshold = package.runtime.score_threshold;
+  runtime.decode_mode = package.model.decode_mode;
+  runtime.bbox_code_size = package.model.bbox_code_size;
+  runtime.norm_bbox = package.model.norm_bbox;
+  runtime.has_velocity = package.model.has_velocity;
+  runtime.task_num_classes = package.model.task_num_classes;
+  runtime.label_count = static_cast<int>(package.model.label_names.size());
   return runtime;
 }
 
@@ -399,7 +403,7 @@ InferenceStatus RunToolPostprocessNms(const CandidateDetections& candidates,
                                       CandidateDetections* out_result,
                                       std::string* out_error) {
   PostprocessConfig postprocess = PostprocessConfigFromPackage(config.package);
-  return RunPostprocessNms(candidates, postprocess, out_result, out_error);
+  return RunPostprocessNms(candidates, postprocess, config.runtime, out_result, out_error);
 }
 
 InferenceStatus SaveDebugArtifacts(const DebugArtifacts& debug,
@@ -520,8 +524,14 @@ InferenceStatus SaveDebugArtifacts(const DebugArtifacts& debug,
   result_json << "  \"objects\": [\n";
   for (size_t i = 0; i < debug.final_nms_outputs.scores.size(); ++i) {
     const int label = debug.final_nms_outputs.labels[i];
+    const size_t fallback_index = config.package.model.label_names.empty() ? 0UL
+                                                                           : config.package.model
+                                                                                 .label_names.size() -
+                                                                                 1UL;
     const size_t label_index =
-        label >= 1 && label <= kLabelCount ? static_cast<size_t>(label - 1) : 0UL;
+        label >= 1 && label <= static_cast<int>(config.package.model.label_names.size())
+            ? static_cast<size_t>(label - 1)
+            : fallback_index;
     result_json << "    {\n";
     result_json << "      \"box\": [";
     for (int dim = 0; dim < kBoxDim; ++dim) {

@@ -330,14 +330,42 @@ InferenceStatus BuildContract(const RuntimeConfig& config,
     return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
                     "Engine output feature map shapes do not match");
   }
-  if (contract.bbox_channels <= 0 || contract.cls_channels <= 0 || contract.dir_channels <= 0 ||
-      contract.bbox_channels != contract.cls_channels * kBBoxChannelsPerTask ||
-      contract.dir_channels != contract.cls_channels * kDirChannelsPerTask) {
+  if (contract.bbox_channels <= 0 || contract.cls_channels <= 0 || contract.dir_channels <= 0) {
     return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
-                    "Engine channels do not match expected 3-task CenterPoint head layout");
+                    "Engine output channels must be positive");
   }
 
-  contract.task_count = contract.cls_channels;
+  if (config.decode_mode == inference::DecodeMode::kCenterPoint) {
+    if (config.task_num_classes.empty()) {
+      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
+                      "CenterPoint runtime config requires task_num_classes");
+    }
+    const int expected_task_count = static_cast<int>(config.task_num_classes.size());
+    int expected_cls_channels = 0;
+    for (const int task_classes : config.task_num_classes) {
+      expected_cls_channels += task_classes;
+    }
+    if (contract.bbox_channels != expected_task_count * kBBoxChannelsPerTask ||
+        contract.dir_channels != expected_task_count * kDirChannelsPerTask ||
+        contract.cls_channels != expected_cls_channels) {
+      std::ostringstream oss;
+      oss << "Engine channels do not match CenterPoint task layout: bbox="
+          << contract.bbox_channels << " cls=" << contract.cls_channels
+          << " dir=" << contract.dir_channels << " expected bbox="
+          << expected_task_count * kBBoxChannelsPerTask << " cls="
+          << expected_cls_channels << " dir="
+          << expected_task_count * kDirChannelsPerTask;
+      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
+    }
+    contract.task_count = expected_task_count;
+  } else {
+    if (contract.bbox_channels != contract.cls_channels * kBBoxChannelsPerTask ||
+        contract.dir_channels != contract.cls_channels * kDirChannelsPerTask) {
+      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
+                      "Engine channels do not match expected legacy CenterPoint head layout");
+    }
+    contract.task_count = contract.cls_channels;
+  }
   contract.num_bindings = engine.getNbBindings();
   *out_contract = contract;
   return INFERENCE_STATUS_OK;
