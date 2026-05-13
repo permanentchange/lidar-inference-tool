@@ -5,23 +5,45 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 import numpy as np
-LABEL_NAMES = {
-    1: "car",
-    2: "pedestrian",
-    3: "cyclist",
-}
+import yaml
 
-LABEL_COLORS = {
-    1: "#00d4ff",
-    2: "#ff8c42",
-    3: "#7cff6b",
-}
+
+DEFAULT_COLORS = [
+    "#00d4ff",
+    "#ff8c42",
+    "#7cff6b",
+    "#ff5d8f",
+    "#ffd166",
+    "#9b5de5",
+    "#06d6a0",
+    "#ef476f",
+    "#118ab2",
+    "#f4a261",
+    "#8ecae6",
+    "#fb8500",
+]
+
+
 def load_model_config(model_dir: Path):
     model_yaml = model_dir / "model.yaml"
     with model_yaml.open("r", encoding="utf-8") as f:
-        import yaml
-
         return yaml.safe_load(f)
+
+
+def label_name_from_config(label_names, one_based_label):
+    zero_based_label = int(one_based_label) - 1
+    if zero_based_label < 0:
+        return f"class_{one_based_label}"
+    if zero_based_label < len(label_names):
+        return str(label_names[zero_based_label])
+    return f"class_{one_based_label}"
+
+
+def color_for_label(one_based_label):
+    zero_based_label = int(one_based_label) - 1
+    if zero_based_label < 0:
+        return "#ffffff"
+    return DEFAULT_COLORS[zero_based_label % len(DEFAULT_COLORS)]
 
 
 def make_extent(pc_range):
@@ -54,12 +76,12 @@ def box_corners(box):
     return corners
 
 
-def draw_boxes(ax, boxes, scores, labels, linewidth=1.0, alpha=0.8, font_size=6):
+def draw_boxes(ax, boxes, scores, labels, label_names, linewidth=1.0, alpha=0.8, font_size=6):
     legend_labels = []
     for box, score, label in zip(boxes, scores, labels):
         label = int(label)
-        color = LABEL_COLORS.get(label, "#ffffff")
-        name = LABEL_NAMES.get(label, f"class_{label}")
+        color = color_for_label(label)
+        name = label_name_from_config(label_names, label)
         corners = box_corners(box)
         ax.plot(corners[:, 0], corners[:, 1], color=color, linewidth=linewidth, alpha=alpha)
         ax.text(
@@ -76,11 +98,17 @@ def draw_boxes(ax, boxes, scores, labels, linewidth=1.0, alpha=0.8, font_size=6)
     return sorted(set(legend_labels))
 
 
-def add_legend(ax, label_ids):
+def add_legend(ax, label_ids, label_names):
     if not label_ids:
         return
     handles = [
-        Line2D([0], [0], color=LABEL_COLORS[label_id], lw=2, label=LABEL_NAMES.get(label_id, str(label_id)))
+        Line2D(
+            [0],
+            [0],
+            color=color_for_label(label_id),
+            lw=2,
+            label=label_name_from_config(label_names, label_id),
+        )
         for label_id in label_ids
     ]
     ax.legend(handles=handles, loc="upper right", framealpha=0.85)
@@ -108,6 +136,7 @@ def main():
     cfg = load_model_config(args.model_dir)
     dump_dir = args.dump_dir
     pc_range = cfg["model"]["point_cloud_range"]
+    label_names = list(cfg.get("model", {}).get("label_names", []))
     extent = make_extent(pc_range)
 
     points = np.load(dump_dir / "input_points.npy")
@@ -144,11 +173,12 @@ def main():
             decoded_boxes,
             decoded_scores,
             decoded_labels,
+            label_names,
             linewidth=0.8,
             alpha=0.7,
             font_size=5,
         )
-    add_legend(ax, decoded_legend)
+    add_legend(ax, decoded_legend, label_names)
     setup_bev_axes(ax, pc_range, "Decoded Candidates BEV")
     save_figure(fig, dump_dir / "03_decoded_candidates_bev.png")
 
@@ -162,11 +192,12 @@ def main():
             final_nms_boxes,
             final_nms_scores,
             final_nms_labels,
+            label_names,
             linewidth=1.2,
             alpha=0.95,
             font_size=6,
         )
-    add_legend(ax, final_legend)
+    add_legend(ax, final_legend, label_names)
     setup_bev_axes(ax, pc_range, "Final Boxes BEV")
     save_figure(fig, dump_dir / "04_final_boxes_bev.png")
 
