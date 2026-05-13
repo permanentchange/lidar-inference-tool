@@ -19,6 +19,7 @@ set_target_properties(pillar_postprocess PROPERTIES POSITION_INDEPENDENT_CODE ON
 target_include_directories(pillar_postprocess
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
   PRIVATE
     ${CUDA_INCLUDE_DIRS}
 )
