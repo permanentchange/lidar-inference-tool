@@ -199,6 +199,7 @@ else()
       "yaml-cpp was not found in system paths. Install libyaml-cpp-dev or set YAML_CPP_ROOT.")
   endif()
 
+  add_subdirectory(src/pillar_postprocess)
   add_subdirectory(third_party/iou3d_nms)
   add_subdirectory(third_party/voxelize)
 
@@ -220,6 +221,7 @@ else()
   )
   target_link_libraries(inference
     PRIVATE
+      pillar_postprocess
       iou3d_nms
       voxelization
       ${CUDA_LIBRARIES}
@@ -247,6 +249,7 @@ else()
   )
   target_link_libraries(pillar_debug_tool
     PRIVATE
+      pillar_postprocess
       ${CUDA_LIBRARIES}
       ${NVINFER_LIB}
       ${NVINFER_PLUGIN_LIB}

@@ -1,4 +1,5 @@
 #include "pillar_runtime.hpp"
+#include "pillar_postprocess/pillar_postprocess.hpp"
 #include "trt_engine.hpp"
 
 #include <algorithm>
@@ -908,6 +909,7 @@ InferenceOutputSpec MakeOutputSpec(int task_count, int bbox_max_num) {
 
 struct PillarRuntime::Impl {
   TrtExecutor trt;
+  std::unique_ptr<GpuDecodedCandidates> gpu_decoder;
   std::shared_ptr<Voxelization> voxelizer;
   cudaStream_t stream = nullptr;
   cudaEvent_t profile_start = nullptr;
@@ -1063,6 +1065,13 @@ InferenceStatus PillarRuntime::Initialize() {
   if (status != INFERENCE_STATUS_OK) {
     return status;
   }
+  impl_->gpu_decoder = std::make_unique<GpuDecodedCandidates>();
+  status = impl_->gpu_decoder->Initialize(config_, contract.task_count, contract.bbox_channels,
+                                          contract.cls_channels, contract.dir_channels,
+                                          contract.height, contract.width, &last_error_);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
   return INFERENCE_STATUS_OK;
 }
 
@@ -1202,80 +1211,119 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
     return status;
   }
 
-  status = MeasureGpuStageBegin(impl_->profile_start, impl_->stream, enable_gpu_timing,
-                                &last_error_);
-  if (status != INFERENCE_STATUS_OK) {
-    return status;
-  }
-  status = CheckCuda(cudaMemcpyAsync(impl_->h_bbox_pred, impl_->d_bbox_pred,
-                                     impl_->h_bbox_pred_count * sizeof(float),
-                                     cudaMemcpyDeviceToHost, impl_->stream),
-                     "cudaMemcpyAsync(bbox_pred)", &last_error_);
-  if (status == INFERENCE_STATUS_OK) {
-    status = CheckCuda(cudaMemcpyAsync(impl_->h_cls_score, impl_->d_cls_score,
-                                       impl_->h_cls_score_count * sizeof(float),
-                                       cudaMemcpyDeviceToHost, impl_->stream),
-                       "cudaMemcpyAsync(cls_score)", &last_error_);
-  }
-  if (status == INFERENCE_STATUS_OK) {
-    status = CheckCuda(cudaMemcpyAsync(impl_->h_dir_cls_pred, impl_->d_dir_cls_pred,
-                                       impl_->h_dir_cls_pred_count * sizeof(float),
-                                       cudaMemcpyDeviceToHost, impl_->stream),
-                       "cudaMemcpyAsync(dir_cls_pred)", &last_error_);
-  }
-  if (status != INFERENCE_STATUS_OK) {
-    return status;
-  }
-  status = SyncCudaStream(impl_->stream, "cudaStreamSynchronize(head_outputs)", &last_error_);
-  if (status != INFERENCE_STATUS_OK) {
-    return status;
-  }
-  status = MeasureGpuStageEnd(impl_->profile_start, impl_->profile_end, impl_->stream,
-                              enable_gpu_timing, &local_timings.d2h_collect_ms, &last_error_);
-  if (status != INFERENCE_STATUS_OK) {
-    return status;
-  }
-
-  RawHeadView raw_outputs;
-  raw_outputs.bbox_pred = impl_->h_bbox_pred;
-  raw_outputs.cls_score = impl_->h_cls_score;
-  raw_outputs.dir_cls_pred = impl_->h_dir_cls_pred;
-  raw_outputs.bbox_channels = contract.bbox_channels;
-  raw_outputs.cls_channels = contract.cls_channels;
-  raw_outputs.dir_channels = contract.dir_channels;
-  raw_outputs.height = contract.height;
-  raw_outputs.width = contract.width;
-  raw_outputs.task_count = contract.task_count;
-  if (debug != nullptr) {
-    debug->raw_outputs.bbox_pred.assign(impl_->h_bbox_pred,
-                                        impl_->h_bbox_pred + impl_->h_bbox_pred_count);
-    debug->raw_outputs.cls_score.assign(impl_->h_cls_score,
-                                        impl_->h_cls_score + impl_->h_cls_score_count);
-    debug->raw_outputs.dir_cls_pred.assign(impl_->h_dir_cls_pred,
-                                           impl_->h_dir_cls_pred + impl_->h_dir_cls_pred_count);
-    debug->raw_outputs.bbox_channels = raw_outputs.bbox_channels;
-    debug->raw_outputs.cls_channels = raw_outputs.cls_channels;
-    debug->raw_outputs.dir_channels = raw_outputs.dir_channels;
-    debug->raw_outputs.height = raw_outputs.height;
-    debug->raw_outputs.width = raw_outputs.width;
-    debug->raw_outputs.task_count = raw_outputs.task_count;
-  }
-
   CandidateDetections candidates;
-  auto start = std::chrono::steady_clock::now();
-  status = DecodeOutputs(config_, raw_outputs, &candidates, &last_error_);
-  auto end = std::chrono::steady_clock::now();
-  local_timings.decode_ms = ElapsedMs(start, end);
-  if (status != INFERENCE_STATUS_OK) {
-    return status;
-  }
-  if (debug != nullptr) {
-    debug->decoded_candidates = candidates;
-    debug->final_nms_outputs = CandidateDetections{};
-  }
-
   const CandidateDetections* output_detections = &candidates;
   CandidateDetections final_detections;
+  auto start = std::chrono::steady_clock::now();
+  auto end = start;
+
+  if (debug == nullptr && impl_->gpu_decoder != nullptr) {
+    status = MeasureGpuStageBegin(impl_->profile_start, impl_->stream, enable_gpu_timing,
+                                  &last_error_);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    status = impl_->gpu_decoder->Decode(impl_->d_bbox_pred, impl_->d_cls_score,
+                                        impl_->d_dir_cls_pred, impl_->stream, &last_error_);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    status = MeasureGpuStageEnd(impl_->profile_start, impl_->profile_end, impl_->stream,
+                                enable_gpu_timing, &local_timings.decode_ms, &last_error_);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+
+    status = MeasureGpuStageBegin(impl_->profile_start, impl_->stream, enable_gpu_timing,
+                                  &last_error_);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    status = impl_->gpu_decoder->CopyToHost(&candidates, impl_->stream, &last_error_);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    status = MeasureGpuStageEnd(impl_->profile_start, impl_->profile_end, impl_->stream,
+                                enable_gpu_timing, &local_timings.d2h_collect_ms, &last_error_);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    if (config_.decode_mode == inference::DecodeMode::kLegacy) {
+      SortCandidatesDescending(&candidates);
+    }
+  } else {
+    status = MeasureGpuStageBegin(impl_->profile_start, impl_->stream, enable_gpu_timing,
+                                  &last_error_);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    status = CheckCuda(cudaMemcpyAsync(impl_->h_bbox_pred, impl_->d_bbox_pred,
+                                       impl_->h_bbox_pred_count * sizeof(float),
+                                       cudaMemcpyDeviceToHost, impl_->stream),
+                       "cudaMemcpyAsync(bbox_pred)", &last_error_);
+    if (status == INFERENCE_STATUS_OK) {
+      status = CheckCuda(cudaMemcpyAsync(impl_->h_cls_score, impl_->d_cls_score,
+                                         impl_->h_cls_score_count * sizeof(float),
+                                         cudaMemcpyDeviceToHost, impl_->stream),
+                         "cudaMemcpyAsync(cls_score)", &last_error_);
+    }
+    if (status == INFERENCE_STATUS_OK) {
+      status = CheckCuda(cudaMemcpyAsync(impl_->h_dir_cls_pred, impl_->d_dir_cls_pred,
+                                         impl_->h_dir_cls_pred_count * sizeof(float),
+                                         cudaMemcpyDeviceToHost, impl_->stream),
+                         "cudaMemcpyAsync(dir_cls_pred)", &last_error_);
+    }
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    status = SyncCudaStream(impl_->stream, "cudaStreamSynchronize(head_outputs)", &last_error_);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    status = MeasureGpuStageEnd(impl_->profile_start, impl_->profile_end, impl_->stream,
+                                enable_gpu_timing, &local_timings.d2h_collect_ms, &last_error_);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+
+    RawHeadView raw_outputs;
+    raw_outputs.bbox_pred = impl_->h_bbox_pred;
+    raw_outputs.cls_score = impl_->h_cls_score;
+    raw_outputs.dir_cls_pred = impl_->h_dir_cls_pred;
+    raw_outputs.bbox_channels = contract.bbox_channels;
+    raw_outputs.cls_channels = contract.cls_channels;
+    raw_outputs.dir_channels = contract.dir_channels;
+    raw_outputs.height = contract.height;
+    raw_outputs.width = contract.width;
+    raw_outputs.task_count = contract.task_count;
+    if (debug != nullptr) {
+      debug->raw_outputs.bbox_pred.assign(impl_->h_bbox_pred,
+                                          impl_->h_bbox_pred + impl_->h_bbox_pred_count);
+      debug->raw_outputs.cls_score.assign(impl_->h_cls_score,
+                                          impl_->h_cls_score + impl_->h_cls_score_count);
+      debug->raw_outputs.dir_cls_pred.assign(impl_->h_dir_cls_pred,
+                                             impl_->h_dir_cls_pred + impl_->h_dir_cls_pred_count);
+      debug->raw_outputs.bbox_channels = raw_outputs.bbox_channels;
+      debug->raw_outputs.cls_channels = raw_outputs.cls_channels;
+      debug->raw_outputs.dir_channels = raw_outputs.dir_channels;
+      debug->raw_outputs.height = raw_outputs.height;
+      debug->raw_outputs.width = raw_outputs.width;
+      debug->raw_outputs.task_count = raw_outputs.task_count;
+    }
+
+    start = std::chrono::steady_clock::now();
+    status = DecodeOutputs(config_, raw_outputs, &candidates, &last_error_);
+    end = std::chrono::steady_clock::now();
+    local_timings.decode_ms = ElapsedMs(start, end);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    if (debug != nullptr) {
+      debug->decoded_candidates = candidates;
+      debug->final_nms_outputs = CandidateDetections{};
+    }
+  }
+
   if (postprocess != nullptr) {
     status = RunPostprocessNms(candidates, *postprocess, config_, &final_detections, &last_error_);
     if (status != INFERENCE_STATUS_OK) {
