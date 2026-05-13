@@ -232,6 +232,20 @@ class VoxelizationImplement : public Voxelization {
     return true;
   }
 
+  void synchronize_pending(cudaStream_t stream) {
+    if (!pillars_pending_) {
+      return;
+    }
+    checkRuntime(cudaStreamSynchronize(stream));
+    real_num_voxels_ = std::min(int(*h_real_num_voxels_), param_.max_voxels);
+    if (real_num_voxels_ > 0) {
+      cuda_linear_launch(clamp_num_points_kernel, stream, real_num_voxels_, d_voxel_num_,
+                         param_.max_points_per_voxel);
+      checkRuntime(cudaStreamSynchronize(stream));
+    }
+    pillars_pending_ = false;
+  }
+
   virtual void forward_pillars(float *points_device_, int num_points, CoordinateOrder output_order, void *stream) override {
     cudaStream_t _stream = reinterpret_cast<cudaStream_t>(stream);
 
@@ -244,6 +258,7 @@ class VoxelizationImplement : public Voxelization {
 
     if (num_points <= 0) {
       real_num_voxels_ = 0;
+      pillars_pending_ = false;
       return;
     }
 
@@ -260,21 +275,15 @@ class VoxelizationImplement : public Voxelization {
                          d_voxel_num_, voxels_, d_voxel_indices_);
     } else
       Assertf(false, "Invalid output_order: %d", static_cast<int>(output_order));
-
-    checkRuntime(cudaStreamSynchronize(_stream));
-
-    real_num_voxels_ = std::min(int(*h_real_num_voxels_), param_.max_voxels);
-    if (real_num_voxels_ > 0) {
-      cuda_linear_launch(clamp_num_points_kernel, _stream, real_num_voxels_, d_voxel_num_,
-                         param_.max_points_per_voxel);
-      checkRuntime(cudaStreamSynchronize(_stream));
-    }
+    pending_stream_ = _stream;
+    pillars_pending_ = true;
   }
 
   // points and voxels must be of half type
   virtual void forward(float *points_device_, int num_points, CoordinateOrder output_order, void *stream) override {
     cudaStream_t _stream = reinterpret_cast<cudaStream_t>(stream);
     forward_pillars(points_device_, num_points, output_order, stream);
+    synchronize_pending(_stream);
     if (real_num_voxels_ <= 0) {
       return;
     }
@@ -284,9 +293,13 @@ class VoxelizationImplement : public Voxelization {
     checkRuntime(cudaStreamSynchronize(_stream));
   }
 
-  virtual int num_voxels() override { return real_num_voxels_; }
+  virtual int num_voxels() override {
+    synchronize_pending(pending_stream_);
+    return real_num_voxels_;
+  }
 
   virtual unsigned int get_output(nvtype::half** d_voxel_features, unsigned int** d_voxel_indices) override {
+    synchronize_pending(pending_stream_);
     *d_voxel_features = reinterpret_cast<nvtype::half*>(d_voxel_features_);
     *d_voxel_indices = d_voxel_indices_;
     return real_num_voxels_;
@@ -295,6 +308,7 @@ class VoxelizationImplement : public Voxelization {
   virtual unsigned int get_pillar_output(float** d_voxels,
                                          unsigned int** d_num_points_per_voxel,
                                          unsigned int** d_voxel_indices) override {
+    synchronize_pending(pending_stream_);
     *d_voxels = voxels_;
     *d_num_points_per_voxel = d_voxel_num_;
     *d_voxel_indices = d_voxel_indices_;
@@ -304,6 +318,8 @@ class VoxelizationImplement : public Voxelization {
  private:
   VoxelizationParameter param_;
   int real_num_voxels_ = 0;
+  cudaStream_t pending_stream_ = nullptr;
+  bool pillars_pending_ = false;
 
   unsigned int *hash_table_ = nullptr;
   float *voxels_ = nullptr;

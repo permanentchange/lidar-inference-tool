@@ -78,6 +78,75 @@ InferenceStatus CheckCuda(cudaError_t error,
   return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
 }
 
+template <typename T>
+InferenceStatus AllocatePinnedHostBuffer(size_t count,
+                                         const std::string& name,
+                                         T** out_buffer,
+                                         std::string* out_error) {
+  if (out_buffer == nullptr) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    name + " output buffer pointer is null");
+  }
+  *out_buffer = nullptr;
+  if (count == 0) {
+    return INFERENCE_STATUS_OK;
+  }
+  return CheckCuda(cudaMallocHost(reinterpret_cast<void**>(out_buffer), count * sizeof(T)),
+                   "cudaMallocHost(" + name + ")", out_error);
+}
+
+template <typename T>
+void FreePinnedHostBuffer(T** buffer) {
+  if (buffer != nullptr && *buffer != nullptr) {
+    cudaFreeHost(*buffer);
+    *buffer = nullptr;
+  }
+}
+
+InferenceStatus SyncCudaStream(cudaStream_t stream,
+                               const std::string& operation,
+                               std::string* out_error) {
+  return CheckCuda(cudaStreamSynchronize(stream), operation, out_error);
+}
+
+InferenceStatus MeasureGpuStageBegin(cudaEvent_t start_event,
+                                     cudaStream_t stream,
+                                     bool enabled,
+                                     std::string* out_error) {
+  if (!enabled) {
+    return INFERENCE_STATUS_OK;
+  }
+  return CheckCuda(cudaEventRecord(start_event, stream), "cudaEventRecord(stage_start)", out_error);
+}
+
+InferenceStatus MeasureGpuStageEnd(cudaEvent_t start_event,
+                                   cudaEvent_t end_event,
+                                   cudaStream_t stream,
+                                   bool enabled,
+                                   double* out_ms,
+                                   std::string* out_error) {
+  if (!enabled || out_ms == nullptr) {
+    return INFERENCE_STATUS_OK;
+  }
+  InferenceStatus status =
+      CheckCuda(cudaEventRecord(end_event, stream), "cudaEventRecord(stage_end)", out_error);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
+  status = CheckCuda(cudaEventSynchronize(end_event), "cudaEventSynchronize(stage_end)", out_error);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
+  float elapsed_ms = 0.0f;
+  status = CheckCuda(cudaEventElapsedTime(&elapsed_ms, start_event, end_event),
+                     "cudaEventElapsedTime(stage)", out_error);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
+  *out_ms = static_cast<double>(elapsed_ms);
+  return INFERENCE_STATUS_OK;
+}
+
 struct HeapEntry {
   float score = 0.0f;
   int index = 0;
@@ -841,15 +910,26 @@ struct PillarRuntime::Impl {
   TrtExecutor trt;
   std::shared_ptr<Voxelization> voxelizer;
   cudaStream_t stream = nullptr;
+  cudaEvent_t profile_start = nullptr;
+  cudaEvent_t profile_end = nullptr;
   float* d_points = nullptr;
   float* d_bbox_pred = nullptr;
   float* d_cls_score = nullptr;
   float* d_dir_cls_pred = nullptr;
-  std::vector<float> h_bbox_pred;
-  std::vector<float> h_cls_score;
-  std::vector<float> h_dir_cls_pred;
+  float* h_points_staging = nullptr;
+  float* h_bbox_pred = nullptr;
+  float* h_cls_score = nullptr;
+  float* h_dir_cls_pred = nullptr;
+  size_t h_points_staging_count = 0;
+  size_t h_bbox_pred_count = 0;
+  size_t h_cls_score_count = 0;
+  size_t h_dir_cls_pred_count = 0;
 
   ~Impl() {
+    FreePinnedHostBuffer(&h_dir_cls_pred);
+    FreePinnedHostBuffer(&h_cls_score);
+    FreePinnedHostBuffer(&h_bbox_pred);
+    FreePinnedHostBuffer(&h_points_staging);
     if (d_dir_cls_pred != nullptr) {
       cudaFree(d_dir_cls_pred);
     }
@@ -861,6 +941,12 @@ struct PillarRuntime::Impl {
     }
     if (d_points != nullptr) {
       cudaFree(d_points);
+    }
+    if (profile_end != nullptr) {
+      cudaEventDestroy(profile_end);
+    }
+    if (profile_start != nullptr) {
+      cudaEventDestroy(profile_start);
     }
     if (stream != nullptr) {
       cudaStreamDestroy(stream);
@@ -882,6 +968,16 @@ InferenceStatus PillarRuntime::Initialize() {
   output_spec_ = MakeOutputSpec(contract.task_count, config_.bbox_max_num);
 
   status = CheckCuda(cudaStreamCreate(&impl_->stream), "cudaStreamCreate", &last_error_);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
+  status = CheckCuda(cudaEventCreate(&impl_->profile_start), "cudaEventCreate(profile_start)",
+                     &last_error_);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
+  status = CheckCuda(cudaEventCreate(&impl_->profile_end), "cudaEventCreate(profile_end)",
+                     &last_error_);
   if (status != INFERENCE_STATUS_OK) {
     return status;
   }
@@ -945,9 +1041,28 @@ InferenceStatus PillarRuntime::Initialize() {
     return status;
   }
 
-  impl_->h_bbox_pred.resize(bbox_size);
-  impl_->h_cls_score.resize(cls_size);
-  impl_->h_dir_cls_pred.resize(dir_size);
+  impl_->h_points_staging_count = max_points_size;
+  impl_->h_bbox_pred_count = bbox_size;
+  impl_->h_cls_score_count = cls_size;
+  impl_->h_dir_cls_pred_count = dir_size;
+  status = AllocatePinnedHostBuffer(max_points_size, "h_points_staging", &impl_->h_points_staging,
+                                    &last_error_);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
+  status = AllocatePinnedHostBuffer(bbox_size, "h_bbox_pred", &impl_->h_bbox_pred, &last_error_);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
+  status = AllocatePinnedHostBuffer(cls_size, "h_cls_score", &impl_->h_cls_score, &last_error_);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
+  status =
+      AllocatePinnedHostBuffer(dir_size, "h_dir_cls_pred", &impl_->h_dir_cls_pred, &last_error_);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
   return INFERENCE_STATUS_OK;
 }
 
@@ -992,57 +1107,64 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
     debug->input_points.clear();
   }
 
-  cudaEvent_t gpu_start = nullptr;
-  cudaEvent_t gpu_end = nullptr;
-  cudaEventCreate(&gpu_start);
-  cudaEventCreate(&gpu_end);
-
+  const bool enable_gpu_timing = (timings != nullptr || debug != nullptr);
   InferenceStatus status = INFERENCE_STATUS_OK;
-  float elapsed_ms = 0.0f;
   if (bounded_point_count > 0) {
     const size_t input_bytes = static_cast<size_t>(bounded_point_count) *
                                static_cast<size_t>(config_.num_point_features) *
                                sizeof(float);
-    cudaEventRecord(gpu_start, impl_->stream);
-    status = CheckCuda(cudaMemcpyAsync(impl_->d_points, request.points, input_bytes,
+    std::memcpy(impl_->h_points_staging, request.points, input_bytes);
+    status = MeasureGpuStageBegin(impl_->profile_start, impl_->stream, enable_gpu_timing,
+                                  &last_error_);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    status = CheckCuda(cudaMemcpyAsync(impl_->d_points, impl_->h_points_staging, input_bytes,
                                        cudaMemcpyHostToDevice, impl_->stream),
                        "cudaMemcpyAsync(points)", &last_error_);
-    cudaEventRecord(gpu_end, impl_->stream);
-    cudaEventSynchronize(gpu_end);
-    cudaEventElapsedTime(&elapsed_ms, gpu_start, gpu_end);
-    local_timings.h2d_prepare_ms = elapsed_ms;
     if (status != INFERENCE_STATUS_OK) {
-      cudaEventDestroy(gpu_start);
-      cudaEventDestroy(gpu_end);
+      return status;
+    }
+    status = MeasureGpuStageEnd(impl_->profile_start, impl_->profile_end, impl_->stream,
+                                enable_gpu_timing, &local_timings.h2d_prepare_ms, &last_error_);
+    if (status != INFERENCE_STATUS_OK) {
       return status;
     }
   }
 
-  cudaEventRecord(gpu_start, impl_->stream);
+  status = MeasureGpuStageBegin(impl_->profile_start, impl_->stream, enable_gpu_timing,
+                                &last_error_);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
   impl_->voxelizer->forward_pillars(impl_->d_points, bounded_point_count,
                                     CoordinateOrder::ZYX, impl_->stream);
-  cudaEventRecord(gpu_end, impl_->stream);
-  cudaEventSynchronize(gpu_end);
-  cudaEventElapsedTime(&elapsed_ms, gpu_start, gpu_end);
-  local_timings.pillarize_ms = elapsed_ms;
 
   float* d_voxels = nullptr;
   unsigned int* d_num_points = nullptr;
   unsigned int* d_coors = nullptr;
   const int actual_num_pillars =
       static_cast<int>(impl_->voxelizer->get_pillar_output(&d_voxels, &d_num_points, &d_coors));
+  status = MeasureGpuStageEnd(impl_->profile_start, impl_->profile_end, impl_->stream,
+                              enable_gpu_timing, &local_timings.pillarize_ms, &last_error_);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
   const EngineContract& contract = impl_->trt.contract();
   const int padded_num_pillars =
       std::min(contract.max_runtime_pillars,
                std::max(actual_num_pillars, contract.min_runtime_pillars));
 
   if (debug != nullptr) {
+    status = SyncCudaStream(impl_->stream, "cudaStreamSynchronize(debug_pillar_capture)",
+                            &last_error_);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
     PillarInputTensors pillar_inputs;
     status = BuildPillars(config_, actual_num_pillars, d_voxels, d_num_points, d_coors,
                           &pillar_inputs, &last_error_);
     if (status != INFERENCE_STATUS_OK) {
-      cudaEventDestroy(gpu_start);
-      cudaEventDestroy(gpu_end);
       return status;
     }
     debug->pillar_inputs = std::move(pillar_inputs);
@@ -1050,8 +1172,6 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
 
   status = impl_->trt.ConfigureShapes(config_, padded_num_pillars, &last_error_);
   if (status != INFERENCE_STATUS_OK) {
-    cudaEventDestroy(gpu_start);
-    cudaEventDestroy(gpu_end);
     return status;
   }
 
@@ -1067,49 +1187,59 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
   bindings[static_cast<size_t>(contract.cls_score_index)] = impl_->d_cls_score;
   bindings[static_cast<size_t>(contract.dir_cls_pred_index)] = impl_->d_dir_cls_pred;
 
-  cudaEventRecord(gpu_start, impl_->stream);
-  status = impl_->trt.Enqueue(bindings.data(), impl_->stream, &last_error_);
-  cudaEventRecord(gpu_end, impl_->stream);
-  cudaEventSynchronize(gpu_end);
-  cudaEventElapsedTime(&elapsed_ms, gpu_start, gpu_end);
-  local_timings.trt_forward_ms = elapsed_ms;
+  status = MeasureGpuStageBegin(impl_->profile_start, impl_->stream, enable_gpu_timing,
+                                &last_error_);
   if (status != INFERENCE_STATUS_OK) {
-    cudaEventDestroy(gpu_start);
-    cudaEventDestroy(gpu_end);
+    return status;
+  }
+  status = impl_->trt.Enqueue(bindings.data(), impl_->stream, &last_error_);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
+  status = MeasureGpuStageEnd(impl_->profile_start, impl_->profile_end, impl_->stream,
+                              enable_gpu_timing, &local_timings.trt_forward_ms, &last_error_);
+  if (status != INFERENCE_STATUS_OK) {
     return status;
   }
 
-  cudaEventRecord(gpu_start, impl_->stream);
-  status = CheckCuda(cudaMemcpyAsync(impl_->h_bbox_pred.data(), impl_->d_bbox_pred,
-                                     impl_->h_bbox_pred.size() * sizeof(float),
+  status = MeasureGpuStageBegin(impl_->profile_start, impl_->stream, enable_gpu_timing,
+                                &last_error_);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
+  status = CheckCuda(cudaMemcpyAsync(impl_->h_bbox_pred, impl_->d_bbox_pred,
+                                     impl_->h_bbox_pred_count * sizeof(float),
                                      cudaMemcpyDeviceToHost, impl_->stream),
                      "cudaMemcpyAsync(bbox_pred)", &last_error_);
   if (status == INFERENCE_STATUS_OK) {
-    status = CheckCuda(cudaMemcpyAsync(impl_->h_cls_score.data(), impl_->d_cls_score,
-                                       impl_->h_cls_score.size() * sizeof(float),
+    status = CheckCuda(cudaMemcpyAsync(impl_->h_cls_score, impl_->d_cls_score,
+                                       impl_->h_cls_score_count * sizeof(float),
                                        cudaMemcpyDeviceToHost, impl_->stream),
                        "cudaMemcpyAsync(cls_score)", &last_error_);
   }
   if (status == INFERENCE_STATUS_OK) {
-    status = CheckCuda(cudaMemcpyAsync(impl_->h_dir_cls_pred.data(), impl_->d_dir_cls_pred,
-                                       impl_->h_dir_cls_pred.size() * sizeof(float),
+    status = CheckCuda(cudaMemcpyAsync(impl_->h_dir_cls_pred, impl_->d_dir_cls_pred,
+                                       impl_->h_dir_cls_pred_count * sizeof(float),
                                        cudaMemcpyDeviceToHost, impl_->stream),
                        "cudaMemcpyAsync(dir_cls_pred)", &last_error_);
   }
-  cudaEventRecord(gpu_end, impl_->stream);
-  cudaEventSynchronize(gpu_end);
-  cudaEventElapsedTime(&elapsed_ms, gpu_start, gpu_end);
-  local_timings.d2h_collect_ms = elapsed_ms;
-  cudaEventDestroy(gpu_start);
-  cudaEventDestroy(gpu_end);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
+  status = SyncCudaStream(impl_->stream, "cudaStreamSynchronize(head_outputs)", &last_error_);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
+  status = MeasureGpuStageEnd(impl_->profile_start, impl_->profile_end, impl_->stream,
+                              enable_gpu_timing, &local_timings.d2h_collect_ms, &last_error_);
   if (status != INFERENCE_STATUS_OK) {
     return status;
   }
 
   RawHeadView raw_outputs;
-  raw_outputs.bbox_pred = impl_->h_bbox_pred.data();
-  raw_outputs.cls_score = impl_->h_cls_score.data();
-  raw_outputs.dir_cls_pred = impl_->h_dir_cls_pred.data();
+  raw_outputs.bbox_pred = impl_->h_bbox_pred;
+  raw_outputs.cls_score = impl_->h_cls_score;
+  raw_outputs.dir_cls_pred = impl_->h_dir_cls_pred;
   raw_outputs.bbox_channels = contract.bbox_channels;
   raw_outputs.cls_channels = contract.cls_channels;
   raw_outputs.dir_channels = contract.dir_channels;
@@ -1117,9 +1247,12 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
   raw_outputs.width = contract.width;
   raw_outputs.task_count = contract.task_count;
   if (debug != nullptr) {
-    debug->raw_outputs.bbox_pred = impl_->h_bbox_pred;
-    debug->raw_outputs.cls_score = impl_->h_cls_score;
-    debug->raw_outputs.dir_cls_pred = impl_->h_dir_cls_pred;
+    debug->raw_outputs.bbox_pred.assign(impl_->h_bbox_pred,
+                                        impl_->h_bbox_pred + impl_->h_bbox_pred_count);
+    debug->raw_outputs.cls_score.assign(impl_->h_cls_score,
+                                        impl_->h_cls_score + impl_->h_cls_score_count);
+    debug->raw_outputs.dir_cls_pred.assign(impl_->h_dir_cls_pred,
+                                           impl_->h_dir_cls_pred + impl_->h_dir_cls_pred_count);
     debug->raw_outputs.bbox_channels = raw_outputs.bbox_channels;
     debug->raw_outputs.cls_channels = raw_outputs.cls_channels;
     debug->raw_outputs.dir_channels = raw_outputs.dir_channels;
