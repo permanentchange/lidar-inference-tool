@@ -31,10 +31,10 @@ runtime:
   score_threshold: 0.1
 
 postprocess:
-  nms_type: "rotate"
+  nms_type: "circle"
   nms_thresh: 0.2
   nms_pre_maxsize: 1000
   nms_post_maxsize: 83
   final_score_threshold: 0.3
-  circle_nms_min_radius: [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]
+  circle_nms_min_radius: [0.8, 0.4, 0.8, 0.6, 2.0, 1.5, 0.6, 1.5, 1.5]
   label_score_thresh: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
