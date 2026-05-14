@@ -521,6 +521,7 @@ InferenceStatus SaveDebugArtifacts(const DebugArtifacts& debug,
   result_json << "{\n";
   result_json << "  \"file\": \"" << JsonEscape(config.pcd_path) << "\",\n";
   result_json << "  \"count\": " << debug.final_nms_outputs.scores.size() << ",\n";
+  result_json << "  \"box_z_origin\": \"center\",\n";
   result_json << "  \"objects\": [\n";
   for (size_t i = 0; i < debug.final_nms_outputs.scores.size(); ++i) {
     const int label = debug.final_nms_outputs.labels[i];

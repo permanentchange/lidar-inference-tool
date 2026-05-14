@@ -18,7 +18,8 @@
  * 5. Read output counts from ::InferenceResponse and then call ::inference_destroy().
  *
  * The current runtime targets PointPillars / CenterPoint-style engines with fixed tensor names and
- * decoded boxes laid out as [x, y, z, dx, dy, dz, yaw].
+ * decoded boxes laid out as [x, y, z, dx, dy, dz, yaw], where x/y/z denote the box geometric
+ * center.
  */
 
 #ifdef __cplusplus
@@ -154,7 +155,7 @@ typedef struct InferenceResponse {
   float* cls_preds;
   /** Capacity of ::cls_preds in float elements. Must be >= produced ::cls_count. */
   size_t cls_capacity;
-  /** Boxes laid out as [x, y, z, dx, dy, dz, yaw]. */
+  /** Boxes laid out as [x, y, z, dx, dy, dz, yaw], where x/y/z denote the box geometric center. */
   float* box_preds;
   /** Capacity of ::box_preds in float elements. Must be >= produced ::box_count. */
   size_t box_capacity;

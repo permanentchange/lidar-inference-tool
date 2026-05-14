@@ -333,6 +333,7 @@ A successful debug run writes these files into `dump_dir`:
 Notes:
 
 - `result.json` contains final detections after the debug tool's NMS stage
+- decoded and final boxes use `[x, y, z, dx, dy, dz, yaw]` with `z` at the box geometric center; `result.json` writes `box_z_origin: "center"` explicitly
 - `result.json` writes a zero-based `label` field plus `label_name`; this differs from the internal response label ids, which use `1..3`
 - `metadata.json` contains timing data and tensor summaries
 - `timings.json` contains both the single-run timing breakdown and aggregated profile statistics
@@ -403,6 +404,7 @@ Important semantics:
 - `Detection::label_name` points into the runtime-owned config and stays valid while the runtime exists
 - use `LoadPackageConfig(...)` if you want to load YAML, edit typed fields in code, and then call `Create(...)`
 - `Infer()` uses the runtime's configured `postprocess` section and returns final detections after built-in NMS
+- `InferDecoded()` and `Infer()` both return boxes as `[x, y, z, dx, dy, dz, yaw]` with `z` at the box geometric center
 
 ## ONNX to TensorRT
 

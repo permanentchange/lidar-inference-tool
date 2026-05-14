@@ -583,16 +583,6 @@ InferenceStatus DecodeCenterPointOutputs(const RuntimeConfig& config,
   return INFERENCE_STATUS_OK;
 }
 
-void ShiftBoxesToBottomCentered(CandidateDetections* detections) {
-  if (detections == nullptr) {
-    return;
-  }
-  for (size_t i = 0; i < detections->scores.size(); ++i) {
-    const size_t box_offset = i * kBoxDim;
-    detections->boxes[box_offset + 2] -= detections->boxes[box_offset + 5] * 0.5f;
-  }
-}
-
 InferenceStatus DecodeOutputs(const RuntimeConfig& config,
                               const RawHeadView& raw_outputs,
                               CandidateDetections* out_candidates,
@@ -820,7 +810,6 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
       class_offset += task_classes;
     }
     FilterByScoreThreshold(out_result, config.final_score_threshold);
-    ShiftBoxesToBottomCentered(out_result);
     return INFERENCE_STATUS_OK;
   }
   if (config.nms_type == INFERENCE_NMS_CIRCLE) {

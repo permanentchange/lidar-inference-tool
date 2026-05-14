@@ -67,6 +67,7 @@ struct PointCloudView {
 
 struct Detection {
   float score = 0.0f;
+  // Box layout is [x, y, z, dx, dy, dz, yaw], where x/y/z denote the box geometric center.
   std::array<float, kBoxDimension> box{};
   int label = 0;
   // Valid while the owning runtime remains alive.
