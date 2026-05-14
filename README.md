@@ -6,6 +6,11 @@
 - `pillar_debug_tool`: a single-sample debug executable that loads one model directory plus one point cloud, runs inference, dumps intermediate tensors, and writes timing reports
 - `minimal_cpp_api_example`: a model-package-driven executable under `examples/` that shows the recommended C++ integration path
 
+## v1.2.0
+
+- Fixed the Decoder height parsing issue.
+- Accelerated NMS on GPU.
+
 The current runtime is written for PointPillars / CenterPoint-style engines with fixed binding names and a 3-task head layout.
 
 ## Privacy Note
