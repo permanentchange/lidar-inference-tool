@@ -123,3 +123,7 @@ trtexec \
   --iterations=100 \
   --dumpProfile \
   --verbose
+MINIO_URL = "121.237.181.98:9000"
+ACCESS_KEY = "hf5CuFtWKO7L6chiQ7GN"
+SECRET_KEY = "vl5boJ6vQ9CQ44PAObDWffKl7JDehmA6Qi5ZcKRg"
+BUCKET_NAME = "lidar-detection-models"
