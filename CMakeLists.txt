@@ -288,6 +288,11 @@ if(TARGET pillar_debug_tool)
   )
 endif()
 
+install(PROGRAMS
+  ${CMAKE_CURRENT_SOURCE_DIR}/scripts/lidar_model_downloader
+  DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
 # ===================== CMake package 支持 =====================
 include(CMakePackageConfigHelpers)
 
@@ -321,6 +326,7 @@ set(CPACK_PACKAGE_CONTACT "zkzc <zkzc@todo.com>")
 
 # 生成 DEB
 set(CPACK_GENERATOR "DEB")
+set(CPACK_PACKAGING_INSTALL_PREFIX "/usr/local")
 
 # Debian 相关字段
 set(CPACK_DEBIAN_PACKAGE_MAINTAINER "zkzc <zkzc@todo.com>")

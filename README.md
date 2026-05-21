@@ -4,6 +4,7 @@
 
 - `libinference.so`: a shared library exposing the recommended C++ wrapper for loading one model package and running decoded or final NMS-filtered detections
 - `pillar_debug_tool`: a single-sample debug executable that loads one model directory plus one point cloud, runs inference, dumps intermediate tensors, and writes timing reports
+- `lidar_model_downloader`: an installed command-line helper for fetching model assets after package installation
 - `minimal_cpp_api_example`: a model-package-driven executable under `examples/` that shows the recommended C++ integration path
 
 ## v1.2.0
@@ -150,6 +151,19 @@ A successful full build generates:
 - `build/libinference.so`
 - `build/pillar_debug_tool`
 - `build/minimal_cpp_api_example` when `BUILD_EXAMPLES=ON`
+
+### DEB package
+
+Use the repository helper to rebuild and package:
+
+```bash
+./rebuild.sh
+```
+
+The generated `.deb` installs its runtime commands under `/usr/local/bin`, including:
+
+- `pillar_debug_tool`
+- `lidar_model_downloader`
 
 ### Platform notes
 
