@@ -7,10 +7,11 @@
 - `lidar_model_downloader`: an installed command-line helper for fetching model assets after package installation
 - `minimal_cpp_api_example`: a model-package-driven executable under `examples/` that shows the recommended C++ integration path
 
-## v1.2.0
+## v1.2.1
 
-- Fixed the Decoder height parsing issue.
-- Accelerated NMS on GPU.
+- Added `lidar_model_downloader` for ARM Linux DEB installs so model assets can be fetched with a direct command after installation.
+
+See [CHANGELOG.md](./CHANGELOG.md) for version history.
 
 The current runtime is written for PointPillars / CenterPoint-style engines with fixed binding names and a 3-task head layout.
 
@@ -164,6 +165,8 @@ The generated `.deb` installs its runtime commands under `/usr/local/bin`, inclu
 
 - `pillar_debug_tool`
 - `lidar_model_downloader`
+
+The package build now runs from `build/`, so CPack temporary files stay under `build/_CPack_Packages/` instead of the repository root.
 
 ### Platform notes
 
