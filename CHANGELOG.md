@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.3.0
+
+- Changed inference API labels from 1-based output IDs to 0-based output IDs.
+- Added ASCII PCD loading support to `pillar_debug_tool`.
+- Improved PCD header validation and diagnostics for unsupported point cloud formats.
+- Added point cloud load summaries that report the format, fields, point counts, truncation state, feature count, and load time.
+
 ## v1.2.1
 
 - Added `lidar_model_downloader` to the DEB package install set.
