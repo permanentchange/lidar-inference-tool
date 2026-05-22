@@ -543,10 +543,10 @@ InferencePostprocessConfig ToCPostprocessConfig(const PostprocessConfig& config)
 }
 
 const char* LabelNameForLabel(const PackageConfig& config, int label) {
-  if (label < 1 || label > static_cast<int>(config.model.label_names.size())) {
+  if (label < 0 || label >= static_cast<int>(config.model.label_names.size())) {
     return nullptr;
   }
-  return config.model.label_names[static_cast<size_t>(label - 1)].c_str();
+  return config.model.label_names[static_cast<size_t>(label)].c_str();
 }
 
 }  // namespace

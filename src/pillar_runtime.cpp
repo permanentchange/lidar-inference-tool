@@ -443,7 +443,7 @@ InferenceStatus DecodeLegacyOutputs(const RuntimeConfig& config,
       }
 
       out_candidates->scores.push_back(entry.score);
-      out_candidates->labels.push_back(task_id + 1);
+      out_candidates->labels.push_back(task_id);
       out_candidates->boxes.push_back(center_x);
       out_candidates->boxes.push_back(center_y);
       out_candidates->boxes.push_back(center_z);
@@ -569,7 +569,7 @@ InferenceStatus DecodeCenterPointOutputs(const RuntimeConfig& config,
       }
 
       out_candidates->scores.push_back(entry.score);
-      out_candidates->labels.push_back(class_offset + entry.class_index + 1);
+      out_candidates->labels.push_back(class_offset + entry.class_index);
       out_candidates->boxes.push_back(center_x);
       out_candidates->boxes.push_back(center_y);
       out_candidates->boxes.push_back(center_z);
@@ -771,7 +771,7 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
       per_task.boxes.reserve(candidates.boxes.size());
       for (size_t i = 0; i < candidates.scores.size(); ++i) {
         const int label = candidates.labels[i];
-        if (label < class_offset + 1 || label > class_offset + task_classes) {
+        if (label < class_offset || label >= class_offset + task_classes) {
           continue;
         }
         per_task.scores.push_back(candidates.scores[i]);
@@ -817,7 +817,7 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
     out_result->boxes.clear();
     out_result->labels.clear();
 
-    for (int label = 1; label <= kLabelCount; ++label) {
+    for (int label = 0; label < kLabelCount; ++label) {
       CandidateDetections per_label;
       per_label.scores.reserve(candidates.scores.size());
       per_label.labels.reserve(candidates.labels.size());
@@ -832,7 +832,7 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
       }
       const std::vector<size_t> keep =
           CircleNmsKeep(per_label.scores, per_label.boxes,
-                        config.circle_nms_min_radius[static_cast<size_t>(label - 1)],
+                        config.circle_nms_min_radius[static_cast<size_t>(label)],
                         config.nms_post_maxsize);
       for (size_t kept_index : keep) {
         out_result->scores.push_back(per_label.scores[kept_index]);
@@ -852,10 +852,10 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
   labels.reserve(candidates.labels.size());
   for (size_t i = 0; i < candidates.scores.size(); ++i) {
     const int label = candidates.labels[i];
-    if (label < 1 || label > kLabelCount) {
+    if (label < 0 || label >= kLabelCount) {
       continue;
     }
-    if (candidates.scores[i] < config.label_score_thresh[static_cast<size_t>(label - 1)]) {
+    if (candidates.scores[i] < config.label_score_thresh[static_cast<size_t>(label)]) {
       continue;
     }
     scores.push_back(candidates.scores[i]);

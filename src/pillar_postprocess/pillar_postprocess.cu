@@ -216,7 +216,7 @@ __global__ void FinalizeDecodeCandidatesKernel(const float* bbox_pred,
 
   DeviceCandidate candidate;
   candidate.score = score;
-  candidate.label = class_channel + 1;
+  candidate.label = class_channel;
   candidate.box[0] = center_x;
   candidate.box[1] = center_y;
   candidate.box[2] = center_z;

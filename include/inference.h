@@ -159,7 +159,7 @@ typedef struct InferenceResponse {
   float* box_preds;
   /** Capacity of ::box_preds in float elements. Must be >= produced ::box_count. */
   size_t box_capacity;
-  /** 1-based task labels. Required when produced detection count is greater than 0. */
+  /** Zero-based class labels. Required when produced detection count is greater than 0. */
   int* label_preds;
   /** Capacity of ::label_preds in int elements. Must be >= produced ::label_count. */
   size_t label_capacity;

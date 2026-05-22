@@ -94,14 +94,14 @@ def build_decoded_entries(boxes, scores, labels, label_names):
         )
 
     entries = []
-    for box, score, one_based_label in zip(boxes, scores, labels):
-        zero_based_label = int(one_based_label) - 1
+    for box, score, label in zip(boxes, scores, labels):
+        label = int(label)
         entries.append(
             {
                 "box": box,
                 "score": float(score),
-                "label_id": zero_based_label,
-                "label_name": label_name_from_config(label_names, zero_based_label),
+                "label_id": label,
+                "label_name": label_name_from_config(label_names, label),
                 "source": "decoded",
             }
         )

@@ -356,7 +356,7 @@ Notes:
 
 - `result.json` contains final detections after the debug tool's NMS stage
 - decoded and final boxes use `[x, y, z, dx, dy, dz, yaw]` with `z` at the box geometric center; `result.json` writes `box_z_origin: "center"` explicitly
-- `result.json` writes a zero-based `label` field plus `label_name`; this differs from the internal response label ids, which use `1..3`
+- `label` fields in `result.json`, `decoded_labels.npy`, `final_nms_labels.npy`, and the public API are zero-based indexes into `model.label_names`
 - `metadata.json` contains timing data and tensor summaries
 - `timings.json` contains both the single-run timing breakdown and aggregated profile statistics
 

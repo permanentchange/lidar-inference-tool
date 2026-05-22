@@ -30,20 +30,20 @@ def load_model_config(model_dir: Path):
         return yaml.safe_load(f)
 
 
-def label_name_from_config(label_names, one_based_label):
-    zero_based_label = int(one_based_label) - 1
-    if zero_based_label < 0:
-        return f"class_{one_based_label}"
-    if zero_based_label < len(label_names):
-        return str(label_names[zero_based_label])
-    return f"class_{one_based_label}"
+def label_name_from_config(label_names, label):
+    label = int(label)
+    if label < 0:
+        return f"class_{label}"
+    if label < len(label_names):
+        return str(label_names[label])
+    return f"class_{label}"
 
 
-def color_for_label(one_based_label):
-    zero_based_label = int(one_based_label) - 1
-    if zero_based_label < 0:
+def color_for_label(label):
+    label = int(label)
+    if label < 0:
         return "#ffffff"
-    return DEFAULT_COLORS[zero_based_label % len(DEFAULT_COLORS)]
+    return DEFAULT_COLORS[label % len(DEFAULT_COLORS)]
 
 
 def make_extent(pc_range):

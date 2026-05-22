@@ -530,8 +530,8 @@ InferenceStatus SaveDebugArtifacts(const DebugArtifacts& debug,
                                                                                  .label_names.size() -
                                                                                  1UL;
     const size_t label_index =
-        label >= 1 && label <= static_cast<int>(config.package.model.label_names.size())
-            ? static_cast<size_t>(label - 1)
+        label >= 0 && label < static_cast<int>(config.package.model.label_names.size())
+            ? static_cast<size_t>(label)
             : fallback_index;
     result_json << "    {\n";
     result_json << "      \"box\": [";
