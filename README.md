@@ -395,9 +395,11 @@ That last rule matches the behavior documented in the loader comment: 5D input i
 
 Current behavior:
 
-- only binary PCD is supported
-- only `x`, `y`, `z` are read from the payload
+- ASCII and binary PCD are supported
+- `x`, `y`, `z` must be float32 fields
+- optional float32 `intensity` is copied into the 4th runtime feature
 - remaining channels in the runtime input buffer are zero-padded
+- unsupported headers report the file path, `DATA` format, fields, and point counts
 
 ## Public C++ API
 

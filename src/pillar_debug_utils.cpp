@@ -4,6 +4,7 @@
 #include <array>
 #include <cctype>
 #include <cstdint>
+#include <cstring>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -207,55 +208,407 @@ std::string BuildNumericSummary(const std::string& name,
   return oss.str();
 }
 
-InferenceStatus LoadBinaryPcdFile(const std::string& path,
-                                  int num_point_features,
-                                  int max_points,
-                                  std::vector<float>* out_points,
-                                  std::string* out_error) {
-  std::ifstream input(path, std::ios::binary);
-  if (!input.is_open()) {
-    if (out_error != nullptr) {
-      *out_error = "Failed to open point cloud: " + path;
-    }
-    return INFERENCE_STATUS_INVALID_ARGUMENT;
+std::string Trim(const std::string& value) {
+  size_t begin = 0;
+  while (begin < value.size() &&
+         std::isspace(static_cast<unsigned char>(value[begin])) != 0) {
+    ++begin;
   }
+  size_t end = value.size();
+  while (end > begin && std::isspace(static_cast<unsigned char>(value[end - 1])) != 0) {
+    --end;
+  }
+  return value.substr(begin, end - begin);
+}
+
+std::vector<std::string> SplitWhitespace(const std::string& value) {
+  std::istringstream input(value);
+  std::vector<std::string> tokens;
+  std::string token;
+  while (input >> token) {
+    tokens.push_back(token);
+  }
+  return tokens;
+}
+
+std::string JoinStrings(const std::vector<std::string>& values, const std::string& separator) {
+  std::ostringstream oss;
+  for (size_t i = 0; i < values.size(); ++i) {
+    if (i > 0) {
+      oss << separator;
+    }
+    oss << values[i];
+  }
+  return oss.str();
+}
+
+std::string ToLower(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+  return value;
+}
+
+bool ParseIntStrict(const std::string& value, int* out_value) {
+  try {
+    size_t parsed = 0;
+    const int result = std::stoi(value, &parsed);
+    if (parsed != value.size()) {
+      return false;
+    }
+    *out_value = result;
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool ParseFloatStrict(const std::string& value, float* out_value) {
+  try {
+    size_t parsed = 0;
+    const float result = std::stof(value, &parsed);
+    if (parsed != value.size()) {
+      return false;
+    }
+    *out_value = result;
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+struct PcdFieldSpec {
+  std::string name;
+  int size = 0;
+  char type = '\0';
+  int count = 1;
+  size_t byte_offset = 0;
+  size_t scalar_offset = 0;
+};
+
+struct PcdHeader {
+  std::vector<PcdFieldSpec> fields;
+  std::string data_format;
+  int width = 0;
+  int height = 0;
+  int points = 0;
+  size_t point_step = 0;
+  std::streampos payload_offset{};
+};
+
+std::string PcdHeaderSummary(const std::string& path, const PcdHeader& header) {
+  std::vector<std::string> field_names;
+  field_names.reserve(header.fields.size());
+  for (const PcdFieldSpec& field : header.fields) {
+    field_names.push_back(field.name);
+  }
+  std::ostringstream oss;
+  oss << "path=" << path << ", DATA=" << (header.data_format.empty() ? "<missing>" : header.data_format)
+      << ", FIELDS=" << (field_names.empty() ? "<missing>" : JoinStrings(field_names, " "))
+      << ", POINTS=" << header.points << ", WIDTH=" << header.width << ", HEIGHT=" << header.height;
+  return oss.str();
+}
+
+const PcdFieldSpec* FindPcdField(const PcdHeader& header, const std::string& name) {
+  const auto it = std::find_if(header.fields.begin(), header.fields.end(),
+                               [&name](const PcdFieldSpec& field) { return field.name == name; });
+  return it == header.fields.end() ? nullptr : &(*it);
+}
+
+InferenceStatus ParsePcdHeader(std::ifstream* input,
+                               const std::string& path,
+                               PcdHeader* out_header,
+                               std::string* out_error) {
+  PcdHeader header;
+  std::vector<std::string> names;
+  std::vector<int> sizes;
+  std::vector<char> types;
+  std::vector<int> counts;
 
   std::string line;
-  int point_count = -1;
-  std::string data_format;
-  while (std::getline(input, line)) {
-    if (line.rfind("POINTS ", 0) == 0) {
-      point_count = std::stoi(line.substr(7));
-    } else if (line.rfind("DATA ", 0) == 0) {
-      data_format = line.substr(5);
+  while (std::getline(*input, line)) {
+    line = Trim(line);
+    if (line.empty() || line[0] == '#') {
+      continue;
+    }
+
+    std::istringstream line_stream(line);
+    std::string key;
+    line_stream >> key;
+    std::string rest;
+    std::getline(line_stream, rest);
+    rest = Trim(rest);
+
+    if (key == "FIELDS") {
+      names = SplitWhitespace(rest);
+    } else if (key == "SIZE") {
+      const std::vector<std::string> tokens = SplitWhitespace(rest);
+      sizes.clear();
+      for (const std::string& token : tokens) {
+        int value = 0;
+        if (!ParseIntStrict(token, &value)) {
+          return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                          "Invalid PCD header: non-integer SIZE value '" + token +
+                              "'. path=" + path);
+        }
+        sizes.push_back(value);
+      }
+    } else if (key == "TYPE") {
+      const std::vector<std::string> tokens = SplitWhitespace(rest);
+      types.clear();
+      for (const std::string& token : tokens) {
+        types.push_back(token.empty() ? '\0' : token[0]);
+      }
+    } else if (key == "COUNT") {
+      const std::vector<std::string> tokens = SplitWhitespace(rest);
+      counts.clear();
+      for (const std::string& token : tokens) {
+        int value = 0;
+        if (!ParseIntStrict(token, &value)) {
+          return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                          "Invalid PCD header: non-integer COUNT value '" + token +
+                              "'. path=" + path);
+        }
+        counts.push_back(value);
+      }
+    } else if (key == "WIDTH") {
+      if (!ParseIntStrict(rest, &header.width)) {
+        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                        "Invalid PCD header: non-integer WIDTH value '" + rest +
+                            "'. path=" + path);
+      }
+    } else if (key == "HEIGHT") {
+      if (!ParseIntStrict(rest, &header.height)) {
+        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                        "Invalid PCD header: non-integer HEIGHT value '" + rest +
+                            "'. path=" + path);
+      }
+    } else if (key == "POINTS") {
+      if (!ParseIntStrict(rest, &header.points)) {
+        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                        "Invalid PCD header: non-integer POINTS value '" + rest +
+                            "'. path=" + path);
+      }
+    } else if (key == "DATA") {
+      header.data_format = ToLower(rest);
+      header.payload_offset = input->tellg();
       break;
     }
   }
 
-  if (point_count <= 0 || data_format != "binary") {
-    if (out_error != nullptr) {
-      *out_error = "Only binary x/y/z PCD files are supported";
-    }
-    return INFERENCE_STATUS_INVALID_ARGUMENT;
+  if (header.data_format.empty()) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "Invalid PCD header: missing DATA line. path=" + path);
+  }
+  if (names.empty() || sizes.empty() || types.empty()) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "Invalid PCD header: FIELDS, SIZE, and TYPE are required. " +
+                        PcdHeaderSummary(path, header));
+  }
+  if (counts.empty()) {
+    counts.assign(names.size(), 1);
+  }
+  if (names.size() != sizes.size() || names.size() != types.size() || names.size() != counts.size()) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "Invalid PCD header: FIELDS/SIZE/TYPE/COUNT lengths differ. " +
+                        PcdHeaderSummary(path, header));
+  }
+  if (header.points <= 0) {
+    header.points = header.width * std::max(header.height, 1);
+  }
+  if (header.points <= 0) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "Invalid PCD header: POINTS must be positive. " + PcdHeaderSummary(path, header));
   }
 
-  point_count = std::min(point_count, max_points);
-  std::vector<float> xyz(static_cast<size_t>(point_count) * 3);
-  input.read(reinterpret_cast<char*>(xyz.data()),
-             static_cast<std::streamsize>(xyz.size() * sizeof(float)));
-  if (!input) {
-    if (out_error != nullptr) {
-      *out_error = "Failed to read binary PCD payload";
+  size_t byte_offset = 0;
+  size_t scalar_offset = 0;
+  for (size_t i = 0; i < names.size(); ++i) {
+    if (sizes[i] <= 0 || counts[i] <= 0) {
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                      "Invalid PCD header: SIZE and COUNT must be positive. " +
+                          PcdHeaderSummary(path, header));
     }
-    return INFERENCE_STATUS_INVALID_ARGUMENT;
+    PcdFieldSpec field;
+    field.name = names[i];
+    field.size = sizes[i];
+    field.type = types[i];
+    field.count = counts[i];
+    field.byte_offset = byte_offset;
+    field.scalar_offset = scalar_offset;
+    header.fields.push_back(field);
+    byte_offset += static_cast<size_t>(field.size) * static_cast<size_t>(field.count);
+    scalar_offset += static_cast<size_t>(field.count);
+  }
+  header.point_step = byte_offset;
+  *out_header = header;
+  return INFERENCE_STATUS_OK;
+}
+
+InferenceStatus ValidateFloatField(const std::string& path,
+                                   const PcdHeader& header,
+                                   const std::string& field_name,
+                                   std::string* out_error) {
+  const PcdFieldSpec* field = FindPcdField(header, field_name);
+  if (field == nullptr) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "Unsupported PCD: missing required field '" + field_name + "'. " +
+                        PcdHeaderSummary(path, header));
+  }
+  if (field->type != 'F' || field->size != 4 || field->count != 1) {
+    std::ostringstream oss;
+    oss << "Unsupported PCD: field '" << field_name
+        << "' must be float32 with COUNT 1, got TYPE=" << field->type
+        << ", SIZE=" << field->size << ", COUNT=" << field->count << ". "
+        << PcdHeaderSummary(path, header);
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+  }
+  return INFERENCE_STATUS_OK;
+}
+
+float ReadFloat32At(const std::vector<char>& buffer, size_t offset) {
+  float value = 0.0f;
+  std::memcpy(&value, buffer.data() + offset, sizeof(value));
+  return value;
+}
+
+InferenceStatus LoadPcdPointCloudFile(const std::string& path,
+                                      int num_point_features,
+                                      int max_points,
+                                      std::vector<float>* out_points,
+                                      std::string* out_error,
+                                      PointCloudLoadInfo* out_info) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input.is_open()) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "Failed to open point cloud: " + path);
   }
 
+  PcdHeader header;
+  InferenceStatus status = ParsePcdHeader(&input, path, &header, out_error);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
+  for (const std::string& field_name : {"x", "y", "z"}) {
+    status = ValidateFloatField(path, header, field_name, out_error);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+  }
+  const PcdFieldSpec* intensity = FindPcdField(header, "intensity");
+  if (intensity != nullptr) {
+    status = ValidateFloatField(path, header, "intensity", out_error);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+  }
+
+  if (header.data_format != "ascii" && header.data_format != "binary") {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "Unsupported PCD DATA format '" + header.data_format +
+                        "'. Supported formats: ascii, binary. " + PcdHeaderSummary(path, header));
+  }
+
+  const int point_count = std::min(header.points, max_points);
   out_points->assign(static_cast<size_t>(point_count) * num_point_features, 0.0f);
-  for (int i = 0; i < point_count; ++i) {
-    (*out_points)[static_cast<size_t>(i) * num_point_features + 0] = xyz[static_cast<size_t>(i) * 3 + 0];
-    (*out_points)[static_cast<size_t>(i) * num_point_features + 1] = xyz[static_cast<size_t>(i) * 3 + 1];
-    (*out_points)[static_cast<size_t>(i) * num_point_features + 2] = xyz[static_cast<size_t>(i) * 3 + 2];
+  const PcdFieldSpec* x = FindPcdField(header, "x");
+  const PcdFieldSpec* y = FindPcdField(header, "y");
+  const PcdFieldSpec* z = FindPcdField(header, "z");
+
+  if (header.data_format == "ascii") {
+    std::string row;
+    int loaded = 0;
+    while (loaded < point_count && std::getline(input, row)) {
+      row = Trim(row);
+      if (row.empty()) {
+        continue;
+      }
+      const std::vector<std::string> tokens = SplitWhitespace(row);
+      if (tokens.size() < header.fields.back().scalar_offset +
+                              static_cast<size_t>(header.fields.back().count)) {
+        std::ostringstream oss;
+        oss << "Failed to read ascii PCD row " << loaded << ": expected at least "
+            << header.fields.back().scalar_offset + static_cast<size_t>(header.fields.back().count)
+            << " values, got " << tokens.size() << ". " << PcdHeaderSummary(path, header);
+        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+      }
+      float* dst = out_points->data() + static_cast<size_t>(loaded) * num_point_features;
+      if (!ParseFloatStrict(tokens[x->scalar_offset], &dst[0]) ||
+          !ParseFloatStrict(tokens[y->scalar_offset], &dst[1]) ||
+          !ParseFloatStrict(tokens[z->scalar_offset], &dst[2])) {
+        std::ostringstream oss;
+        oss << "Failed to parse ascii PCD row " << loaded
+            << ": x/y/z must be float32 values. " << PcdHeaderSummary(path, header);
+        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+      }
+      if (intensity != nullptr && num_point_features >= 4 &&
+          !ParseFloatStrict(tokens[intensity->scalar_offset], &dst[3])) {
+        std::ostringstream oss;
+        oss << "Failed to parse ascii PCD row " << loaded
+            << ": intensity must be a float32 value. " << PcdHeaderSummary(path, header);
+        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+      }
+      ++loaded;
+    }
+    if (loaded != point_count) {
+      std::ostringstream oss;
+      oss << "Failed to read ascii PCD payload: expected " << point_count
+          << " points, loaded " << loaded << ". " << PcdHeaderSummary(path, header);
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+    }
+  } else {
+    std::vector<char> point_buffer(header.point_step);
+    for (int i = 0; i < point_count; ++i) {
+      input.read(point_buffer.data(), static_cast<std::streamsize>(point_buffer.size()));
+      if (!input) {
+        std::ostringstream oss;
+        oss << "Failed to read binary PCD payload at point " << i << " of " << point_count
+            << ". " << PcdHeaderSummary(path, header);
+        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+      }
+      float* dst = out_points->data() + static_cast<size_t>(i) * num_point_features;
+      dst[0] = ReadFloat32At(point_buffer, x->byte_offset);
+      dst[1] = ReadFloat32At(point_buffer, y->byte_offset);
+      dst[2] = ReadFloat32At(point_buffer, z->byte_offset);
+      if (intensity != nullptr && num_point_features >= 4) {
+        dst[3] = ReadFloat32At(point_buffer, intensity->byte_offset);
+      }
+    }
   }
+
+  if (out_info != nullptr) {
+    out_info->path = path;
+    out_info->format = header.data_format;
+    out_info->fields.clear();
+    for (const PcdFieldSpec& field : header.fields) {
+      out_info->fields.push_back(field.name);
+    }
+    out_info->source_points = header.points;
+    out_info->loaded_points = point_count;
+    out_info->num_point_features = num_point_features;
+    out_info->truncated = header.points > point_count;
+  }
+  return INFERENCE_STATUS_OK;
+}
+
+InferenceStatus PopulateFloatBinInfo(const std::string& path,
+                                     int num_point_features,
+                                     size_t source_point_count,
+                                     size_t point_count,
+                                     int source_features,
+                                     PointCloudLoadInfo* out_info) {
+  if (out_info == nullptr) {
+    return INFERENCE_STATUS_OK;
+  }
+  out_info->path = path;
+  out_info->format = "float32-bin";
+  out_info->fields.clear();
+  for (int i = 0; i < source_features; ++i) {
+    out_info->fields.push_back("f" + std::to_string(i));
+  }
+  out_info->source_points = static_cast<int>(source_point_count);
+  out_info->loaded_points = static_cast<int>(point_count);
+  out_info->num_point_features = num_point_features;
+  out_info->truncated = source_point_count > point_count;
   return INFERENCE_STATUS_OK;
 }
 
@@ -263,7 +616,8 @@ InferenceStatus LoadFloatBinFile(const std::string& path,
                                  int num_point_features,
                                  int max_points,
                                  std::vector<float>* out_points,
-                                 std::string* out_error) {
+                                 std::string* out_error,
+                                 PointCloudLoadInfo* out_info) {
   std::ifstream input(path, std::ios::binary | std::ios::ate);
   if (!input.is_open()) {
     if (out_error != nullptr) {
@@ -326,7 +680,8 @@ InferenceStatus LoadFloatBinFile(const std::string& path,
     std::copy_n(raw_points.data() + i * static_cast<size_t>(source_features), copy_features,
                 out_points->data() + i * static_cast<size_t>(num_point_features));
   }
-  return INFERENCE_STATUS_OK;
+  return PopulateFloatBinInfo(path, num_point_features, source_point_count, point_count,
+                              source_features, out_info);
 }
 
 }  // namespace
@@ -380,7 +735,8 @@ InferenceStatus LoadPcdFile(const std::string& path,
                             int num_point_features,
                             int max_points,
                             std::vector<float>* out_points,
-                            std::string* out_error) {
+                            std::string* out_error,
+                            PointCloudLoadInfo* out_info) {
   if (out_points == nullptr) {
     return INFERENCE_STATUS_INVALID_ARGUMENT;
   }
@@ -392,10 +748,10 @@ InferenceStatus LoadPcdFile(const std::string& path,
   }
 
   const std::filesystem::path input_path(path);
-  if (input_path.extension() == ".bin") {
-    return LoadFloatBinFile(path, num_point_features, max_points, out_points, out_error);
+  if (ToLower(input_path.extension().string()) == ".bin") {
+    return LoadFloatBinFile(path, num_point_features, max_points, out_points, out_error, out_info);
   }
-  return LoadBinaryPcdFile(path, num_point_features, max_points, out_points, out_error);
+  return LoadPcdPointCloudFile(path, num_point_features, max_points, out_points, out_error, out_info);
 }
 
 InferenceStatus RunToolPostprocessNms(const CandidateDetections& candidates,

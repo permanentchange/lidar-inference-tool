@@ -110,6 +110,16 @@ struct ToolConfig {
   float bev_resolution = 0.2f;
 };
 
+struct PointCloudLoadInfo {
+  std::string path;
+  std::string format;
+  std::vector<std::string> fields;
+  int source_points = 0;
+  int loaded_points = 0;
+  int num_point_features = 0;
+  bool truncated = false;
+};
+
 InferenceStatus ParseRuntimeConfig(const InferenceConfig& config,
                                    RuntimeConfig* out_config,
                                    std::string* out_error);
@@ -165,7 +175,8 @@ InferenceStatus LoadPcdFile(const std::string& path,
                             int num_point_features,
                             int max_points,
                             std::vector<float>* out_points,
-                            std::string* out_error);
+                            std::string* out_error,
+                            PointCloudLoadInfo* out_info = nullptr);
 InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
                                   const PostprocessConfig& config,
                                   const RuntimeConfig& runtime_config,

@@ -297,6 +297,29 @@ void PrintSingleRunSummary(double pcd_load_ms,
   std::cout << "  total_forward=" << debug.timings.total_forward_ms << " ms\n";
 }
 
+std::string JoinStrings(const std::vector<std::string>& values, const std::string& separator) {
+  std::ostringstream oss;
+  for (size_t i = 0; i < values.size(); ++i) {
+    if (i > 0) {
+      oss << separator;
+    }
+    oss << values[i];
+  }
+  return oss.str();
+}
+
+void PrintPointCloudLoadSummary(const inference_internal::PointCloudLoadInfo& info,
+                                double pcd_load_ms) {
+  std::cout << "Loaded point cloud: path=" << info.path
+            << ", format=" << info.format
+            << ", fields=" << JoinStrings(info.fields, " ")
+            << ", source_points=" << info.source_points
+            << ", loaded_points=" << info.loaded_points
+            << ", features=" << info.num_point_features
+            << ", truncated=" << (info.truncated ? "yes" : "no")
+            << ", load_ms=" << pcd_load_ms << "\n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -325,9 +348,11 @@ int main(int argc, char** argv) {
   }
 
   std::vector<float> points;
+  inference_internal::PointCloudLoadInfo point_cloud_info;
   const auto pcd_start = std::chrono::steady_clock::now();
   status = inference_internal::LoadPcdFile(config.pcd_path, config.runtime.num_point_features,
-                                           config.runtime.max_points, &points, &error);
+                                           config.runtime.max_points, &points, &error,
+                                           &point_cloud_info);
   const auto pcd_end = std::chrono::steady_clock::now();
   if (status != INFERENCE_STATUS_OK) {
     std::cerr << "Failed to load point cloud: " << error << "\n";
@@ -335,6 +360,7 @@ int main(int argc, char** argv) {
   }
   const double pcd_load_ms =
       std::chrono::duration<double, std::milli>(pcd_end - pcd_start).count();
+  PrintPointCloudLoadSummary(point_cloud_info, pcd_load_ms);
 
   inference_internal::PillarRuntime runtime(config.runtime);
   status = runtime.Initialize();
