@@ -2,6 +2,40 @@
 
 set -euo pipefail
 
+prepend_ld_library_path() {
+  local lib_dir=$1
+  if [ -d "$lib_dir" ]; then
+    case ":${LD_LIBRARY_PATH:-}:" in
+      *":$lib_dir:"*) ;;
+      *) export LD_LIBRARY_PATH="$lib_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;;
+    esac
+  fi
+}
+
+configure_runtime_library_path() {
+  prepend_ld_library_path "${CONDA_PREFIX:-}/lib"
+
+  local torch_lib_dir=""
+  if command -v python >/dev/null 2>&1; then
+    torch_lib_dir=$(python - <<'PY'
+import os
+
+try:
+    import torch
+except Exception:
+    raise SystemExit(0)
+
+lib_dir = os.path.join(os.path.dirname(torch.__file__), "lib")
+if os.path.isdir(lib_dir):
+    print(lib_dir)
+PY
+)
+  fi
+  prepend_ld_library_path "$torch_lib_dir"
+}
+
+configure_runtime_library_path
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -123,7 +157,3 @@ trtexec \
   --iterations=100 \
   --dumpProfile \
   --verbose
-MINIO_URL = "121.237.181.98:9000"
-ACCESS_KEY = "hf5CuFtWKO7L6chiQ7GN"
-SECRET_KEY = "vl5boJ6vQ9CQ44PAObDWffKl7JDehmA6Qi5ZcKRg"
-BUCKET_NAME = "lidar-detection-models"
