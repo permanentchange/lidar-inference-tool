@@ -61,6 +61,6 @@ cmake --build build -j$(nproc)
 If you have a valid engine and sample data available, also run:
 
 ```bash
-./build/pillar_debug_tool config/pillar_debug.yaml
-python3 scripts/compare_reference.py config/pillar_debug.yaml
+./build/infer_debug_tool demo demo/pcd.bin outputs/infer_debug --dump-decoded
+./build/perf_debug_tool demo demo/pcd.bin outputs/perf_debug --warmup 10 --profile 50
 ```

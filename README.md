@@ -3,7 +3,8 @@
 `lidar-inference-tool` is a C++17 LiDAR inference project built around TensorRT end-to-end pillar models. The repository exposes:
 
 - `libinference.so`: a shared library exposing the recommended C++ wrapper for loading one model package and running decoded or final NMS-filtered detections
-- `pillar_debug_tool`: a single-sample debug executable that loads one model directory plus one point cloud, runs inference, dumps intermediate tensors, and writes timing reports
+- `infer_debug_tool`: a single-sample debug executable that validates high-level C++ API inference results and writes visualization-friendly artifacts
+- `perf_debug_tool`: a profiling executable for single-sample inference performance breakdowns
 - `lidar_model_downloader`: an installed command-line helper for fetching model assets after package installation
 - `minimal_cpp_api_example`: a model-package-driven executable under `examples/` that shows the recommended C++ integration path
 
@@ -26,17 +27,17 @@ This README intentionally uses repository-relative paths and placeholders such a
 - `src/inference_api.cpp`: internal compatibility-layer entry points used by the wrapper
 - `src/pillar_runtime.cpp`: TensorRT loading, voxelization, inference, decode, NMS, and response packing
 - `src/pillar_debug_utils.cpp`: debug-tool config assembly, point-cloud loading, and artifact export
-- `tools/pillar_debug_tool.cpp`: debug CLI entry point
+- `tools/infer_debug_tool.cpp`: high-level C++ API result debug CLI entry point
+- `tools/perf_debug_tool.cpp`: performance debug CLI entry point
 - `tools/onnx2engine.sh`: helper script for `trtexec`
-- `tools/run_pillar_debug.sh`: recommended wrapper for launching `pillar_debug_tool` with the build-local third-party libraries first in `LD_LIBRARY_PATH`
-- `scripts/visualize_bev.py`: BEV visualization for dumped debug artifacts
+- `tools/visualize_infer_debug.py`: BEV and interactive 3D visualization for dumped infer-debug artifacts
 - `examples/minimal_cpp_api/`: minimal executable example for the public C++ wrapper API
 - `demo/model.yaml`: example model package config for the public C++ wrapper
 - `demo/end2end.onnx`: example ONNX model
 - `demo/end2end.engine`: example TensorRT engine
 - `demo/pcd.bin`: example point cloud
 - `third_party/voxelize/`: vendored CUDA voxelization module
-- `third_party/iou3d_nms/`: low-level IoU / NMS module used by the runtime and debug tool
+- `third_party/iou3d_nms/`: low-level IoU / NMS module used by the runtime and debug tools
 
 ## Runtime Contract
 
@@ -98,11 +99,12 @@ Notes:
 - `numpy`
 - `pyyaml`
 - `matplotlib`
+- `plotly` for 3D HTML visualization
 
 Install optional Python dependencies with:
 
 ```bash
-python3 -m pip install numpy pyyaml matplotlib
+python3 -m pip install numpy pyyaml matplotlib plotly
 ```
 
 ## Build
@@ -150,7 +152,8 @@ cmake --build build -j$(nproc)
 A successful full build generates:
 
 - `build/libinference.so`
-- `build/pillar_debug_tool`
+- `build/infer_debug_tool`
+- `build/perf_debug_tool`
 - `build/minimal_cpp_api_example` when `BUILD_EXAMPLES=ON`
 
 ### DEB package
@@ -163,7 +166,8 @@ Use the repository helper to rebuild and package:
 
 The generated `.deb` installs its runtime commands under `/usr/local/bin`, including:
 
-- `pillar_debug_tool`
+- `infer_debug_tool`
+- `perf_debug_tool`
 - `lidar_model_downloader`
 
 The package build now runs from `build/`, so CPack temporary files stay under `build/_CPack_Packages/` instead of the repository root.
@@ -197,16 +201,22 @@ Stub behavior:
 
 ## Quick Start
 
-Run one debug session:
+Run one API result debug session:
 
 ```bash
-./tools/run_pillar_debug.sh demo demo/pcd.bin
+./build/infer_debug_tool demo demo/pcd.bin
 ```
 
 Write artifacts to a custom output directory:
 
 ```bash
-./tools/run_pillar_debug.sh demo demo/pcd.bin outputs/demo_dump
+./build/infer_debug_tool demo demo/pcd.bin outputs/infer_debug --dump-decoded
+```
+
+Run one performance profiling session:
+
+```bash
+./build/perf_debug_tool demo demo/pcd.bin outputs/perf_debug --warmup 10 --profile 50
 ```
 
 Run the recommended C++ wrapper example with the demo model directory:
@@ -215,21 +225,18 @@ Run the recommended C++ wrapper example with the demo model directory:
 ./build/minimal_cpp_api_example demo demo/pcd.bin
 ```
 
-The wrapper script is recommended because interactive shells may prepend unrelated library directories in `LD_LIBRARY_PATH`. `tools/run_pillar_debug.sh` forces the repository's freshly built `third_party/iou3d_nms` and `third_party/voxelize` shared libraries to win lookup order before launching the debug binary.
-
-The demo assets used by both the public C++ API and the debug tool are:
+The demo assets used by the public C++ API and debug tools are:
 
 - `demo/model.yaml`
 - `demo/end2end.engine`
 - `demo/pcd.bin`
 
-Typical console output includes:
+Typical `perf_debug_tool` console output includes:
 
 - point-cloud load time
 - input point count
 - pillar count
 - decoded candidate count
-- final NMS box count
 - per-stage timings for a single run
 - percentile summary over `profile_iters` runs after `warmup_iters` warmup runs
 
@@ -285,6 +292,8 @@ The current demo `model.yaml` includes:
 - `postprocess.final_score_threshold`
 - `postprocess.circle_nms_min_radius`
 - `postprocess.label_score_thresh`
+- `postprocess.label_mapping`
+- `postprocess.mapped_label_names`
 
 The wrapper resolves relative `model.engine_path` values against the location of `model.yaml`.
 Optional override YAML files use the same schema and are applied with this precedence:
@@ -293,27 +302,27 @@ Optional override YAML files use the same schema and are applied with this prece
 - override YAML
 - base `model.yaml`
 
-## Debug CLI
+## Debug CLIs
 
-`pillar_debug_tool` now follows the same model-directory entry style as the public C++ wrapper:
+`infer_debug_tool` follows the same model-directory entry style as the public C++ wrapper and treats `runtime->Infer(...)` as the authoritative final result:
 
 ```bash
-./build/pillar_debug_tool <model_dir> <pcd_path> [dump_dir]
+./build/infer_debug_tool <model_dir> <pcd_path> [dump_dir]
 ```
 
 Supported options:
 
-- `--warmup N`
-- `--profile N`
-- `--bev-resolution X`
 - `--override-config PATH`
+- `--dump-decoded`
+- `--dump-internal`
 
 Examples:
 
 ```bash
-./build/pillar_debug_tool demo demo/pcd.bin
-./build/pillar_debug_tool demo demo/pcd.bin outputs/demo_dump --warmup 10 --profile 100
-./build/pillar_debug_tool demo demo/pcd.bin outputs/demo_dump --override-config overrides/model_override.yaml
+./build/infer_debug_tool demo demo/pcd.bin
+./build/infer_debug_tool demo demo/pcd.bin outputs/infer_debug --dump-decoded
+./build/infer_debug_tool demo demo/pcd.bin outputs/infer_debug --dump-decoded --dump-internal
+./build/infer_debug_tool demo demo/pcd.bin outputs/infer_debug --override-config overrides/model_override.yaml
 ```
 
 Behavior:
@@ -321,60 +330,105 @@ Behavior:
 - `model_dir` must contain `model.yaml`
 - runtime and postprocess settings come from `<model_dir>/model.yaml`
 - `pcd_path` is the input point cloud for this one debug run
-- `dump_dir` controls where `.npy` and `.json` artifacts are written
+- `dump_dir` controls where result `.npy` and `.json` artifacts are written
 - `override_config_path` applies the same package-schema YAML override used by the public C++ wrapper
+- final detections come from the high-level C++ API, so `mapped_label_names` is reflected in `result.json`
+- `--dump-internal` writes raw internal tensors for auxiliary diagnosis only
+
+`perf_debug_tool` uses the internal runtime path to profile one sample:
+
+```bash
+./build/perf_debug_tool <model_dir> <pcd_path> [dump_dir] [--warmup N] [--profile N] [--override-config PATH]
+```
+
+It writes timing/profile data only and does not write detection result artifacts.
 
 Default values:
 
-- `dump_dir`: `outputs/pillar_debug`
-- `warmup_iters`: `10`
-- `profile_iters`: `50`
-- `bev_resolution`: `0.2`
+- `infer_debug_tool` `dump_dir`: `outputs/infer_debug`
+- `perf_debug_tool` `dump_dir`: `outputs/perf_debug`
+- `perf_debug_tool` `warmup_iters`: `10`
+- `perf_debug_tool` `profile_iters`: `50`
 
 ## Debug Artifacts
 
-A successful debug run writes these files into `dump_dir`:
+A successful `infer_debug_tool` run writes these files into `dump_dir`:
 
 - `input_points.npy`
+- `final_scores.npy`
+- `final_boxes.npy`
+- `final_labels.npy`
+- `final_label_names.json`
+- `result.json`
+- `metadata.json`
+
+With `--dump-decoded`, it also writes:
+
+- `decoded_scores.npy`
+- `decoded_boxes.npy`
+- `decoded_labels.npy`
+
+With `--dump-internal`, it also writes auxiliary internal tensors:
+
 - `pillar_voxels.npy`
 - `pillar_num_points.npy`
 - `pillar_coors.npy`
 - `bbox_pred.npy`
 - `cls_score.npy`
 - `dir_cls_pred.npy`
-- `decoded_scores.npy`
-- `decoded_boxes.npy`
-- `decoded_labels.npy`
-- `final_nms_scores.npy`
-- `final_nms_boxes.npy`
-- `final_nms_labels.npy`
-- `result.json`
-- `metadata.json`
+- `internal_decoded_scores.npy`
+- `internal_decoded_boxes.npy`
+- `internal_decoded_labels.npy`
+
+A successful `perf_debug_tool` run writes:
+
 - `timings.json`
+- `metadata.json`
 
 Notes:
 
-- `result.json` contains final detections after the debug tool's NMS stage
-- decoded and final boxes use `[x, y, z, dx, dy, dz, yaw]` with `z` at the box geometric center; `result.json` writes `box_z_origin: "center"` explicitly
-- `label` fields in `result.json`, `decoded_labels.npy`, `final_nms_labels.npy`, and the public API are zero-based indexes into `model.label_names`
-- `metadata.json` contains timing data and tensor summaries
-- `timings.json` contains both the single-run timing breakdown and aggregated profile statistics
+- `result.json` contains final detections returned by `runtime->Infer(...)`
+- final boxes use `[x, y, z, dx, dy, dz, yaw]` with `z` at the box geometric center
+- `label_name` fields in `result.json` come from the high-level API and honor `postprocess.mapped_label_names`
+- `perf_debug_tool/timings.json` contains both the single-run timing breakdown and aggregated profile statistics
 
-## BEV Visualization
+## Infer Debug Visualization
 
-After a debug run, generate BEV plots with:
+After an `infer_debug_tool` run, generate detailed BEV plots, an optional interactive 3D HTML view, an index page, and a visualization summary with one command:
 
 ```bash
-python3 scripts/visualize_bev.py demo outputs/pillar_debug
+python3 tools/visualize_infer_debug.py demo outputs/infer_debug
 ```
 
-The script reads `demo/model.yaml` for the point-cloud range and uses the given `dump_dir`.
-It produces:
+For the common single-sample flow:
 
-- `01_input_points_bev.png`
-- `02_heatmap_bev.png`
-- `03_decoded_candidates_bev.png`
-- `04_final_boxes_bev.png`
+```bash
+./build/infer_debug_tool demo demo/test.bin demo_output
+python3 tools/visualize_infer_debug.py demo demo_output --zmin -0.2 --zmax 3
+```
+
+The script reads `demo/model.yaml` for the point-cloud range and reads final detections from `result.json`, so final box labels use the `label_name` values returned by the high-level C++ API and therefore honor `postprocess.mapped_label_names`.
+
+Typical outputs in the dump directory:
+
+- `01_input_points_height_bev.png`
+- `02_input_points_density_bev.png`
+- `03_cls_heatmap_bev.png` when `cls_score.npy` exists from `--dump-internal`
+- `04_decoded_candidates_bev.png` when decoded arrays exist from `--dump-decoded` or `--dump-internal`
+- `05_final_boxes_bev.png`
+- `06_3d_final_result.html` when Plotly is available
+- `index.html`
+- `visualization_summary.json`
+
+For a more detailed run with decoded candidates and internal debug heatmap:
+
+```bash
+./build/infer_debug_tool demo demo/test.bin demo_output --dump-decoded --dump-internal
+python3 tools/visualize_infer_debug.py demo demo_output --zmin -0.2 --zmax 3
+```
+
+Use `--max-candidates` and `--candidate-score-threshold` to reduce clutter when decoded candidate dumps are large.
+The default 3D HTML view shows only the final high-level API result. Add `--show-decoded-3d`, `--show-internal-3d`, or `--show-heatmap-3d` only when you explicitly want those debug layers overlaid in 3D.
 
 ## Input Formats
 
