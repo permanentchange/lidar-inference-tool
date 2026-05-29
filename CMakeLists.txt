@@ -230,15 +230,15 @@ else()
       ${YAML_CPP_LIBRARY}
   )
 
-  add_executable(pillar_debug_tool
-    tools/pillar_debug_tool.cpp
+  add_executable(perf_debug_tool
+    tools/perf_debug_tool.cpp
     src/inference_api.cpp
     src/inference_cpp.cpp
     src/pillar_runtime.cpp
     src/trt_engine.cpp
     src/pillar_debug_utils.cpp
   )
-  target_include_directories(pillar_debug_tool
+  target_include_directories(perf_debug_tool
     PRIVATE
       $<BUILD_INTERFACE:${INFERENCE_PUBLIC_INCLUDE_DIR}>
       $<INSTALL_INTERFACE:${INFERENCE_PUBLIC_INCLUDE_DIR_INSTALL}>
@@ -247,7 +247,7 @@ else()
       ${CUDA_INCLUDE_DIRS}
       ${YAML_CPP_INCLUDE_DIR}
   )
-  target_link_libraries(pillar_debug_tool
+  target_link_libraries(perf_debug_tool
     PRIVATE
       pillar_postprocess
       ${CUDA_LIBRARIES}
@@ -256,6 +256,24 @@ else()
       iou3d_nms
       voxelization
       ${YAML_CPP_LIBRARY}
+  )
+
+  add_executable(infer_debug_tool
+    tools/infer_debug_tool.cpp
+    src/pillar_debug_utils.cpp
+  )
+  target_include_directories(infer_debug_tool
+    PRIVATE
+      $<BUILD_INTERFACE:${INFERENCE_PUBLIC_INCLUDE_DIR}>
+      $<INSTALL_INTERFACE:${INFERENCE_PUBLIC_INCLUDE_DIR_INSTALL}>
+      ${INFERENCE_PRIVATE_INCLUDE_DIR}
+      ${TENSORRT_INCLUDE_DIR}
+      ${CUDA_INCLUDE_DIRS}
+      ${YAML_CPP_INCLUDE_DIR}
+  )
+  target_link_libraries(infer_debug_tool
+    PRIVATE
+      inference
   )
 
   if(BUILD_EXAMPLES)
@@ -282,8 +300,14 @@ install(DIRECTORY ${INFERENCE_PUBLIC_INCLUDE_DIR}/
 )
 
 # 其他
-if(TARGET pillar_debug_tool)
-  install(TARGETS pillar_debug_tool
+if(TARGET perf_debug_tool)
+  install(TARGETS perf_debug_tool
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+  )
+endif()
+
+if(TARGET infer_debug_tool)
+  install(TARGETS infer_debug_tool
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
   )
 endif()

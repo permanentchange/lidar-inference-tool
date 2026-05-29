@@ -8,12 +8,8 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
-#include <iomanip>
-#include <limits>
-#include <numeric>
 #include <sstream>
 #include <string>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -55,46 +51,6 @@ std::string ShapeToNpyString(const std::vector<size_t>& shape) {
     }
   }
   oss << ")";
-  return oss.str();
-}
-
-std::string ShapeToJsonArray(const std::vector<size_t>& shape) {
-  std::ostringstream oss;
-  oss << "[";
-  for (size_t i = 0; i < shape.size(); ++i) {
-    if (i > 0) {
-      oss << ", ";
-    }
-    oss << shape[i];
-  }
-  oss << "]";
-  return oss.str();
-}
-
-std::string JsonEscape(const std::string& value) {
-  std::ostringstream oss;
-  for (const char ch : value) {
-    switch (ch) {
-      case '\\':
-        oss << "\\\\";
-        break;
-      case '"':
-        oss << "\\\"";
-        break;
-      case '\n':
-        oss << "\\n";
-        break;
-      case '\r':
-        oss << "\\r";
-        break;
-      case '\t':
-        oss << "\\t";
-        break;
-      default:
-        oss << ch;
-        break;
-    }
-  }
   return oss.str();
 }
 
@@ -187,37 +143,6 @@ InferenceStatus WriteNpy(const std::filesystem::path& path,
                  static_cast<std::streamsize>(count * sizeof(T)));
   }
   return INFERENCE_STATUS_OK;
-}
-
-template <typename T>
-std::string BuildNumericSummary(const std::string& name,
-                                const std::string& dtype,
-                                const std::vector<size_t>& shape,
-                                const std::vector<T>& data) {
-  std::ostringstream oss;
-  oss << "    \"" << name << "\": {\n";
-  oss << "      \"dtype\": \"" << dtype << "\",\n";
-  oss << "      \"shape\": " << ShapeToJsonArray(shape) << ",\n";
-  oss << "      \"count\": " << data.size();
-  if (!data.empty()) {
-    const auto [min_it, max_it] = std::minmax_element(data.begin(), data.end());
-    oss << ",\n      \"min\": " << *min_it << ",\n      \"max\": " << *max_it;
-    if constexpr (std::is_floating_point_v<T>) {
-      const double sum = std::accumulate(data.begin(), data.end(), 0.0);
-      oss << ",\n      \"mean\": " << sum / static_cast<double>(data.size());
-    }
-    oss << ",\n      \"preview\": [";
-    const size_t preview_count = std::min<size_t>(data.size(), 8);
-    for (size_t i = 0; i < preview_count; ++i) {
-      if (i > 0) {
-        oss << ", ";
-      }
-      oss << data[i];
-    }
-    oss << "]";
-  }
-  oss << "\n    }";
-  return oss.str();
 }
 
 std::string Trim(const std::string& value) {
@@ -766,48 +691,54 @@ InferenceStatus LoadPcdFile(const std::string& path,
   return LoadPcdPointCloudFile(path, num_point_features, max_points, out_points, out_error, out_info);
 }
 
-InferenceStatus RunToolPostprocessNms(const CandidateDetections& candidates,
-                                      const ToolConfig& config,
-                                      CandidateDetections* out_result,
-                                      std::string* out_error) {
-  PostprocessConfig postprocess = PostprocessConfigFromPackage(config.package);
-  return RunPostprocessNms(candidates, postprocess, config.runtime, out_result, out_error);
+PostprocessConfig MakeToolPostprocessConfig(const ToolConfig& config) {
+  return PostprocessConfigFromPackage(config.package);
 }
 
-InferenceStatus SaveDebugArtifacts(const DebugArtifacts& debug,
-                                   const ToolConfig& config,
-                                   std::string* out_error) {
+InferenceStatus SaveFloatNpy(const std::string& path,
+                             const float* data,
+                             size_t count,
+                             const std::vector<size_t>& shape,
+                             std::string* out_error) {
+  return WriteNpy<float>(std::filesystem::path(path), data, count, shape, out_error);
+}
+
+InferenceStatus SaveInt32Npy(const std::string& path,
+                             const int32_t* data,
+                             size_t count,
+                             const std::vector<size_t>& shape,
+                             std::string* out_error) {
+  return WriteNpy<int32_t>(std::filesystem::path(path), data, count, shape, out_error);
+}
+
+InferenceStatus SaveInternalAuxiliaryArtifacts(const DebugArtifacts& debug,
+                                               const ToolConfig& config,
+                                               std::string* out_error) {
   const std::filesystem::path dump_dir(config.dump_dir);
   std::filesystem::create_directories(dump_dir);
 
   InferenceStatus status = WriteNpy<float>(
-      dump_dir / "input_points.npy", debug.input_points.data(), debug.input_points.size(),
-      {debug.input_points.empty() ? 0UL
-                                  : debug.input_points.size() /
-                                        static_cast<size_t>(config.runtime.num_point_features),
+      dump_dir / "pillar_voxels.npy", debug.pillar_inputs.voxels.data(),
+      debug.pillar_inputs.voxels.size(),
+      {static_cast<size_t>(debug.pillar_inputs.num_pillars),
+       static_cast<size_t>(config.runtime.max_points_per_pillar),
        static_cast<size_t>(config.runtime.num_point_features)},
       out_error);
   if (status != INFERENCE_STATUS_OK) {
     return status;
   }
-  status = WriteNpy<float>(dump_dir / "pillar_voxels.npy", debug.pillar_inputs.voxels.data(),
-                           debug.pillar_inputs.voxels.size(),
-                           {static_cast<size_t>(debug.pillar_inputs.num_pillars),
-                            static_cast<size_t>(config.runtime.max_points_per_pillar),
-                            static_cast<size_t>(config.runtime.num_point_features)},
-                           out_error);
-  if (status != INFERENCE_STATUS_OK) {
-    return status;
-  }
-  status = WriteNpy<int32_t>(dump_dir / "pillar_num_points.npy", debug.pillar_inputs.num_points.data(),
+  status = WriteNpy<int32_t>(dump_dir / "pillar_num_points.npy",
+                             debug.pillar_inputs.num_points.data(),
                              debug.pillar_inputs.num_points.size(),
                              {debug.pillar_inputs.num_points.size()}, out_error);
   if (status != INFERENCE_STATUS_OK) {
     return status;
   }
-  status = WriteNpy<int32_t>(dump_dir / "pillar_coors.npy", debug.pillar_inputs.coors.data(),
+  status = WriteNpy<int32_t>(dump_dir / "pillar_coors.npy",
+                             debug.pillar_inputs.coors.data(),
                              debug.pillar_inputs.coors.size(),
-                             {static_cast<size_t>(debug.pillar_inputs.num_pillars), 4}, out_error);
+                             {static_cast<size_t>(debug.pillar_inputs.num_pillars), 4},
+                             out_error);
   if (status != INFERENCE_STATUS_OK) {
     return status;
   }
@@ -829,7 +760,8 @@ InferenceStatus SaveDebugArtifacts(const DebugArtifacts& debug,
   if (status != INFERENCE_STATUS_OK) {
     return status;
   }
-  status = WriteNpy<float>(dump_dir / "dir_cls_pred.npy", debug.raw_outputs.dir_cls_pred.data(),
+  status = WriteNpy<float>(dump_dir / "dir_cls_pred.npy",
+                           debug.raw_outputs.dir_cls_pred.data(),
                            debug.raw_outputs.dir_cls_pred.size(),
                            {1UL, static_cast<size_t>(debug.raw_outputs.dir_channels),
                             static_cast<size_t>(debug.raw_outputs.height),
@@ -838,115 +770,27 @@ InferenceStatus SaveDebugArtifacts(const DebugArtifacts& debug,
   if (status != INFERENCE_STATUS_OK) {
     return status;
   }
-  status = WriteNpy<float>(dump_dir / "decoded_scores.npy", debug.decoded_candidates.scores.data(),
+  status = WriteNpy<float>(dump_dir / "internal_decoded_scores.npy",
+                           debug.decoded_candidates.scores.data(),
                            debug.decoded_candidates.scores.size(),
                            {debug.decoded_candidates.scores.size()}, out_error);
   if (status != INFERENCE_STATUS_OK) {
     return status;
   }
-  status = WriteNpy<float>(dump_dir / "decoded_boxes.npy", debug.decoded_candidates.boxes.data(),
+  status = WriteNpy<float>(dump_dir / "internal_decoded_boxes.npy",
+                           debug.decoded_candidates.boxes.data(),
                            debug.decoded_candidates.boxes.size(),
-                           {debug.decoded_candidates.scores.size(), static_cast<size_t>(kBoxDim)},
+                           {debug.decoded_candidates.scores.size(),
+                            static_cast<size_t>(kBoxDim)},
                            out_error);
   if (status != INFERENCE_STATUS_OK) {
     return status;
   }
   std::vector<int32_t> decoded_labels(debug.decoded_candidates.labels.begin(),
                                       debug.decoded_candidates.labels.end());
-  status = WriteNpy<int32_t>(dump_dir / "decoded_labels.npy", decoded_labels.data(),
-                             decoded_labels.size(), {decoded_labels.size()}, out_error);
-  if (status != INFERENCE_STATUS_OK) {
-    return status;
-  }
-  status = WriteNpy<float>(dump_dir / "final_nms_scores.npy", debug.final_nms_outputs.scores.data(),
-                           debug.final_nms_outputs.scores.size(),
-                           {debug.final_nms_outputs.scores.size()}, out_error);
-  if (status != INFERENCE_STATUS_OK) {
-    return status;
-  }
-  status = WriteNpy<float>(dump_dir / "final_nms_boxes.npy", debug.final_nms_outputs.boxes.data(),
-                           debug.final_nms_outputs.boxes.size(),
-                           {debug.final_nms_outputs.scores.size(), static_cast<size_t>(kBoxDim)},
-                           out_error);
-  if (status != INFERENCE_STATUS_OK) {
-    return status;
-  }
-  std::vector<int32_t> final_nms_labels(debug.final_nms_outputs.labels.begin(),
-                                        debug.final_nms_outputs.labels.end());
-  status = WriteNpy<int32_t>(dump_dir / "final_nms_labels.npy", final_nms_labels.data(),
-                             final_nms_labels.size(), {final_nms_labels.size()}, out_error);
-  if (status != INFERENCE_STATUS_OK) {
-    return status;
-  }
-
-  std::ofstream result_json(dump_dir / "result.json");
-  if (!result_json.is_open()) {
-    if (out_error != nullptr) {
-      *out_error = "Failed to open result.json for writing";
-    }
-    return INFERENCE_STATUS_BACKEND_ERROR;
-  }
-  result_json << "{\n";
-  result_json << "  \"file\": \"" << JsonEscape(config.pcd_path) << "\",\n";
-  result_json << "  \"count\": " << debug.final_nms_outputs.scores.size() << ",\n";
-  result_json << "  \"box_z_origin\": \"center\",\n";
-  result_json << "  \"objects\": [\n";
-  for (size_t i = 0; i < debug.final_nms_outputs.scores.size(); ++i) {
-    const int label = debug.final_nms_outputs.labels[i];
-    const size_t fallback_index = config.package.model.label_names.empty() ? 0UL
-                                                                           : config.package.model
-                                                                                 .label_names.size() -
-                                                                                 1UL;
-    const size_t label_index =
-        label >= 0 && label < static_cast<int>(config.package.model.label_names.size())
-            ? static_cast<size_t>(label)
-            : fallback_index;
-    result_json << "    {\n";
-    result_json << "      \"box\": [";
-    for (int dim = 0; dim < kBoxDim; ++dim) {
-      if (dim > 0) {
-        result_json << ", ";
-      }
-      result_json << debug.final_nms_outputs.boxes[i * kBoxDim + static_cast<size_t>(dim)];
-    }
-    result_json << "],\n";
-    result_json << "      \"score\": " << debug.final_nms_outputs.scores[i] << ",\n";
-    result_json << "      \"label\": " << static_cast<int>(label_index) << ",\n";
-    result_json << "      \"label_name\": \""
-                << JsonEscape(config.package.model.label_names[label_index]) << "\"\n";
-    result_json << "    }";
-    if (i + 1 < debug.final_nms_outputs.scores.size()) {
-      result_json << ",";
-    }
-    result_json << "\n";
-  }
-  result_json << "  ]\n";
-  result_json << "}\n";
-
-  std::ofstream meta(dump_dir / "metadata.json");
-  meta << "{\n";
-  meta << "  \"timings_ms\": {\n";
-  meta << "    \"pillarize\": " << debug.timings.pillarize_ms << ",\n";
-  meta << "    \"h2d_prepare\": " << debug.timings.h2d_prepare_ms << ",\n";
-  meta << "    \"trt_forward\": " << debug.timings.trt_forward_ms << ",\n";
-  meta << "    \"d2h_collect\": " << debug.timings.d2h_collect_ms << ",\n";
-  meta << "    \"decode\": " << debug.timings.decode_ms << ",\n";
-  meta << "    \"output_pack\": " << debug.timings.output_pack_ms << ",\n";
-  meta << "    \"total_forward\": " << debug.timings.total_forward_ms << "\n";
-  meta << "  },\n";
-  meta << "  \"tensors\": {\n";
-  meta << BuildNumericSummary("decoded_scores", "float32",
-                              {debug.decoded_candidates.scores.size()},
-                              debug.decoded_candidates.scores) << ",\n";
-  meta << BuildNumericSummary("decoded_labels", "int32",
-                              {debug.decoded_candidates.labels.size()},
-                              debug.decoded_candidates.labels) << ",\n";
-  meta << BuildNumericSummary("final_nms_scores", "float32",
-                              {debug.final_nms_outputs.scores.size()},
-                              debug.final_nms_outputs.scores) << "\n";
-  meta << "  }\n";
-  meta << "}\n";
-  return INFERENCE_STATUS_OK;
+  return WriteNpy<int32_t>(dump_dir / "internal_decoded_labels.npy",
+                           decoded_labels.data(), decoded_labels.size(),
+                           {decoded_labels.size()}, out_error);
 }
 
 }  // namespace inference_internal

@@ -16,18 +16,17 @@ namespace {
 struct CliOptions {
   std::string model_dir;
   std::string pcd_path;
-  std::string dump_dir = "outputs/pillar_debug";
+  std::string dump_dir = "outputs/perf_debug";
   std::string override_config_path;
   int warmup_iters = 10;
   int profile_iters = 50;
-  float bev_resolution = 0.2f;
 };
 
 void PrintUsage(const char* program) {
   std::cerr
       << "Usage: " << program
       << " <model_dir> <pcd_path> [dump_dir] [--warmup N] [--profile N]"
-      << " [--bev-resolution X] [--override-config PATH]\n";
+      << " [--override-config PATH]\n";
 }
 
 bool ParseInt(const std::string& value, int* out_value) {
@@ -44,21 +43,11 @@ bool ParseInt(const std::string& value, int* out_value) {
   }
 }
 
-bool ParseFloat(const std::string& value, float* out_value) {
-  try {
-    size_t parsed = 0;
-    const float result = std::stof(value, &parsed);
-    if (parsed != value.size()) {
-      return false;
-    }
-    *out_value = result;
-    return true;
-  } catch (...) {
-    return false;
-  }
-}
-
 bool ParseCliOptions(int argc, char** argv, CliOptions* out_options, std::string* out_error) {
+  if (argc == 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
+    PrintUsage(argv[0]);
+    std::exit(0);
+  }
   if (argc < 3) {
     if (out_error != nullptr) {
       *out_error = "model_dir and pcd_path are required";
@@ -91,13 +80,6 @@ bool ParseCliOptions(int argc, char** argv, CliOptions* out_options, std::string
         }
         return false;
       }
-    } else if (arg == "--bev-resolution") {
-      if (arg_index >= argc || !ParseFloat(argv[arg_index++], &options.bev_resolution)) {
-        if (out_error != nullptr) {
-          *out_error = "Invalid value for --bev-resolution";
-        }
-        return false;
-      }
     } else if (arg == "--override-config") {
       if (arg_index >= argc) {
         if (out_error != nullptr) {
@@ -127,7 +109,7 @@ void WarnAboutConflictingLibraries() {
       std::string(ld_library_path).find("IGV/devel/lib") != std::string::npos) {
     std::cerr
         << "Warning: LD_LIBRARY_PATH contains IGV/devel/lib. If debug inference fails with "
-        << "TensorRT enqueueV2 binding errors, prefer ./tools/run_pillar_debug.sh so the "
+        << "TensorRT enqueueV2 binding errors, prefer launching the built tool with the "
         << "repository's build-local iou3d_nms and voxelization libraries are loaded first.\n";
   }
 }
@@ -197,12 +179,38 @@ void AppendStatJson(std::ostringstream* oss, const std::string& name, const Timi
   *oss << "\n";
 }
 
+std::string JsonEscape(const std::string& value) {
+  std::ostringstream oss;
+  for (const char ch : value) {
+    switch (ch) {
+      case '\\':
+        oss << "\\\\";
+        break;
+      case '"':
+        oss << "\\\"";
+        break;
+      case '\n':
+        oss << "\\n";
+        break;
+      case '\r':
+        oss << "\\r";
+        break;
+      case '\t':
+        oss << "\\t";
+        break;
+      default:
+        oss << ch;
+        break;
+    }
+  }
+  return oss.str();
+}
+
 bool WriteTimingsJson(const inference_internal::ToolConfig& config,
                       double pcd_load_ms,
                       int input_points,
                       int pillar_count,
                       size_t decoded_candidates,
-                      size_t final_nms_boxes,
                       const inference_internal::StageTimings& single_run,
                       const std::vector<double>& input_pack_values,
                       const std::vector<double>& pillarize_values,
@@ -213,6 +221,7 @@ bool WriteTimingsJson(const inference_internal::ToolConfig& config,
                       const std::vector<double>& output_pack_values,
                       const std::vector<double>& total_values,
                       std::string* out_error) {
+  std::filesystem::create_directories(config.dump_dir);
   const std::filesystem::path output_path =
       std::filesystem::path(config.dump_dir) / "timings.json";
   std::ofstream output(output_path);
@@ -228,14 +237,13 @@ bool WriteTimingsJson(const inference_internal::ToolConfig& config,
   json << "  \"config\": {\n";
   json << "    \"warmup_iters\": " << config.warmup_iters << ",\n";
   json << "    \"profile_iters\": " << config.profile_iters << ",\n";
-  json << "    \"pcd_path\": \"" << config.pcd_path << "\"\n";
+  json << "    \"pcd_path\": \"" << JsonEscape(config.pcd_path) << "\"\n";
   json << "  },\n";
   json << "  \"debug_run\": {\n";
   json << "    \"pcd_load_ms\": " << pcd_load_ms << ",\n";
   json << "    \"input_points\": " << input_points << ",\n";
   json << "    \"pillar_count\": " << pillar_count << ",\n";
   json << "    \"decoded_candidates\": " << decoded_candidates << ",\n";
-  json << "    \"final_nms_boxes\": " << final_nms_boxes << ",\n";
   json << "    \"timings_ms\": {\n";
   json << "      \"pillarize\": " << single_run.pillarize_ms << ",\n";
   json << "      \"h2d_prepare\": " << single_run.h2d_prepare_ms << ",\n";
@@ -262,6 +270,43 @@ bool WriteTimingsJson(const inference_internal::ToolConfig& config,
   return true;
 }
 
+bool WriteMetadataJson(const inference_internal::ToolConfig& config,
+                       const inference_internal::PointCloudLoadInfo& point_cloud_info,
+                       int pillar_count,
+                       size_t decoded_candidates,
+                       std::string* out_error) {
+  std::filesystem::create_directories(config.dump_dir);
+  const std::filesystem::path output_path =
+      std::filesystem::path(config.dump_dir) / "metadata.json";
+  std::ofstream output(output_path);
+  if (!output.is_open()) {
+    if (out_error != nullptr) {
+      *out_error = "Failed to open metadata output: " + output_path.string();
+    }
+    return false;
+  }
+
+  output << "{\n";
+  output << "  \"tool\": \"perf_debug_tool\",\n";
+  output << "  \"model_dir\": \"" << JsonEscape(config.model_dir) << "\",\n";
+  output << "  \"pcd_path\": \"" << JsonEscape(config.pcd_path) << "\",\n";
+  output << "  \"override_config_path\": \"" << JsonEscape(config.override_config_path) << "\",\n";
+  output << "  \"result_artifacts\": \"disabled\",\n";
+  output << "  \"input\": {\n";
+  output << "    \"format\": \"" << JsonEscape(point_cloud_info.format) << "\",\n";
+  output << "    \"source_points\": " << point_cloud_info.source_points << ",\n";
+  output << "    \"loaded_points\": " << point_cloud_info.loaded_points << ",\n";
+  output << "    \"features\": " << point_cloud_info.num_point_features << ",\n";
+  output << "    \"truncated\": " << (point_cloud_info.truncated ? "true" : "false") << "\n";
+  output << "  },\n";
+  output << "  \"runtime\": {\n";
+  output << "    \"pillar_count\": " << pillar_count << ",\n";
+  output << "    \"decoded_candidates\": " << decoded_candidates << "\n";
+  output << "  }\n";
+  output << "}\n";
+  return true;
+}
+
 InferenceRequest MakeRequest(const std::vector<float>& points, int num_point_features) {
   InferenceRequest request{};
   request.points = points.data();
@@ -281,12 +326,11 @@ void ResetResponseCounts(InferenceResponse* response) {
 void PrintSingleRunSummary(double pcd_load_ms,
                            int input_points,
                            const inference_internal::DebugArtifacts& debug) {
-  std::cout << "Debug run complete.\n";
+  std::cout << "Performance debug run complete.\n";
   std::cout << "pcd_load: " << pcd_load_ms << " ms\n";
   std::cout << "input_points: " << input_points << "\n";
   std::cout << "pillar_count: " << debug.pillar_inputs.num_pillars << "\n";
   std::cout << "decoded_candidates: " << debug.decoded_candidates.scores.size() << "\n";
-  std::cout << "final_nms_boxes: " << debug.final_nms_outputs.scores.size() << "\n";
   std::cout << "Single-run timings:\n";
   std::cout << "  pillarize=" << debug.timings.pillarize_ms << " ms\n";
   std::cout << "  h2d_prepare=" << debug.timings.h2d_prepare_ms << " ms\n";
@@ -341,7 +385,7 @@ int main(int argc, char** argv) {
   inference_internal::ToolConfig config;
   InferenceStatus status = inference_internal::LoadToolConfigFromModelDir(
       options.model_dir, options.pcd_path, options.dump_dir, options.override_config_path,
-      options.warmup_iters, options.profile_iters, options.bev_resolution, &config, &error);
+      options.warmup_iters, options.profile_iters, 0.2f, &config, &error);
   if (status != INFERENCE_STATUS_OK) {
     std::cerr << "Failed to load tool config: " << error << "\n";
     return 1;
@@ -375,6 +419,8 @@ int main(int argc, char** argv) {
   std::vector<int> label_preds(spec.label_count, 0);
 
   const InferenceRequest request = MakeRequest(points, config.runtime.num_point_features);
+  const inference_internal::PostprocessConfig postprocess =
+      inference_internal::MakeToolPostprocessConfig(config);
 
   InferenceResponse response{};
   response.cls_preds = cls_preds.data();
@@ -388,36 +434,18 @@ int main(int argc, char** argv) {
 
   inference_internal::DebugArtifacts debug;
   inference_internal::StageTimings debug_timing;
-  status = runtime.Forward(request, &response, &debug, &debug_timing);
+  status = runtime.ForwardNms(request, postprocess, &response, &debug, &debug_timing);
   if (status != INFERENCE_STATUS_OK) {
-    std::cerr << "Debug forward failed: " << runtime.last_error() << "\n";
-    return 1;
-  }
-
-  inference_internal::CandidateDetections debug_candidates;
-  debug_candidates.scores.assign(cls_preds.begin(), cls_preds.begin() + static_cast<long>(response.cls_count));
-  debug_candidates.labels.assign(label_preds.begin(),
-                                 label_preds.begin() + static_cast<long>(response.label_count));
-  debug_candidates.boxes.assign(box_preds.begin(), box_preds.begin() + static_cast<long>(response.box_count));
-  debug.decoded_candidates = debug_candidates;
-  status = inference_internal::RunToolPostprocessNms(debug_candidates, config,
-                                                     &debug.final_nms_outputs, &error);
-  if (status != INFERENCE_STATUS_OK) {
-    std::cerr << "NMS failed: " << error << "\n";
+    std::cerr << "Performance debug forward failed: " << runtime.last_error() << "\n";
     return 1;
   }
   debug.timings = debug_timing;
-  status = inference_internal::SaveDebugArtifacts(debug, config, &error);
-  if (status != INFERENCE_STATUS_OK) {
-    std::cerr << "Failed to save debug artifacts: " << error << "\n";
-    return 1;
-  }
 
   PrintSingleRunSummary(pcd_load_ms, request.point_count, debug);
 
   for (int i = 0; i < config.warmup_iters; ++i) {
     ResetResponseCounts(&response);
-    status = runtime.Forward(request, &response, nullptr, nullptr);
+    status = runtime.ForwardNms(request, postprocess, &response, nullptr, nullptr);
     if (status != INFERENCE_STATUS_OK) {
       std::cerr << "Warmup forward failed: " << runtime.last_error() << "\n";
       return 1;
@@ -448,7 +476,7 @@ int main(int argc, char** argv) {
     input_pack_values[static_cast<size_t>(i)] =
         std::chrono::duration<double, std::milli>(pack_end - pack_start).count();
 
-    status = runtime.Forward(request, &response, nullptr, &timing);
+    status = runtime.ForwardNms(request, postprocess, &response, nullptr, &timing);
     if (status != INFERENCE_STATUS_OK) {
       std::cerr << "Profile forward failed: " << runtime.last_error() << "\n";
       return 1;
@@ -473,11 +501,17 @@ int main(int argc, char** argv) {
   PrintStats("decode", decode_values);
   PrintStats("output_pack", output_pack_values);
   PrintStats("total_forward", total_values);
-  if (!WriteTimingsJson(config, pcd_load_ms, request.point_count, debug.pillar_inputs.num_pillars,
-                        debug.decoded_candidates.scores.size(), debug.final_nms_outputs.scores.size(),
+  if (!WriteTimingsJson(config, pcd_load_ms, request.point_count,
+                        debug.pillar_inputs.num_pillars,
+                        debug.decoded_candidates.scores.size(),
                         debug.timings, input_pack_values, pillarize_values, h2d_values, trt_values,
                         d2h_values, decode_values, output_pack_values, total_values, &error)) {
     std::cerr << "Failed to save timings.json: " << error << "\n";
+    return 1;
+  }
+  if (!WriteMetadataJson(config, point_cloud_info, debug.pillar_inputs.num_pillars,
+                         debug.decoded_candidates.scores.size(), &error)) {
+    std::cerr << "Failed to save metadata.json: " << error << "\n";
     return 1;
   }
   return 0;

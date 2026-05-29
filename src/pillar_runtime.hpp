@@ -191,12 +191,19 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
                                   const RuntimeConfig& runtime_config,
                                   CandidateDetections* out_result,
                                   std::string* out_error);
-InferenceStatus RunToolPostprocessNms(const CandidateDetections& candidates,
-                                      const ToolConfig& config,
-                                      CandidateDetections* out_result,
-                                      std::string* out_error);
-InferenceStatus SaveDebugArtifacts(const DebugArtifacts& debug,
-                                   const ToolConfig& config,
-                                   std::string* out_error);
+PostprocessConfig MakeToolPostprocessConfig(const ToolConfig& config);
+InferenceStatus SaveFloatNpy(const std::string& path,
+                             const float* data,
+                             size_t count,
+                             const std::vector<size_t>& shape,
+                             std::string* out_error);
+InferenceStatus SaveInt32Npy(const std::string& path,
+                             const int32_t* data,
+                             size_t count,
+                             const std::vector<size_t>& shape,
+                             std::string* out_error);
+InferenceStatus SaveInternalAuxiliaryArtifacts(const DebugArtifacts& debug,
+                                               const ToolConfig& config,
+                                               std::string* out_error);
 
 }  // namespace inference_internal
