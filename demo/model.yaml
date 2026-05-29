@@ -10,15 +10,15 @@ model:
   norm_bbox: true
   has_velocity: true
   label_names:
-    - "vehicle.electric_two_wheeler.unridden"
-    - "human.pedestrian"
-    - "vehicle.electric_two_wheeler.ridden"
-    - "vehicle.bicycle.unridden"
-    - "vehicle.general"
-    - "vehicle.sightseeing"
-    - "vehicle.bicycle.ridden"
-    - "vehicle.tricycle.unridden"
-    - "vehicle.tricycle.ridden"
+    - "vehicle.electric_two_wheeler.unridden" # 0
+    - "human.pedestrian" # 1
+    - "vehicle.electric_two_wheeler.ridden" # 2
+    - "vehicle.bicycle.unridden" # 3
+    - "vehicle.general" # 4
+    - "vehicle.sightseeing" # 5
+    - "vehicle.bicycle.ridden" # 6
+    - "vehicle.tricycle.unridden" # 7
+    - "vehicle.tricycle.ridden" # 8
   task_num_classes: [1, 1, 1, 1, 1, 1, 1, 1, 1]
 
 runtime:
@@ -31,32 +31,43 @@ runtime:
   score_threshold: 0.1
 
 postprocess:
-  nms_type: "circle"
+  nms_type: "iou_bev"
   nms_thresh: 0.2
   nms_pre_maxsize: 1000
   nms_post_maxsize: 83
   final_score_threshold: 0.3
-  circle_nms_min_radius: [0.8, 0.4, 0.8, 0.6, 2.0, 1.5, 0.6, 1.5, 1.5]
   label_score_thresh: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+  circle_nms_min_radius: [0.8, 0.4, 0.8, 0.6, 2.0, 1.5, 0.6, 1.5, 1.5]
   nms_label_groups:
-    - labels: [0, 3, 4]
-      circle_nms_min_radius: 2.0
-      nms_post_maxsize: 120
+    - labels: [0, 2]
+      nms_thresh: 0.25
+      nms_pre_maxsize: 500
+      nms_post_maxsize: 50
     - labels: [1]
-      circle_nms_min_radius: 0.4
-      nms_post_maxsize: 80
-    - labels: [2]
-      circle_nms_min_radius: 0.8
-      nms_post_maxsize: 83
-    - labels: [5, 7, 8]
-      circle_nms_min_radius: 1.5
-      nms_post_maxsize: 100
-    - labels: [6]
-      circle_nms_min_radius: 0.6
-      nms_post_maxsize: 83
-  label_mapping: [0, 1, -1, 0, 0, 2, 3, 2, 2]
+      nms_thresh: 0.4
+      nms_pre_maxsize: 500
+      nms_post_maxsize: 50
+    - labels: [3, 6]
+      nms_thresh: 0.3
+      nms_pre_maxsize: 500
+      nms_post_maxsize: 50
+    - labels: [4]
+      nms_thresh: 0.3
+      nms_pre_maxsize: 500
+      nms_post_maxsize: 50
+    - labels: [5]
+      nms_thresh: 0.2
+      nms_pre_maxsize: 500
+      nms_post_maxsize: 50
+    - labels: [7, 8]
+      nms_thresh: 0.2
+      nms_pre_maxsize: 500
+      nms_post_maxsize: 50
+  label_mapping: [0, 1, 0, 2, 4, 5, 2, 3, 3]
   mapped_label_names:
-    - "vehicle.small"
-    - "human.pedestrian"
-    - "vehicle.slow"
-    - "vehicle.bicycle.ridden"
+    - "ebicycle" # 0
+    - "pedestrian" # 1
+    - "bicycle" # 2
+    - "tricycle" # 3
+    - "car" # 4
+    - "sightseeing" # 5
