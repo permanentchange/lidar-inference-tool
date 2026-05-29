@@ -38,3 +38,25 @@ postprocess:
   final_score_threshold: 0.3
   circle_nms_min_radius: [0.8, 0.4, 0.8, 0.6, 2.0, 1.5, 0.6, 1.5, 1.5]
   label_score_thresh: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+  nms_label_groups:
+    - labels: [0, 3, 4]
+      circle_nms_min_radius: 2.0
+      nms_post_maxsize: 120
+    - labels: [1]
+      circle_nms_min_radius: 0.4
+      nms_post_maxsize: 80
+    - labels: [2]
+      circle_nms_min_radius: 0.8
+      nms_post_maxsize: 83
+    - labels: [5, 7, 8]
+      circle_nms_min_radius: 1.5
+      nms_post_maxsize: 100
+    - labels: [6]
+      circle_nms_min_radius: 0.6
+      nms_post_maxsize: 83
+  label_mapping: [0, 1, -1, 0, 0, 2, 3, 2, 2]
+  mapped_label_names:
+    - "vehicle.small"
+    - "human.pedestrian"
+    - "vehicle.slow"
+    - "vehicle.bicycle.ridden"

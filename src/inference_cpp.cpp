@@ -1,10 +1,12 @@
 #include "inference_cpp.hpp"
+#include "pillar_runtime.hpp"
 
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <memory>
 #include <sstream>
@@ -201,6 +203,56 @@ InferenceStatus LoadThresholdVector(const YAML::Node& node,
   return INFERENCE_STATUS_OK;
 }
 
+InferenceStatus LoadNmsLabelGroups(const YAML::Node& node,
+                                   const char* field_name,
+                                   std::vector<PostprocessConfig::NmsLabelGroup>* out_groups,
+                                   std::string* out_error) {
+  if (!node) {
+    return INFERENCE_STATUS_OK;
+  }
+  if (out_groups == nullptr) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    std::string(field_name) + " output is null");
+  }
+  if (!node.IsSequence() || node.size() == 0) {
+    std::ostringstream oss;
+    oss << field_name << " must be a non-empty sequence of maps";
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+  }
+
+  out_groups->clear();
+  out_groups->reserve(node.size());
+  for (size_t i = 0; i < node.size(); ++i) {
+    const YAML::Node group_node = node[i];
+    if (!group_node.IsMap()) {
+      std::ostringstream oss;
+      oss << field_name << "[" << i << "] must be a YAML map";
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+    }
+    PostprocessConfig::NmsLabelGroup group;
+    InferenceStatus status =
+        LoadIntVector(group_node["labels"], "postprocess.nms_label_groups[].labels",
+                      &group.labels, out_error);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    if (group_node["nms_thresh"]) {
+      group.nms_thresh = group_node["nms_thresh"].as<float>();
+    }
+    if (group_node["nms_pre_maxsize"]) {
+      group.nms_pre_maxsize = group_node["nms_pre_maxsize"].as<int>();
+    }
+    if (group_node["nms_post_maxsize"]) {
+      group.nms_post_maxsize = group_node["nms_post_maxsize"].as<int>();
+    }
+    if (group_node["circle_nms_min_radius"]) {
+      group.circle_nms_min_radius = group_node["circle_nms_min_radius"].as<float>();
+    }
+    out_groups->push_back(std::move(group));
+  }
+  return INFERENCE_STATUS_OK;
+}
+
 void NormalizeTaskLayout(ModelConfig* model) {
   if (model == nullptr) {
     return;
@@ -215,6 +267,143 @@ void NormalizeTaskLayout(ModelConfig* model) {
   } else if (model->task_num_classes.empty()) {
     model->task_num_classes = {1, 1, 1};
   }
+}
+
+InferenceStatus ValidatePostprocessConfig(const ModelConfig& model,
+                                          const PostprocessConfig& postprocess,
+                                          std::string* out_error) {
+  const int label_count = static_cast<int>(model.label_names.size());
+  for (const float value : postprocess.label_score_thresh) {
+    if (!std::isfinite(value) || value < 0.0f) {
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                      "postprocess.label_score_thresh must be finite and non-negative");
+    }
+  }
+  for (const float value : postprocess.circle_nms_min_radius) {
+    if (!std::isfinite(value) || value < 0.0f) {
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                      "postprocess.circle_nms_min_radius must be finite and non-negative");
+    }
+  }
+  if (postprocess.nms_pre_maxsize <= 0 || postprocess.nms_post_maxsize <= 0) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "postprocess.nms_pre_maxsize and nms_post_maxsize must be positive");
+  }
+  if (!std::isfinite(postprocess.nms_thresh) ||
+      !std::isfinite(postprocess.final_score_threshold) ||
+      postprocess.nms_thresh < 0.0f || postprocess.final_score_threshold < 0.0f) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "postprocess thresholds must be finite and non-negative");
+  }
+
+  if (!postprocess.nms_label_groups.empty()) {
+    std::vector<int> seen(static_cast<size_t>(label_count), 0);
+    for (size_t group_index = 0; group_index < postprocess.nms_label_groups.size();
+         ++group_index) {
+      const PostprocessConfig::NmsLabelGroup& group =
+          postprocess.nms_label_groups[group_index];
+      if (group.labels.empty()) {
+        std::ostringstream oss;
+        oss << "postprocess.nms_label_groups[" << group_index << "].labels must not be empty";
+        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+      }
+      for (const int label : group.labels) {
+        if (label < 0 || label >= label_count) {
+          std::ostringstream oss;
+          oss << "postprocess.nms_label_groups[" << group_index
+              << "].labels contains out-of-range label " << label
+              << ", valid range is [0, " << (label_count - 1) << "]";
+          return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+        }
+        if (seen[static_cast<size_t>(label)] != 0) {
+          std::ostringstream oss;
+          oss << "postprocess.nms_label_groups label " << label
+              << " appears in more than one group";
+          return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+        }
+        seen[static_cast<size_t>(label)] = 1;
+      }
+
+      if (postprocess.nms_type == INFERENCE_NMS_CIRCLE) {
+        if (!std::isfinite(group.circle_nms_min_radius) ||
+            group.circle_nms_min_radius < 0.0f || group.nms_post_maxsize <= 0) {
+          std::ostringstream oss;
+          oss << "circle postprocess.nms_label_groups[" << group_index
+              << "] must set finite non-negative circle_nms_min_radius and positive "
+                 "nms_post_maxsize";
+          return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+        }
+      } else {
+        if (!std::isfinite(group.nms_thresh) || group.nms_thresh < 0.0f ||
+            group.nms_pre_maxsize <= 0 || group.nms_post_maxsize <= 0) {
+          std::ostringstream oss;
+          oss << "iou postprocess.nms_label_groups[" << group_index
+              << "] must set finite non-negative nms_thresh and positive "
+                 "nms_pre_maxsize/nms_post_maxsize";
+          return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+        }
+      }
+    }
+    for (int label = 0; label < label_count; ++label) {
+      if (seen[static_cast<size_t>(label)] == 0) {
+        std::ostringstream oss;
+        oss << "postprocess.nms_label_groups must cover every original label exactly once; "
+            << "missing label " << label;
+        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+      }
+    }
+  } else if (model.decode_mode == DecodeMode::kCenterPoint &&
+             postprocess.nms_type == INFERENCE_NMS_CIRCLE &&
+             postprocess.circle_nms_min_radius.size() != model.task_num_classes.size()) {
+    std::ostringstream oss;
+    oss << "postprocess.circle_nms_min_radius must have one value per task in CenterPoint mode, "
+        << "expected " << model.task_num_classes.size()
+        << " got " << postprocess.circle_nms_min_radius.size();
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+  }
+
+  if (!postprocess.label_mapping.empty()) {
+    if (postprocess.label_mapping.size() != model.label_names.size()) {
+      std::ostringstream oss;
+      oss << "postprocess.label_mapping must have one entry per original label, expected "
+          << model.label_names.size() << " got " << postprocess.label_mapping.size();
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+    }
+    if (postprocess.mapped_label_names.empty()) {
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                      "postprocess.mapped_label_names must be set when label_mapping is set");
+    }
+    for (size_t i = 0; i < postprocess.label_mapping.size(); ++i) {
+      const int mapped_label = postprocess.label_mapping[i];
+      if (mapped_label == -1) {
+        continue;
+      }
+      if (mapped_label < 0 ||
+          mapped_label >= static_cast<int>(postprocess.mapped_label_names.size())) {
+        std::ostringstream oss;
+        oss << "postprocess.label_mapping[" << i << "] maps to invalid label "
+            << mapped_label << ", mapped_label_names.size()="
+            << postprocess.mapped_label_names.size();
+        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+      }
+    }
+  } else if (!postprocess.mapped_label_names.empty() &&
+             postprocess.mapped_label_names.size() != model.label_names.size()) {
+    std::ostringstream oss;
+    oss << "postprocess.mapped_label_names without label_mapping must have one entry per "
+        << "original label, expected " << model.label_names.size()
+        << " got " << postprocess.mapped_label_names.size();
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+  }
+  for (size_t i = 0; i < postprocess.mapped_label_names.size(); ++i) {
+    if (postprocess.mapped_label_names[i].empty()) {
+      std::ostringstream oss;
+      oss << "postprocess.mapped_label_names[" << i << "] must not be empty";
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+    }
+  }
+
+  return INFERENCE_STATUS_OK;
 }
 
 InferenceStatus ValidatePackageConfig(const PackageConfig& config, std::string* out_error) {
@@ -259,36 +448,7 @@ InferenceStatus ValidatePackageConfig(const PackageConfig& config, std::string* 
                       "model.bbox_code_size must be at least 7 in CenterPoint mode");
     }
   }
-  for (const float value : config.postprocess.label_score_thresh) {
-    if (value < 0.0f) {
-      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                      "postprocess.label_score_thresh must be non-negative");
-    }
-  }
-  for (const float value : config.postprocess.circle_nms_min_radius) {
-    if (value < 0.0f) {
-      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                      "postprocess.circle_nms_min_radius must be non-negative");
-    }
-  }
-  if (config.postprocess.nms_pre_maxsize <= 0 || config.postprocess.nms_post_maxsize <= 0) {
-    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                    "postprocess.nms_pre_maxsize and nms_post_maxsize must be positive");
-  }
-  if (config.postprocess.nms_thresh < 0.0f || config.postprocess.final_score_threshold < 0.0f) {
-    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                    "postprocess thresholds must be non-negative");
-  }
-  if (config.model.decode_mode == DecodeMode::kCenterPoint &&
-      config.postprocess.nms_type == INFERENCE_NMS_CIRCLE &&
-      config.postprocess.circle_nms_min_radius.size() != config.model.task_num_classes.size()) {
-    std::ostringstream oss;
-    oss << "postprocess.circle_nms_min_radius must have one value per task in CenterPoint mode, "
-        << "expected " << config.model.task_num_classes.size()
-        << " got " << config.postprocess.circle_nms_min_radius.size();
-    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
-  }
-  return INFERENCE_STATUS_OK;
+  return ValidatePostprocessConfig(config.model, config.postprocess, out_error);
 }
 
 InferenceStatus ApplyPackageConfigNode(const YAML::Node& root,
@@ -435,6 +595,23 @@ InferenceStatus ApplyPackageConfigNode(const YAML::Node& root,
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
+    status = LoadNmsLabelGroups(postprocess["nms_label_groups"],
+                                "postprocess.nms_label_groups",
+                                &out_config->postprocess.nms_label_groups, out_error);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    status = LoadIntVector(postprocess["label_mapping"], "postprocess.label_mapping",
+                           &out_config->postprocess.label_mapping, out_error);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    status = LoadStringVector(postprocess["mapped_label_names"],
+                              "postprocess.mapped_label_names",
+                              &out_config->postprocess.mapped_label_names, out_error);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
   }
 
   return INFERENCE_STATUS_OK;
@@ -521,6 +698,53 @@ InferenceConfig ToCConfig(const PackageConfig& config) {
   return c_config;
 }
 
+inference_internal::RuntimeConfig ToInternalRuntimeConfig(const PackageConfig& config) {
+  inference_internal::RuntimeConfig runtime;
+  runtime.end2end_file = config.model.engine_path;
+  runtime.point_cloud_range = config.model.point_cloud_range;
+  runtime.post_center_range = config.model.post_center_range;
+  runtime.pillar_size = config.model.pillar_size;
+  runtime.max_points_per_pillar = config.runtime.max_points_per_pillar;
+  runtime.min_pillars = config.runtime.min_pillars;
+  runtime.max_pillars = config.runtime.max_pillars;
+  runtime.max_points = config.runtime.max_points;
+  runtime.frame_num = config.runtime.frame_num;
+  runtime.num_point_features = config.model.num_point_features;
+  runtime.bbox_max_num = config.runtime.bbox_max_num;
+  runtime.out_size_factor = config.model.out_size_factor;
+  runtime.score_threshold = config.runtime.score_threshold;
+  runtime.decode_mode = config.model.decode_mode;
+  runtime.bbox_code_size = config.model.bbox_code_size;
+  runtime.norm_bbox = config.model.norm_bbox;
+  runtime.has_velocity = config.model.has_velocity;
+  runtime.task_num_classes = config.model.task_num_classes;
+  runtime.label_count = static_cast<int>(config.model.label_names.size());
+  return runtime;
+}
+
+inference_internal::PostprocessConfig ToInternalPostprocessConfig(
+    const PostprocessConfig& config) {
+  inference_internal::PostprocessConfig internal;
+  internal.nms_type = config.nms_type;
+  internal.nms_thresh = config.nms_thresh;
+  internal.nms_pre_maxsize = config.nms_pre_maxsize;
+  internal.nms_post_maxsize = config.nms_post_maxsize;
+  internal.final_score_threshold = config.final_score_threshold;
+  internal.circle_nms_min_radius = config.circle_nms_min_radius;
+  internal.label_score_thresh = config.label_score_thresh;
+  internal.nms_label_groups.reserve(config.nms_label_groups.size());
+  for (const PostprocessConfig::NmsLabelGroup& group : config.nms_label_groups) {
+    inference_internal::PostprocessConfig::NmsLabelGroup internal_group;
+    internal_group.labels = group.labels;
+    internal_group.nms_thresh = group.nms_thresh;
+    internal_group.nms_pre_maxsize = group.nms_pre_maxsize;
+    internal_group.nms_post_maxsize = group.nms_post_maxsize;
+    internal_group.circle_nms_min_radius = group.circle_nms_min_radius;
+    internal.nms_label_groups.push_back(std::move(internal_group));
+  }
+  return internal;
+}
+
 InferencePostprocessConfig ToCPostprocessConfig(const PostprocessConfig& config) {
   InferencePostprocessConfig c_config{};
   c_config.nms_type = static_cast<int>(config.nms_type);
@@ -542,18 +766,44 @@ InferencePostprocessConfig ToCPostprocessConfig(const PostprocessConfig& config)
   return c_config;
 }
 
-const char* LabelNameForLabel(const PackageConfig& config, int label) {
-  if (label < 0 || label >= static_cast<int>(config.model.label_names.size())) {
+const char* LabelNameForLabel(const PackageConfig& config,
+                              const PostprocessConfig& postprocess,
+                              int label) {
+  const std::vector<std::string>& label_names =
+      postprocess.mapped_label_names.empty() ? config.model.label_names
+                                             : postprocess.mapped_label_names;
+  if (label < 0 || label >= static_cast<int>(label_names.size())) {
     return nullptr;
   }
-  return config.model.label_names[static_cast<size_t>(label)].c_str();
+  return label_names[static_cast<size_t>(label)].c_str();
+}
+
+bool MapDetectionLabel(const PostprocessConfig& postprocess,
+                       int original_label,
+                       int* out_label) {
+  if (out_label == nullptr) {
+    return false;
+  }
+  if (postprocess.label_mapping.empty()) {
+    *out_label = original_label;
+    return true;
+  }
+  if (original_label < 0 ||
+      original_label >= static_cast<int>(postprocess.label_mapping.size())) {
+    return false;
+  }
+  const int mapped_label = postprocess.label_mapping[static_cast<size_t>(original_label)];
+  if (mapped_label < 0) {
+    return false;
+  }
+  *out_label = mapped_label;
+  return true;
 }
 
 }  // namespace
 
 LidarInferenceRuntime::~LidarInferenceRuntime() {
-  inference_destroy(handle_);
-  handle_ = nullptr;
+  runtime_.reset();
 }
 
 InferenceStatus LidarInferenceRuntime::LoadPackageConfigFile(const std::string& config_path,
@@ -606,22 +856,15 @@ InferenceStatus LidarInferenceRuntime::Create(
 
   std::unique_ptr<LidarInferenceRuntime> runtime(new LidarInferenceRuntime());
   runtime->config_ = config;
-  runtime->default_postprocess_ = ToCPostprocessConfig(config.postprocess);
 
-  InferenceConfig c_config = ToCConfig(runtime->config_);
-  InferenceHandle* handle = nullptr;
-  status = inference_create(&c_config, &handle);
+  runtime->runtime_ = std::make_shared<inference_internal::PillarRuntime>(
+      ToInternalRuntimeConfig(runtime->config_));
+  status = runtime->runtime_->Initialize();
   if (status != INFERENCE_STATUS_OK) {
-    return SetError(out_error, status, "inference_create failed");
-  }
-  runtime->handle_ = handle;
-  runtime->last_error_ = inference_last_error(runtime->handle_);
-
-  status = inference_get_output_spec(runtime->handle_, &runtime->output_spec_);
-  if (status != INFERENCE_STATUS_OK) {
-    runtime->last_error_ = inference_last_error(runtime->handle_);
+    runtime->last_error_ = runtime->runtime_->last_error();
     return SetError(out_error, status, runtime->last_error_);
   }
+  runtime->output_spec_ = runtime->runtime_->output_spec();
 
   runtime->cls_preds_.assign(runtime->output_spec_.cls_count, 0.0f);
   runtime->box_preds_.assign(runtime->output_spec_.box_count, 0.0f);
@@ -659,7 +902,7 @@ InferenceStatus LidarInferenceRuntime::CreateFromModelDir(
 
 InferenceStatus LidarInferenceRuntime::Infer(const PointCloudView& cloud,
                                              std::vector<Detection>* out_detections) {
-  return InferInternal(cloud, &default_postprocess_, out_detections, true);
+  return InferInternal(cloud, &config_.postprocess, out_detections, true);
 }
 
 InferenceStatus LidarInferenceRuntime::InferDecoded(const PointCloudView& cloud,
@@ -671,16 +914,19 @@ InferenceStatus LidarInferenceRuntime::InferWithPostprocess(
     const PointCloudView& cloud,
     const PostprocessConfig& postprocess,
     std::vector<Detection>* out_detections) {
-  const InferencePostprocessConfig c_postprocess = ToCPostprocessConfig(postprocess);
-  return InferInternal(cloud, &c_postprocess, out_detections, true);
+  InferenceStatus status = ValidatePostprocessConfig(config_.model, postprocess, &last_error_);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
+  return InferInternal(cloud, &postprocess, out_detections, true);
 }
 
 InferenceStatus LidarInferenceRuntime::InferInternal(
     const PointCloudView& cloud,
-    const InferencePostprocessConfig* postprocess,
+    const PostprocessConfig* postprocess,
     std::vector<Detection>* out_detections,
     bool use_nms) {
-  if (handle_ == nullptr) {
+  if (runtime_ == nullptr) {
     return SetError(&last_error_, INFERENCE_STATUS_NOT_READY, "runtime is not initialized");
   }
   if (out_detections == nullptr) {
@@ -699,21 +945,43 @@ InferenceStatus LidarInferenceRuntime::InferInternal(
   response_.label_count = 0;
   response_.freespace_count = 0;
 
-  const InferenceStatus status =
-      use_nms ? inference_forward_nms(handle_, &request, postprocess, &response_)
-              : inference_forward(handle_, &request, &response_);
-  last_error_ = inference_last_error(handle_);
+  InferenceStatus status = INFERENCE_STATUS_OK;
+  inference_internal::PostprocessConfig internal_postprocess;
+  if (use_nms) {
+    internal_postprocess = ToInternalPostprocessConfig(
+        postprocess == nullptr ? config_.postprocess : *postprocess);
+    status = runtime_->ForwardNms(request, internal_postprocess, &response_, nullptr, nullptr);
+  } else {
+    status = runtime_->Forward(request, &response_, nullptr, nullptr);
+  }
+  last_error_ = runtime_->last_error();
   if (status != INFERENCE_STATUS_OK) {
     return status;
   }
 
   out_detections->clear();
   out_detections->reserve(response_.cls_count);
+  const PostprocessConfig& label_postprocess =
+      (use_nms && postprocess != nullptr) ? *postprocess : config_.postprocess;
   for (size_t i = 0; i < response_.cls_count; ++i) {
+    int mapped_label = label_preds_[i];
+    const PostprocessConfig* names_postprocess = nullptr;
+    if (use_nms) {
+      if (!MapDetectionLabel(label_postprocess, label_preds_[i], &mapped_label)) {
+        continue;
+      }
+      names_postprocess = &label_postprocess;
+    }
     Detection detection;
     detection.score = cls_preds_[i];
-    detection.label = label_preds_[i];
-    detection.label_name = LabelNameForLabel(config_, detection.label);
+    detection.label = mapped_label;
+    detection.label_name =
+        names_postprocess == nullptr
+            ? (detection.label >= 0 &&
+                       detection.label < static_cast<int>(config_.model.label_names.size())
+                   ? config_.model.label_names[static_cast<size_t>(detection.label)].c_str()
+                   : nullptr)
+            : LabelNameForLabel(config_, *names_postprocess, detection.label);
     const size_t box_offset = i * kBoxDimension;
     std::copy(box_preds_.begin() + static_cast<long>(box_offset),
               box_preds_.begin() + static_cast<long>(box_offset + kBoxDimension),
@@ -724,12 +992,12 @@ InferenceStatus LidarInferenceRuntime::InferInternal(
 }
 
 InferenceStatus LidarInferenceRuntime::Reset() {
-  if (handle_ == nullptr) {
+  if (runtime_ == nullptr) {
     return SetError(&last_error_, INFERENCE_STATUS_NOT_READY, "runtime is not initialized");
   }
-  const InferenceStatus status = inference_reset(handle_);
-  last_error_ = inference_last_error(handle_);
-  return status;
+  runtime_->Reset();
+  last_error_.clear();
+  return INFERENCE_STATUS_OK;
 }
 
 }  // namespace inference

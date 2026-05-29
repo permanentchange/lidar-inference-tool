@@ -202,43 +202,6 @@ void ApplyPreMaxsize(std::vector<float>* scores,
   labels->swap(new_labels);
 }
 
-std::vector<size_t> CircleNmsKeep(const std::vector<float>& scores,
-                                  const std::vector<float>& boxes,
-                                  float distance_threshold,
-                                  int post_maxsize) {
-  std::vector<size_t> order(scores.size());
-  std::iota(order.begin(), order.end(), 0);
-  std::sort(order.begin(), order.end(),
-            [&](size_t lhs, size_t rhs) { return scores[lhs] > scores[rhs]; });
-
-  std::vector<size_t> keep;
-  keep.reserve(order.size());
-  std::vector<uint8_t> suppressed(scores.size(), 0);
-  for (size_t order_index = 0; order_index < order.size(); ++order_index) {
-    const size_t index = order[order_index];
-    if (suppressed[index] != 0U) {
-      continue;
-    }
-    keep.push_back(index);
-    for (size_t compare_index = order_index + 1; compare_index < order.size(); ++compare_index) {
-      const size_t other = order[compare_index];
-      if (suppressed[other] != 0U) {
-        continue;
-      }
-      const float dx = boxes[index * kBoxDim + 0] - boxes[other * kBoxDim + 0];
-      const float dy = boxes[index * kBoxDim + 1] - boxes[other * kBoxDim + 1];
-      const float squared_distance = dx * dx + dy * dy;
-      if (squared_distance <= distance_threshold) {
-        suppressed[other] = 1U;
-      }
-    }
-    if (post_maxsize > 0 && keep.size() >= static_cast<size_t>(post_maxsize)) {
-      break;
-    }
-  }
-  return keep;
-}
-
 void AppendBoxes(const std::vector<float>& source_boxes,
                  size_t source_index,
                  std::vector<float>* target_boxes) {
@@ -267,6 +230,135 @@ void FilterByScoreThreshold(CandidateDetections* detections, float score_thresho
   detections->scores.swap(filtered.scores);
   detections->labels.swap(filtered.labels);
   detections->boxes.swap(filtered.boxes);
+}
+
+void SortCandidatesDescending(CandidateDetections* out_candidates);
+
+void CollectByLabelSet(const CandidateDetections& candidates,
+                       const std::vector<int>& labels,
+                       int label_count,
+                       CandidateDetections* out_group) {
+  out_group->scores.clear();
+  out_group->boxes.clear();
+  out_group->labels.clear();
+  if (labels.empty() || label_count <= 0) {
+    return;
+  }
+
+  std::vector<uint8_t> selected(static_cast<size_t>(label_count), 0);
+  for (const int label : labels) {
+    if (label >= 0 && label < label_count) {
+      selected[static_cast<size_t>(label)] = 1U;
+    }
+  }
+
+  out_group->scores.reserve(candidates.scores.size());
+  out_group->labels.reserve(candidates.labels.size());
+  out_group->boxes.reserve(candidates.boxes.size());
+  for (size_t i = 0; i < candidates.scores.size(); ++i) {
+    const int label = candidates.labels[i];
+    if (label < 0 || label >= label_count || selected[static_cast<size_t>(label)] == 0U) {
+      continue;
+    }
+    out_group->scores.push_back(candidates.scores[i]);
+    out_group->labels.push_back(label);
+    AppendBoxes(candidates.boxes, i, &out_group->boxes);
+  }
+}
+
+InferenceStatus AppendCircleNmsResult(CandidateDetections* detections,
+                                      float distance_threshold,
+                                      int post_maxsize,
+                                      CandidateDetections* out_result,
+                                      std::string* out_error) {
+  if (detections == nullptr || out_result == nullptr) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "Circle NMS input or output is null");
+  }
+  if (distance_threshold < 0.0f || post_maxsize <= 0) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "Circle NMS group config is invalid");
+  }
+  if (detections->scores.empty()) {
+    return INFERENCE_STATUS_OK;
+  }
+
+  SortCandidatesDescending(detections);
+  std::vector<long> keep(detections->scores.size(), 0);
+  const int keep_count =
+      circle_nms_gpu(detections->boxes.data(), keep.data(), distance_threshold,
+                     static_cast<int>(detections->scores.size()));
+  const size_t final_count =
+      std::min(static_cast<size_t>(keep_count), static_cast<size_t>(post_maxsize));
+  for (size_t i = 0; i < final_count; ++i) {
+    const size_t src = static_cast<size_t>(keep[i]);
+    out_result->scores.push_back(detections->scores[src]);
+    out_result->labels.push_back(detections->labels[src]);
+    AppendBoxes(detections->boxes, src, &out_result->boxes);
+  }
+  return INFERENCE_STATUS_OK;
+}
+
+InferenceStatus AppendIouNmsResult(CandidateDetections* detections,
+                                   float nms_thresh,
+                                   int pre_maxsize,
+                                   int post_maxsize,
+                                   CandidateDetections* out_result,
+                                   std::string* out_error) {
+  if (detections == nullptr || out_result == nullptr) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "IoU NMS input or output is null");
+  }
+  if (nms_thresh < 0.0f || pre_maxsize <= 0 || post_maxsize <= 0) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "IoU NMS group config is invalid");
+  }
+  if (detections->scores.empty()) {
+    return INFERENCE_STATUS_OK;
+  }
+
+  ApplyPreMaxsize(&detections->scores, &detections->boxes, &detections->labels, pre_maxsize);
+  std::vector<long> keep(detections->scores.size(), 0);
+  const int keep_count =
+      nms_gpu(detections->boxes.data(), keep.data(), nms_thresh,
+              static_cast<int>(detections->scores.size()));
+  const size_t final_count =
+      std::min(static_cast<size_t>(keep_count), static_cast<size_t>(post_maxsize));
+  for (size_t i = 0; i < final_count; ++i) {
+    const size_t src = static_cast<size_t>(keep[i]);
+    out_result->scores.push_back(detections->scores[src]);
+    out_result->labels.push_back(detections->labels[src]);
+    AppendBoxes(detections->boxes, src, &out_result->boxes);
+  }
+  return INFERENCE_STATUS_OK;
+}
+
+InferenceStatus RunGroupedNms(const CandidateDetections& candidates,
+                              const PostprocessConfig& config,
+                              const RuntimeConfig& runtime_config,
+                              CandidateDetections* out_result,
+                              std::string* out_error) {
+  out_result->scores.clear();
+  out_result->boxes.clear();
+  out_result->labels.clear();
+  const int label_count = runtime_config.label_count > 0 ? runtime_config.label_count : kLabelCount;
+  for (const PostprocessConfig::NmsLabelGroup& group : config.nms_label_groups) {
+    CandidateDetections per_group;
+    CollectByLabelSet(candidates, group.labels, label_count, &per_group);
+    InferenceStatus status = INFERENCE_STATUS_OK;
+    if (config.nms_type == INFERENCE_NMS_CIRCLE) {
+      status = AppendCircleNmsResult(&per_group, group.circle_nms_min_radius,
+                                     group.nms_post_maxsize, out_result, out_error);
+    } else {
+      status = AppendIouNmsResult(&per_group, group.nms_thresh, group.nms_pre_maxsize,
+                                  group.nms_post_maxsize, out_result, out_error);
+    }
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+  }
+  FilterByScoreThreshold(out_result, config.final_score_threshold);
+  return INFERENCE_STATUS_OK;
 }
 
 InferenceStatus BuildPillars(const RuntimeConfig& config,
@@ -757,6 +849,9 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                     "NMS maxsize must be positive");
   }
+  if (!config.nms_label_groups.empty()) {
+    return RunGroupedNms(candidates, config, runtime_config, out_result, out_error);
+  }
   if (runtime_config.decode_mode == inference::DecodeMode::kCenterPoint) {
     out_result->scores.clear();
     out_result->boxes.clear();
@@ -782,29 +877,18 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
         const float radius = task_index < config.circle_nms_min_radius.size()
                                  ? config.circle_nms_min_radius[task_index]
                                  : 0.0f;
-        const std::vector<size_t> keep =
-            CircleNmsKeep(per_task.scores, per_task.boxes, radius, config.nms_post_maxsize);
-        for (size_t kept_index : keep) {
-          out_result->scores.push_back(per_task.scores[kept_index]);
-          out_result->labels.push_back(per_task.labels[kept_index]);
-          AppendBoxes(per_task.boxes, kept_index, &out_result->boxes);
+        InferenceStatus status = AppendCircleNmsResult(&per_task, radius, config.nms_post_maxsize,
+                                                       out_result, out_error);
+        if (status != INFERENCE_STATUS_OK) {
+          return status;
         }
       } else {
-        ApplyPreMaxsize(&per_task.scores, &per_task.boxes, &per_task.labels,
-                        config.nms_pre_maxsize);
-        std::vector<long> keep(per_task.scores.size(), 0);
-        const int keep_count =
-            per_task.scores.empty()
-                ? 0
-                : nms_gpu(per_task.boxes.data(), keep.data(), config.nms_thresh,
-                          static_cast<int>(per_task.scores.size()));
-        const size_t final_count = std::min(static_cast<size_t>(keep_count),
-                                            static_cast<size_t>(config.nms_post_maxsize));
-        for (size_t i = 0; i < final_count; ++i) {
-          const size_t src = static_cast<size_t>(keep[i]);
-          out_result->scores.push_back(per_task.scores[src]);
-          out_result->labels.push_back(per_task.labels[src]);
-          AppendBoxes(per_task.boxes, src, &out_result->boxes);
+        InferenceStatus status = AppendIouNmsResult(&per_task, config.nms_thresh,
+                                                    config.nms_pre_maxsize,
+                                                    config.nms_post_maxsize, out_result,
+                                                    out_error);
+        if (status != INFERENCE_STATUS_OK) {
+          return status;
         }
       }
       class_offset += task_classes;
@@ -830,14 +914,11 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
         per_label.labels.push_back(label);
         AppendBoxes(candidates.boxes, i, &per_label.boxes);
       }
-      const std::vector<size_t> keep =
-          CircleNmsKeep(per_label.scores, per_label.boxes,
-                        config.circle_nms_min_radius[static_cast<size_t>(label)],
-                        config.nms_post_maxsize);
-      for (size_t kept_index : keep) {
-        out_result->scores.push_back(per_label.scores[kept_index]);
-        out_result->labels.push_back(label);
-        AppendBoxes(per_label.boxes, kept_index, &out_result->boxes);
+      InferenceStatus status = AppendCircleNmsResult(
+          &per_label, config.circle_nms_min_radius[static_cast<size_t>(label)],
+          config.nms_post_maxsize, out_result, out_error);
+      if (status != INFERENCE_STATUS_OK) {
+        return status;
       }
     }
     FilterByScoreThreshold(out_result, config.final_score_threshold);
@@ -862,28 +943,15 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
     labels.push_back(label);
     AppendBoxes(candidates.boxes, i, &boxes);
   }
-  ApplyPreMaxsize(&scores, &boxes, &labels, config.nms_pre_maxsize);
-  std::vector<long> keep(scores.size(), 0);
-  const int keep_count = scores.empty()
-                             ? 0
-                             : nms_gpu(boxes.data(), keep.data(), config.nms_thresh,
-                                       static_cast<int>(scores.size()));
-  const size_t final_count = std::min(static_cast<size_t>(keep_count),
-                                      static_cast<size_t>(config.nms_post_maxsize));
-
   out_result->scores.clear();
   out_result->boxes.clear();
   out_result->labels.clear();
-  out_result->scores.reserve(final_count);
-  out_result->boxes.reserve(final_count * kBoxDim);
-  out_result->labels.reserve(final_count);
-  for (size_t i = 0; i < final_count; ++i) {
-    const long src = keep[i];
-    out_result->scores.push_back(scores[static_cast<size_t>(src)]);
-    out_result->labels.push_back(labels[static_cast<size_t>(src)]);
-    AppendBoxes(boxes, static_cast<size_t>(src), &out_result->boxes);
-  }
-  return INFERENCE_STATUS_OK;
+  CandidateDetections filtered;
+  filtered.scores = std::move(scores);
+  filtered.boxes = std::move(boxes);
+  filtered.labels = std::move(labels);
+  return AppendIouNmsResult(&filtered, config.nms_thresh, config.nms_pre_maxsize,
+                            config.nms_post_maxsize, out_result, out_error);
 }
 
 InferenceOutputSpec MakeOutputSpec(int task_count, int bbox_max_num) {

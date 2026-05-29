@@ -41,6 +41,20 @@ int nms_gpu(const float *boxes,
             const int num_boxes);
 
 /**
+ * @brief GPU版本的Circle NMS，按输入顺序贪心保留中心距离足够远的框
+ * @note 编译时定义HAVE_CUDA_ENABLE则启用CUDA加速，否则退化为CPU模拟实现
+ * @param boxes 输入检测框数据，形状为(N,7)，格式[x, y, z, dx, dy, dz, heading]
+ * @param keep 输出保留的框索引，数组长度需至少为N
+ * @param distance_threshold 中心点平方距离阈值，与CenterPoint circle_nms保持一致
+ * @param num_boxes 输入检测框的数量（N）
+ * @return int 保留的框的数量
+ */
+int circle_nms_gpu(const float *boxes,
+                   long *keep,
+                   float distance_threshold,
+                   const int num_boxes);
+
+/**
  * @brief GPU版本计算BEV视角下的3D框重叠面积
  * @note 编译时定义HAVE_CUDA_ENABLE则启用CUDA加速，否则退化为CPU模拟实现
  * @param boxes_a 输入A框数据，形状为(N,7)，格式[x, y, z, dx, dy, dz, heading]

@@ -13,8 +13,7 @@ InferenceStatus SetStubError(std::string* out_error) {
 }  // namespace
 
 LidarInferenceRuntime::~LidarInferenceRuntime() {
-  inference_destroy(handle_);
-  handle_ = nullptr;
+  runtime_.reset();
 }
 
 InferenceStatus LidarInferenceRuntime::LoadPackageConfigFile(const std::string&,
@@ -79,7 +78,7 @@ InferenceStatus LidarInferenceRuntime::InferWithPostprocess(
 }
 
 InferenceStatus LidarInferenceRuntime::InferInternal(const PointCloudView&,
-                                                     const InferencePostprocessConfig*,
+                                                     const PostprocessConfig*,
                                                      std::vector<Detection>*,
                                                      bool) {
   return SetStubError(&last_error_);

@@ -14,6 +14,7 @@
 #include <sstream>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace inference_internal {
@@ -137,6 +138,17 @@ PostprocessConfig PostprocessConfigFromPackage(const inference::PackageConfig& p
   postprocess.final_score_threshold = package.postprocess.final_score_threshold;
   postprocess.circle_nms_min_radius = package.postprocess.circle_nms_min_radius;
   postprocess.label_score_thresh = package.postprocess.label_score_thresh;
+  postprocess.nms_label_groups.reserve(package.postprocess.nms_label_groups.size());
+  for (const inference::PostprocessConfig::NmsLabelGroup& group :
+       package.postprocess.nms_label_groups) {
+    PostprocessConfig::NmsLabelGroup internal_group;
+    internal_group.labels = group.labels;
+    internal_group.nms_thresh = group.nms_thresh;
+    internal_group.nms_pre_maxsize = group.nms_pre_maxsize;
+    internal_group.nms_post_maxsize = group.nms_post_maxsize;
+    internal_group.circle_nms_min_radius = group.circle_nms_min_radius;
+    postprocess.nms_label_groups.push_back(std::move(internal_group));
+  }
   return postprocess;
 }
 

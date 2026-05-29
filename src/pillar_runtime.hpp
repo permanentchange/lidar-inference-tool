@@ -33,6 +33,14 @@ struct RuntimeConfig {
 };
 
 struct PostprocessConfig {
+  struct NmsLabelGroup {
+    std::vector<int> labels;
+    float nms_thresh = -1.0f;
+    int nms_pre_maxsize = 0;
+    int nms_post_maxsize = 0;
+    float circle_nms_min_radius = -1.0f;
+  };
+
   InferenceNmsType nms_type = INFERENCE_NMS_IOU_BEV;
   float nms_thresh = 0.25f;
   int nms_pre_maxsize = 2048;
@@ -40,6 +48,7 @@ struct PostprocessConfig {
   float final_score_threshold = 0.3f;
   std::vector<float> circle_nms_min_radius{4.0f, 12.0f, 10.0f};
   std::vector<float> label_score_thresh{0.45f, 0.3f, 0.45f};
+  std::vector<NmsLabelGroup> nms_label_groups;
 };
 
 struct StageTimings {
