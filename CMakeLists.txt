@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.0.2)
 project(lidar-inference-tool 
-  VERSION 1.3.0
+  VERSION 1.4.0
   DESCRIPTION "TensorRT lidar-inference-tool library"
   LANGUAGES CXX
 )

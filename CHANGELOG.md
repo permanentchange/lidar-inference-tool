@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.4.0
+
+- Split the old `pillar_debug_tool` workflow into `infer_debug_tool` for high-level C++ API result validation and `perf_debug_tool` for performance profiling.
+- Added visualization-friendly inference debug artifacts whose final detections come from `runtime->Infer(...)` and honor mapped label names.
+- Consolidated BEV and 3D debug visualization into `tools/visualize_infer_debug.py`.
+- Updated the interactive 3D view to show only final high-level API results by default, with explicit debug-layer overlays for decoded candidates and heatmaps.
+- Added BEV box heading arrows for final detections using box yaw.
+- Updated the demo model package sample and debug-tool documentation.
+
 ## v1.3.0
 
 - Changed inference API labels from 1-based output IDs to 0-based output IDs.
