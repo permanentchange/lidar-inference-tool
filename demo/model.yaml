@@ -19,7 +19,7 @@ model:
     - "vehicle.bicycle.ridden" # 6
     - "vehicle.tricycle.unridden" # 7
     - "vehicle.tricycle.ridden" # 8
-  task_num_classes: [1, 1, 1, 1, 1, 1, 1, 1, 1]
+  task_num_classes: [2, 1, 2, 1, 1, 2]
 
 runtime:
   max_points_per_pillar: 20
@@ -36,7 +36,7 @@ postprocess:
   nms_pre_maxsize: 1000
   nms_post_maxsize: 83
   final_score_threshold: 0.3
-  label_score_thresh: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+  label_score_thresh: [0.35, 0.4, 0.3, 0.5, 0.2, 0.35, 0.4, 0.3, 0.25]
   circle_nms_min_radius: [0.8, 0.4, 0.8, 0.6, 2.0, 1.5, 0.6, 1.5, 1.5]
   nms_label_groups:
     - labels: [0, 2]
