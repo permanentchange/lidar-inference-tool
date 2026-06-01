@@ -232,6 +232,31 @@ void FilterByScoreThreshold(CandidateDetections* detections, float score_thresho
   detections->boxes.swap(filtered.boxes);
 }
 
+void FilterByLabelScoreThreshold(CandidateDetections* detections,
+                                 const std::vector<float>& label_score_thresh) {
+  if (detections == nullptr || label_score_thresh.empty()) {
+    return;
+  }
+
+  CandidateDetections filtered;
+  filtered.scores.reserve(detections->scores.size());
+  filtered.labels.reserve(detections->labels.size());
+  filtered.boxes.reserve(detections->boxes.size());
+  for (size_t i = 0; i < detections->scores.size(); ++i) {
+    const int label = detections->labels[i];
+    if (label >= 0 && label < static_cast<int>(label_score_thresh.size()) &&
+        detections->scores[i] < label_score_thresh[static_cast<size_t>(label)]) {
+      continue;
+    }
+    filtered.scores.push_back(detections->scores[i]);
+    filtered.labels.push_back(label);
+    AppendBoxes(detections->boxes, i, &filtered.boxes);
+  }
+  detections->scores.swap(filtered.scores);
+  detections->labels.swap(filtered.labels);
+  detections->boxes.swap(filtered.boxes);
+}
+
 void SortCandidatesDescending(CandidateDetections* out_candidates);
 
 void CollectByLabelSet(const CandidateDetections& candidates,
@@ -345,6 +370,7 @@ InferenceStatus RunGroupedNms(const CandidateDetections& candidates,
   for (const PostprocessConfig::NmsLabelGroup& group : config.nms_label_groups) {
     CandidateDetections per_group;
     CollectByLabelSet(candidates, group.labels, label_count, &per_group);
+    FilterByLabelScoreThreshold(&per_group, config.label_score_thresh);
     InferenceStatus status = INFERENCE_STATUS_OK;
     if (config.nms_type == INFERENCE_NMS_CIRCLE) {
       status = AppendCircleNmsResult(&per_group, group.circle_nms_min_radius,
