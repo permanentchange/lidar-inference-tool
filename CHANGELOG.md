@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.5.0
+
+- Added `model.task_label_ids` so CenterPoint task-local output channels can be mapped back to global label ids during decode.
+- Updated postprocess to run task/group-aware NMS on global labels and then apply final label mapping for merged business labels.
+- Updated the demo model package for the 6-task / 9-label layout, including per-label score thresholds, grouped NMS settings, and mapped final label names.
+- Updated infer-debug visualization so final detections use mapped labels while decoded/internal debug candidates still use global labels.
+- Added a CMake package version file so downstream projects can use versioned `find_package(...)` checks.
+- Updated the package version to `1.5.0`.
+
 ## v1.4.0
 
 - Split the old `pillar_debug_tool` workflow into `infer_debug_tool` for high-level C++ API result validation and `perf_debug_tool` for performance profiling.

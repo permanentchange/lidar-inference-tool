@@ -8,13 +8,15 @@
 - `lidar_model_downloader`: an installed command-line helper for fetching model assets after package installation
 - `minimal_cpp_api_example`: a model-package-driven executable under `examples/` that shows the recommended C++ integration path
 
-## v1.2.1
+## v1.5.0
 
-- Added `lidar_model_downloader` for ARM Linux DEB installs so model assets can be fetched with a direct command after installation.
+- Added CenterPoint task-label remapping through `model.task_label_ids`.
+- Added global-label grouped NMS and final mapped business labels.
+- Updated the demo model package for the 6-task / 9-label layout.
 
 See [CHANGELOG.md](./CHANGELOG.md) for version history.
 
-The current runtime is written for PointPillars / CenterPoint-style engines with fixed binding names and a 3-task head layout.
+The current runtime is written for PointPillars / CenterPoint-style engines with fixed binding names and a configurable CenterPoint task head layout.
 
 ## Privacy Note
 
@@ -61,10 +63,11 @@ Additional assumptions enforced by the runtime:
 - the `voxels`, `num_points`, and `coors` inputs must agree on the same min/opt/max pillar range
 - output tensors must be 4D `BCHW`
 - output feature-map spatial sizes must match
-- `bbox_pred0` must have `8 * task_count` channels
+- `bbox_pred0` must have `bbox_code_size * task_count` channels
 - `dir_cls_pred0` must have `2 * task_count` channels
-- the current decode path expects 3 tasks
-- decoded labels are internally represented as `1`, `2`, `3`, mapped by default to `car`, `pedestrian`, `cyclist`
+- `cls_score0` channels must match the sum of `model.task_num_classes`
+- decoded labels are global label ids resolved through `model.task_label_ids`
+- final labels are mapped through `postprocess.label_mapping` when configured
 
 Initialization fails if the engine bindings, dtypes, optimization profile, or channel layout do not match these expectations.
 
@@ -169,6 +172,8 @@ The generated `.deb` installs its runtime commands under `/usr/local/bin`, inclu
 - `infer_debug_tool`
 - `perf_debug_tool`
 - `lidar_model_downloader`
+
+Installed CMake package files include a version file, so downstream projects can require this release with `find_package(lidar-inference-tool 1.5.0 CONFIG REQUIRED)`.
 
 The package build now runs from `build/`, so CPack temporary files stay under `build/_CPack_Packages/` instead of the repository root.
 
@@ -279,6 +284,8 @@ The current demo `model.yaml` includes:
 - `model.out_size_factor`
 - `model.label_names`
 - `runtime.max_points_per_pillar`
+- `model.task_num_classes`
+- `model.task_label_ids`
 - `runtime.min_pillars`
 - `runtime.max_pillars`
 - `runtime.max_points`
@@ -291,9 +298,18 @@ The current demo `model.yaml` includes:
 - `postprocess.nms_post_maxsize`
 - `postprocess.final_score_threshold`
 - `postprocess.circle_nms_min_radius`
+- `postprocess.nms_label_groups`
 - `postprocess.label_score_thresh`
 - `postprocess.label_mapping`
 - `postprocess.mapped_label_names`
+
+Label-related config uses two stages:
+
+- `model.label_names` defines global labels.
+- `model.task_label_ids` maps each task-local ONNX class channel to a global label id.
+- `postprocess.nms_label_groups` selects which global labels share one NMS pass.
+- `postprocess.label_mapping` maps global labels to final business labels returned by the public API.
+- `postprocess.mapped_label_names` names those final business labels.
 
 The wrapper resolves relative `model.engine_path` values against the location of `model.yaml`.
 Optional override YAML files use the same schema and are applied with this precedence:

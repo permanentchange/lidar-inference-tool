@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.0.2)
 project(lidar-inference-tool 
-  VERSION 1.4.0
+  VERSION 1.5.0
   DESCRIPTION "TensorRT lidar-inference-tool library"
   LANGUAGES CXX
 )
@@ -336,9 +336,16 @@ configure_package_config_file(
   INSTALL_DESTINATION ${INSTALL_CONFIGDIR}
 )
 
+write_basic_package_version_file(
+  ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake
+  VERSION ${PROJECT_VERSION}
+  COMPATIBILITY SameMajorVersion
+)
+
 # 安装 Config.cmake
 install(FILES
   ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}Config.cmake
+  ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake
   DESTINATION ${INSTALL_CONFIGDIR}
 )
 
