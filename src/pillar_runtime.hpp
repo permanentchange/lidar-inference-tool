@@ -29,6 +29,7 @@ struct RuntimeConfig {
   bool norm_bbox = false;
   bool has_velocity = false;
   std::vector<int> task_num_classes;
+  std::vector<std::vector<int>> task_label_ids;
   int label_count = 0;
 };
 

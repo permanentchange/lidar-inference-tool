@@ -101,6 +101,10 @@ def label_names_from_config(cfg):
     return [str(name) for name in cfg.get("model", {}).get("label_names", [])]
 
 
+def global_label_names_from_config(cfg):
+    return [str(name) for name in cfg.get("model", {}).get("label_names", [])]
+
+
 def label_name(label_names, label_id):
     label_id = int(label_id)
     if label_id < 0:
@@ -790,7 +794,8 @@ def main():
     args = parse_args()
     cfg = load_model_config(args.model_dir)
     pc_range = cfg["model"]["point_cloud_range"]
-    labels = label_names_from_config(cfg)
+    final_labels = label_names_from_config(cfg)
+    global_labels = global_label_names_from_config(cfg)
     dump_dir = args.dump_dir
 
     points = load_optional_array(dump_dir / "input_points.npy")
@@ -798,19 +803,19 @@ def main():
     result_json = load_optional_json(dump_dir / "result.json")
     metadata_json = load_optional_json(dump_dir / "metadata.json")
 
-    final_entries = build_final_entries(result_json, dump_dir, labels)
+    final_entries = build_final_entries(result_json, dump_dir, final_labels)
     decoded_entries = build_entries_from_arrays(
         load_optional_array(dump_dir / "decoded_boxes.npy"),
         load_optional_array(dump_dir / "decoded_scores.npy"),
         load_optional_array(dump_dir / "decoded_labels.npy"),
-        labels,
+        global_labels,
         "decoded",
     )
     internal_entries = build_entries_from_arrays(
         load_optional_array(dump_dir / "internal_decoded_boxes.npy"),
         load_optional_array(dump_dir / "internal_decoded_scores.npy"),
         load_optional_array(dump_dir / "internal_decoded_labels.npy"),
-        labels,
+        global_labels,
         "internal_decoded",
     )
 

@@ -118,12 +118,27 @@ struct CandidateCompare {
   }
 };
 
+int GlobalLabelForTaskClass(const RuntimeConfig& config, int task_id, int class_index) {
+  if (task_id >= 0 && task_id < static_cast<int>(config.task_label_ids.size())) {
+    const std::vector<int>& label_ids = config.task_label_ids[static_cast<size_t>(task_id)];
+    if (class_index >= 0 && class_index < static_cast<int>(label_ids.size())) {
+      return label_ids[static_cast<size_t>(class_index)];
+    }
+  }
+  int label_offset = 0;
+  for (int i = 0; i < task_id && i < static_cast<int>(config.task_num_classes.size()); ++i) {
+    label_offset += config.task_num_classes[static_cast<size_t>(i)];
+  }
+  return label_offset + class_index;
+}
+
 __global__ void FinalizeDecodeCandidatesKernel(const float* bbox_pred,
                                                const float* cls_score,
                                                const float* dir_cls_pred,
                                                const int* task_segment_offsets,
                                                const int* task_num_classes,
                                                const int* task_label_offsets,
+                                               const int* task_global_label_ids,
                                                int task_count,
                                                int height,
                                                int width,
@@ -216,7 +231,7 @@ __global__ void FinalizeDecodeCandidatesKernel(const float* bbox_pred,
 
   DeviceCandidate candidate;
   candidate.score = score;
-  candidate.label = class_channel;
+  candidate.label = task_global_label_ids[class_channel];
   candidate.box[0] = center_x;
   candidate.box[1] = center_y;
   candidate.box[2] = center_z;
@@ -264,10 +279,12 @@ struct GpuDecodedCandidates::Impl {
   std::vector<int> host_task_segment_offsets;
   std::vector<int> host_task_num_classes;
   std::vector<int> host_task_label_offsets;
+  std::vector<int> host_task_global_label_ids;
 
   int* d_task_segment_offsets = nullptr;
   int* d_task_num_classes = nullptr;
   int* d_task_label_offsets = nullptr;
+  int* d_task_global_label_ids = nullptr;
   float* d_point_cloud_range = nullptr;
   float* d_post_center_range = nullptr;
   float* d_pillar_size = nullptr;
@@ -287,6 +304,7 @@ struct GpuDecodedCandidates::Impl {
     FreeDeviceBuffer(&d_pillar_size);
     FreeDeviceBuffer(&d_post_center_range);
     FreeDeviceBuffer(&d_point_cloud_range);
+    FreeDeviceBuffer(&d_task_global_label_ids);
     FreeDeviceBuffer(&d_task_label_offsets);
     FreeDeviceBuffer(&d_task_num_classes);
     FreeDeviceBuffer(&d_task_segment_offsets);
@@ -324,6 +342,7 @@ InferenceStatus GpuDecodedCandidates::Initialize(const RuntimeConfig& config,
   impl->host_task_segment_offsets.reserve(static_cast<size_t>(task_count + 1));
   impl->host_task_num_classes.reserve(static_cast<size_t>(task_count));
   impl->host_task_label_offsets.reserve(static_cast<size_t>(task_count));
+  impl->host_task_global_label_ids.reserve(static_cast<size_t>(cls_channels));
   impl->host_task_segment_offsets.push_back(0);
 
   int class_offset = 0;
@@ -334,6 +353,10 @@ InferenceStatus GpuDecodedCandidates::Initialize(const RuntimeConfig& config,
             : 1;
     impl->host_task_num_classes.push_back(task_classes);
     impl->host_task_label_offsets.push_back(class_offset);
+    for (int class_index = 0; class_index < task_classes; ++class_index) {
+      impl->host_task_global_label_ids.push_back(
+          GlobalLabelForTaskClass(config, task_id, class_index));
+    }
     const int next_offset =
         impl->host_task_segment_offsets.back() + task_classes * height * width;
     impl->host_task_segment_offsets.push_back(next_offset);
@@ -364,6 +387,12 @@ InferenceStatus GpuDecodedCandidates::Initialize(const RuntimeConfig& config,
   }
   status = AllocateDeviceBuffer(impl->host_task_label_offsets.size(), "task_label_offsets",
                                 &impl->d_task_label_offsets, out_error);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
+  status = AllocateDeviceBuffer(impl->host_task_global_label_ids.size(),
+                                "task_global_label_ids",
+                                &impl->d_task_global_label_ids, out_error);
   if (status != INFERENCE_STATUS_OK) {
     return status;
   }
@@ -431,6 +460,14 @@ InferenceStatus GpuDecodedCandidates::Initialize(const RuntimeConfig& config,
   if (status != INFERENCE_STATUS_OK) {
     return status;
   }
+  status = CheckCuda(cudaMemcpy(impl->d_task_global_label_ids,
+                                impl->host_task_global_label_ids.data(),
+                                impl->host_task_global_label_ids.size() * sizeof(int),
+                                cudaMemcpyHostToDevice),
+                     "cudaMemcpy(task_global_label_ids)", out_error);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
   status = CheckCuda(cudaMemcpy(impl->d_point_cloud_range, config.point_cloud_range.data(),
                                 config.point_cloud_range.size() * sizeof(float),
                                 cudaMemcpyHostToDevice),
@@ -475,7 +512,8 @@ InferenceStatus GpuDecodedCandidates::Decode(const float* d_bbox_pred,
   const int blocks = (impl_->total_slots + threads - 1) / threads;
   FinalizeDecodeCandidatesKernel<<<blocks, threads, 0, stream>>>(
       d_bbox_pred, d_cls_score, d_dir_cls_pred, impl_->d_task_segment_offsets,
-      impl_->d_task_num_classes, impl_->d_task_label_offsets, impl_->task_count, impl_->height,
+      impl_->d_task_num_classes, impl_->d_task_label_offsets,
+      impl_->d_task_global_label_ids, impl_->task_count, impl_->height,
       impl_->width, impl_->config.score_threshold, impl_->d_point_cloud_range,
       impl_->d_post_center_range, impl_->d_pillar_size, impl_->config.out_size_factor,
       static_cast<int>(impl_->config.decode_mode), impl_->config.norm_bbox, impl_->d_workspace);

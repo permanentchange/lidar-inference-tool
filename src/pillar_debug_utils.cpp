@@ -81,6 +81,7 @@ RuntimeConfig RuntimeConfigFromPackage(const inference::PackageConfig& package) 
   runtime.norm_bbox = package.model.norm_bbox;
   runtime.has_velocity = package.model.has_velocity;
   runtime.task_num_classes = package.model.task_num_classes;
+  runtime.task_label_ids = package.model.task_label_ids;
   runtime.label_count = static_cast<int>(package.model.label_names.size());
   return runtime;
 }

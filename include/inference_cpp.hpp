@@ -34,6 +34,7 @@ struct ModelConfig {
   bool has_velocity = false;
   std::vector<std::string> label_names{"car", "pedestrian", "cyclist"};
   std::vector<int> task_num_classes{1, 1, 1};
+  std::vector<std::vector<int>> task_label_ids;
 };
 
 struct RuntimeConfig {

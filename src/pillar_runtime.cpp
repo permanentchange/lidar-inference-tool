@@ -257,6 +257,39 @@ void FilterByLabelScoreThreshold(CandidateDetections* detections,
   detections->boxes.swap(filtered.boxes);
 }
 
+int GlobalLabelForTaskClass(const RuntimeConfig& config, int task_id, int class_index) {
+  if (task_id >= 0 && task_id < static_cast<int>(config.task_label_ids.size())) {
+    const std::vector<int>& label_ids = config.task_label_ids[static_cast<size_t>(task_id)];
+    if (class_index >= 0 && class_index < static_cast<int>(label_ids.size())) {
+      return label_ids[static_cast<size_t>(class_index)];
+    }
+  }
+  int label_offset = 0;
+  for (int i = 0; i < task_id && i < static_cast<int>(config.task_num_classes.size()); ++i) {
+    label_offset += config.task_num_classes[static_cast<size_t>(i)];
+  }
+  return label_offset + class_index;
+}
+
+std::vector<int> GlobalLabelsForTask(const RuntimeConfig& config, size_t task_index) {
+  if (task_index < config.task_label_ids.size()) {
+    return config.task_label_ids[task_index];
+  }
+  std::vector<int> labels;
+  if (task_index >= config.task_num_classes.size()) {
+    return labels;
+  }
+  int label_offset = 0;
+  for (size_t i = 0; i < task_index; ++i) {
+    label_offset += config.task_num_classes[i];
+  }
+  labels.reserve(static_cast<size_t>(config.task_num_classes[task_index]));
+  for (int i = 0; i < config.task_num_classes[task_index]; ++i) {
+    labels.push_back(label_offset + i);
+  }
+  return labels;
+}
+
 void SortCandidatesDescending(CandidateDetections* out_candidates);
 
 void CollectByLabelSet(const CandidateDetections& candidates,
@@ -687,7 +720,8 @@ InferenceStatus DecodeCenterPointOutputs(const RuntimeConfig& config,
       }
 
       out_candidates->scores.push_back(entry.score);
-      out_candidates->labels.push_back(class_offset + entry.class_index);
+      out_candidates->labels.push_back(
+          GlobalLabelForTaskClass(config, task_id, entry.class_index));
       out_candidates->boxes.push_back(center_x);
       out_candidates->boxes.push_back(center_y);
       out_candidates->boxes.push_back(center_z);
@@ -883,22 +917,13 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
     out_result->boxes.clear();
     out_result->labels.clear();
 
-    int class_offset = 0;
     for (size_t task_index = 0; task_index < runtime_config.task_num_classes.size(); ++task_index) {
-      const int task_classes = runtime_config.task_num_classes[task_index];
       CandidateDetections per_task;
       per_task.scores.reserve(candidates.scores.size());
       per_task.labels.reserve(candidates.labels.size());
       per_task.boxes.reserve(candidates.boxes.size());
-      for (size_t i = 0; i < candidates.scores.size(); ++i) {
-        const int label = candidates.labels[i];
-        if (label < class_offset || label >= class_offset + task_classes) {
-          continue;
-        }
-        per_task.scores.push_back(candidates.scores[i]);
-        per_task.labels.push_back(label);
-        AppendBoxes(candidates.boxes, i, &per_task.boxes);
-      }
+      const std::vector<int> task_labels = GlobalLabelsForTask(runtime_config, task_index);
+      CollectByLabelSet(candidates, task_labels, runtime_config.label_count, &per_task);
       if (config.nms_type == INFERENCE_NMS_CIRCLE) {
         const float radius = task_index < config.circle_nms_min_radius.size()
                                  ? config.circle_nms_min_radius[task_index]
@@ -917,7 +942,6 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
           return status;
         }
       }
-      class_offset += task_classes;
     }
     FilterByScoreThreshold(out_result, config.final_score_threshold);
     return INFERENCE_STATUS_OK;
@@ -957,9 +981,10 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
   scores.reserve(candidates.scores.size());
   boxes.reserve(candidates.boxes.size());
   labels.reserve(candidates.labels.size());
+  const int label_count = runtime_config.label_count > 0 ? runtime_config.label_count : kLabelCount;
   for (size_t i = 0; i < candidates.scores.size(); ++i) {
     const int label = candidates.labels[i];
-    if (label < 0 || label >= kLabelCount) {
+    if (label < 0 || label >= label_count) {
       continue;
     }
     if (candidates.scores[i] < config.label_score_thresh[static_cast<size_t>(label)]) {

@@ -164,6 +164,36 @@ InferenceStatus LoadIntVector(const YAML::Node& node,
   return INFERENCE_STATUS_OK;
 }
 
+InferenceStatus LoadNestedIntVector(const YAML::Node& node,
+                                    const char* field_name,
+                                    std::vector<std::vector<int>>* out_values,
+                                    std::string* out_error) {
+  if (!node) {
+    return INFERENCE_STATUS_OK;
+  }
+  if (!node.IsSequence() || node.size() == 0) {
+    std::ostringstream oss;
+    oss << field_name << " must be a non-empty sequence of integer sequences";
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+  }
+  out_values->clear();
+  out_values->reserve(node.size());
+  for (size_t i = 0; i < node.size(); ++i) {
+    if (!node[i].IsSequence() || node[i].size() == 0) {
+      std::ostringstream oss;
+      oss << field_name << "[" << i << "] must be a non-empty sequence of integers";
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+    }
+    std::vector<int> values;
+    values.reserve(node[i].size());
+    for (size_t j = 0; j < node[i].size(); ++j) {
+      values.push_back(node[i][j].as<int>());
+    }
+    out_values->push_back(std::move(values));
+  }
+  return INFERENCE_STATUS_OK;
+}
+
 InferenceStatus LoadThresholdVector(const YAML::Node& node,
                                     const char* field_name,
                                     std::vector<float>* out_values,
@@ -263,6 +293,19 @@ void NormalizeTaskLayout(ModelConfig* model) {
     }
     if (model->bbox_code_size <= 0) {
       model->bbox_code_size = model->has_velocity ? 9 : 7;
+    }
+    if (model->task_label_ids.empty()) {
+      model->task_label_ids.reserve(model->task_num_classes.size());
+      int label_offset = 0;
+      for (const int task_classes : model->task_num_classes) {
+        std::vector<int> label_ids;
+        label_ids.reserve(static_cast<size_t>(task_classes));
+        for (int i = 0; i < task_classes; ++i) {
+          label_ids.push_back(label_offset + i);
+        }
+        model->task_label_ids.push_back(std::move(label_ids));
+        label_offset += task_classes;
+      }
     }
   } else if (model->task_num_classes.empty()) {
     model->task_num_classes = {1, 1, 1};
@@ -443,6 +486,48 @@ InferenceStatus ValidatePackageConfig(const PackageConfig& config, std::string* 
           << config.model.label_names.size();
       return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
     }
+    if (config.model.task_label_ids.size() != config.model.task_num_classes.size()) {
+      std::ostringstream oss;
+      oss << "model.task_label_ids size must match model.task_num_classes size, got "
+          << config.model.task_label_ids.size() << " and "
+          << config.model.task_num_classes.size();
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+    }
+    std::vector<bool> seen_label_ids(config.model.label_names.size(), false);
+    for (size_t task_index = 0; task_index < config.model.task_label_ids.size();
+         ++task_index) {
+      const std::vector<int>& label_ids = config.model.task_label_ids[task_index];
+      if (label_ids.size() !=
+          static_cast<size_t>(config.model.task_num_classes[task_index])) {
+        std::ostringstream oss;
+        oss << "model.task_label_ids[" << task_index
+            << "] size must match model.task_num_classes[" << task_index << "]";
+        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+      }
+      for (const int label_id : label_ids) {
+        if (label_id < 0 || label_id >= static_cast<int>(config.model.label_names.size())) {
+          std::ostringstream oss;
+          oss << "model.task_label_ids[" << task_index
+              << "] contains invalid global label " << label_id
+              << ", label_names.size()=" << config.model.label_names.size();
+          return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+        }
+        if (seen_label_ids[static_cast<size_t>(label_id)]) {
+          std::ostringstream oss;
+          oss << "model.task_label_ids contains duplicate global label " << label_id;
+          return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+        }
+        seen_label_ids[static_cast<size_t>(label_id)] = true;
+      }
+    }
+    for (size_t label_id = 0; label_id < seen_label_ids.size(); ++label_id) {
+      if (!seen_label_ids[label_id]) {
+        std::ostringstream oss;
+        oss << "model.task_label_ids must cover every global label exactly once; missing "
+            << label_id;
+        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+      }
+    }
     if (config.model.bbox_code_size < static_cast<int>(kBoxDimension)) {
       return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                       "model.bbox_code_size must be at least 7 in CenterPoint mode");
@@ -519,6 +604,11 @@ InferenceStatus ApplyPackageConfigNode(const YAML::Node& root,
     }
     status = LoadIntVector(model["task_num_classes"], "model.task_num_classes",
                            &out_config->model.task_num_classes, out_error);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    status = LoadNestedIntVector(model["task_label_ids"], "model.task_label_ids",
+                                 &out_config->model.task_label_ids, out_error);
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
@@ -718,6 +808,7 @@ inference_internal::RuntimeConfig ToInternalRuntimeConfig(const PackageConfig& c
   runtime.norm_bbox = config.model.norm_bbox;
   runtime.has_velocity = config.model.has_velocity;
   runtime.task_num_classes = config.model.task_num_classes;
+  runtime.task_label_ids = config.model.task_label_ids;
   runtime.label_count = static_cast<int>(config.model.label_names.size());
   return runtime;
 }
