@@ -9,16 +9,37 @@ model:
   bbox_code_size: 9
   norm_bbox: true
   has_velocity: true
+  # Keep this layout aligned with
+  # projects/CenterPoint/configs/exp20260529/train.py:
+  # task_label_groups = [[0, 2], [1], [3, 6], [4], [5], [7, 8]]
+  #
+  # Definitions:
+  # - global label id: original train.py class_names index.
+  # - runtime label id: ONNX/MMDeploy task-flattened heatmap channel index.
+  #   This is the label id used by lidar-inference-tool decode/NMS.
+  # - task local id: class index inside one CenterPoint task head.
+  #
+  # ONNX runtime label order is task-flattened, not global-label order:
+  # runtime 0 -> global 0, task0 local 0
+  # runtime 1 -> global 2, task0 local 1
+  # runtime 2 -> global 1, task1 local 0
+  # runtime 3 -> global 3, task2 local 0
+  # runtime 4 -> global 6, task2 local 1
+  # runtime 5 -> global 4, task3 local 0
+  # runtime 6 -> global 5, task4 local 0
+  # runtime 7 -> global 7, task5 local 0
+  # runtime 8 -> global 8, task5 local 1
   label_names:
-    - "vehicle.electric_two_wheeler.unridden" # 0
-    - "human.pedestrian" # 1
-    - "vehicle.electric_two_wheeler.ridden" # 2
-    - "vehicle.bicycle.unridden" # 3
-    - "vehicle.general" # 4
-    - "vehicle.sightseeing" # 5
-    - "vehicle.bicycle.ridden" # 6
-    - "vehicle.tricycle.unridden" # 7
-    - "vehicle.tricycle.ridden" # 8
+    - "vehicle.electric_two_wheeler.unridden" # runtime 0, global 0, task0 local 0
+    - "vehicle.electric_two_wheeler.ridden" # runtime 1, global 2, task0 local 1
+    - "human.pedestrian" # runtime 2, global 1, task1 local 0
+    - "vehicle.bicycle.unridden" # runtime 3, global 3, task2 local 0
+    - "vehicle.bicycle.ridden" # runtime 4, global 6, task2 local 1
+    - "vehicle.general" # runtime 5, global 4, task3 local 0
+    - "vehicle.sightseeing" # runtime 6, global 5, task4 local 0
+    - "vehicle.tricycle.unridden" # runtime 7, global 7, task5 local 0
+    - "vehicle.tricycle.ridden" # runtime 8, global 8, task5 local 1
+  # Number of classes per CenterPoint task, in the same task order as train.py.
   task_num_classes: [2, 1, 2, 1, 1, 2]
 
 runtime:
@@ -36,34 +57,42 @@ postprocess:
   nms_pre_maxsize: 1000
   nms_post_maxsize: 83
   final_score_threshold: 0.3
-  label_score_thresh: [0.35, 0.4, 0.3, 0.5, 0.2, 0.35, 0.4, 0.3, 0.25]
-  circle_nms_min_radius: [0.8, 0.4, 0.8, 0.6, 2.0, 1.5, 0.6, 1.5, 1.5]
+  # Runtime-label order. Values come from train.py deploy_label_score_thresh
+  # after remapping global ids [0,1,2,3,4,5,6,7,8] to runtime ids
+  # [0,1,2,3,4,5,6,7,8] == global ids [0,2,1,3,6,4,5,7,8].
+  label_score_thresh: [0.35, 0.35, 0.45, 0.5, 0.3, 0.2, 0.3, 0.3, 0.25]
+  # Runtime-label order, same indexing as label_score_thresh.
+  circle_nms_min_radius: [0.8, 0.8, 0.4, 0.6, 0.6, 2.0, 1.5, 1.5, 1.5]
   nms_label_groups:
-    - labels: [0, 2]
+    # labels are runtime label ids; comments list the matching global ids.
+    - labels: [0, 1] # ebicycle, global [0, 2]
       nms_thresh: 0.25
       nms_pre_maxsize: 500
       nms_post_maxsize: 50
-    - labels: [1]
+    - labels: [2] # pedestrian, global [1]
       nms_thresh: 0.4
       nms_pre_maxsize: 500
       nms_post_maxsize: 50
-    - labels: [3, 6]
+    - labels: [3, 4] # bicycle, global [3, 6]
       nms_thresh: 0.3
       nms_pre_maxsize: 500
       nms_post_maxsize: 50
-    - labels: [4]
+    - labels: [5] # car, global [4]
       nms_thresh: 0.3
       nms_pre_maxsize: 500
       nms_post_maxsize: 50
-    - labels: [5]
+    - labels: [6] # sightseeing, global [5]
       nms_thresh: 0.2
       nms_pre_maxsize: 500
       nms_post_maxsize: 50
-    - labels: [7, 8]
+    - labels: [7, 8] # tricycle, global [7, 8]
       nms_thresh: 0.2
       nms_pre_maxsize: 500
       nms_post_maxsize: 50
-  label_mapping: [0, 1, 0, 2, 4, 5, 2, 3, 3]
+  # Runtime label id -> mapped label id used in final result.json and
+  # visualization. Mapped ids are defined by mapped_label_names below.
+  label_mapping: [0, 0, 1, 2, 2, 4, 5, 3, 3]
+  # Final business labels after merging ridden/unridden subclasses.
   mapped_label_names:
     - "ebicycle" # 0
     - "pedestrian" # 1
