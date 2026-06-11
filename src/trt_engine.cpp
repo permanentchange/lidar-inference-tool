@@ -13,7 +13,6 @@
 namespace inference_internal {
 namespace {
 
-constexpr int kBBoxChannelsPerTask = 8;
 constexpr int kDirChannelsPerTask = 2;
 constexpr int kProfileIndex = 0;
 constexpr char kVoxelsName[] = "voxels";
@@ -157,6 +156,24 @@ struct ContextDeleter {
     }
   }
 };
+
+int CenterPointBboxChannelsPerTask(const RuntimeConfig& config) {
+  const int base_channels = 2 + 1 + 3;
+  const int yaw_channels =
+      config.yaw_encoding == inference::YawEncoding::kDirectionTheta ? 1 : 0;
+  const int velocity_channels = config.has_velocity ? 2 : 0;
+  return base_channels + yaw_channels + velocity_channels;
+}
+
+const char* YawEncodingName(inference::YawEncoding encoding) {
+  switch (encoding) {
+    case inference::YawEncoding::kDirectionTheta:
+      return "direction_theta";
+    case inference::YawEncoding::kSinCos:
+    default:
+      return "sin_cos";
+  }
+}
 
 InferenceStatus ValidateInputProfile(nvinfer1::ICudaEngine& engine,
                                      const char* tensor_name,
@@ -345,24 +362,35 @@ InferenceStatus BuildContract(const RuntimeConfig& config,
     for (const int task_classes : config.task_num_classes) {
       expected_cls_channels += task_classes;
     }
-    if (contract.bbox_channels != expected_task_count * kBBoxChannelsPerTask ||
+    const int expected_bbox_channels_per_task =
+        CenterPointBboxChannelsPerTask(config);
+    if (contract.bbox_channels !=
+            expected_task_count * expected_bbox_channels_per_task ||
         contract.dir_channels != expected_task_count * kDirChannelsPerTask ||
         contract.cls_channels != expected_cls_channels) {
       std::ostringstream oss;
       oss << "Engine channels do not match CenterPoint task layout: bbox="
           << contract.bbox_channels << " cls=" << contract.cls_channels
           << " dir=" << contract.dir_channels << " expected bbox="
-          << expected_task_count * kBBoxChannelsPerTask << " cls="
+          << expected_task_count * expected_bbox_channels_per_task << " cls="
           << expected_cls_channels << " dir="
-          << expected_task_count * kDirChannelsPerTask;
+          << expected_task_count * kDirChannelsPerTask
+          << " for yaw_encoding=" << YawEncodingName(config.yaw_encoding);
       return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
     }
     contract.task_count = expected_task_count;
   } else {
-    if (contract.bbox_channels != contract.cls_channels * kBBoxChannelsPerTask ||
+    const int expected_bbox_channels_per_task =
+        CenterPointBboxChannelsPerTask(config);
+    if (contract.bbox_channels != contract.cls_channels * expected_bbox_channels_per_task ||
         contract.dir_channels != contract.cls_channels * kDirChannelsPerTask) {
-      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
-                      "Engine channels do not match expected legacy CenterPoint head layout");
+      std::ostringstream oss;
+      oss << "Engine channels do not match expected legacy CenterPoint head layout: bbox="
+          << contract.bbox_channels << " cls=" << contract.cls_channels
+          << " dir=" << contract.dir_channels << " expected bbox="
+          << contract.cls_channels * expected_bbox_channels_per_task
+          << " dir=" << contract.cls_channels * kDirChannelsPerTask;
+      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
     }
     contract.task_count = contract.cls_channels;
   }

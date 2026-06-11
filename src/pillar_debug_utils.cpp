@@ -77,6 +77,7 @@ RuntimeConfig RuntimeConfigFromPackage(const inference::PackageConfig& package) 
   runtime.out_size_factor = package.model.out_size_factor;
   runtime.score_threshold = package.runtime.score_threshold;
   runtime.decode_mode = package.model.decode_mode;
+  runtime.yaw_encoding = package.model.yaw_encoding;
   runtime.bbox_code_size = package.model.bbox_code_size;
   runtime.norm_bbox = package.model.norm_bbox;
   runtime.has_velocity = package.model.has_velocity;

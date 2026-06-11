@@ -1,6 +1,11 @@
 model:
   engine_path: "end2end.engine"
   decode_mode: "centerpoint_mmdeploy"
+  # yaw_encoding controls how yaw is reconstructed from model outputs:
+  # - sin_cos: dir_cls_pred stores [sin(yaw), cos(yaw)]
+  # - direction_theta: bbox_pred stores theta after dim, and dir_cls_pred stores
+  #   2-way direction logits
+  yaw_encoding: "direction_theta"
   num_point_features: 5
   point_cloud_range: [-10.0, -15.0, -5.0, 20.4, 15.4, 3.0]
   post_center_range: [-15.0, -20.0, -10.0, 25.4, 20.4, 10.0]
@@ -51,7 +56,9 @@ postprocess:
   nms_post_maxsize: 83
   final_score_threshold: 0.3
   # Global-label order. Values match train.py deploy_label_score_thresh.
-  label_score_thresh: [0.35, 0.45, 0.35, 0.5, 0.2, 0.3, 0.3, 0.3, 0.25]
+  # precision >= 0.8
+  # recall >= 0.7 recall >=0.6
+  label_score_thresh: [0.55, 0.5, 0.45, 0.5, 0.25, 0.4, 0.75, 0.5, 0.5]
   # Global-label order, same indexing as label_score_thresh.
   circle_nms_min_radius: [0.8, 0.4, 0.8, 0.6, 2.0, 1.5, 0.6, 1.5, 1.5]
   nms_label_groups:
@@ -65,11 +72,7 @@ postprocess:
       nms_thresh: 0.4
       nms_pre_maxsize: 500
       nms_post_maxsize: 50
-    - labels: [4] # car
-      nms_thresh: 0.3
-      nms_pre_maxsize: 500
-      nms_post_maxsize: 50
-    - labels: [5] # sightseeing
+    - labels: [4, 5] # car
       nms_thresh: 0.2
       nms_pre_maxsize: 500
       nms_post_maxsize: 50

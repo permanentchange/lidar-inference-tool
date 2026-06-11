@@ -105,6 +105,34 @@ InferenceStatus ParseDecodeMode(const std::string& value,
                   "Unsupported model.decode_mode: " + value);
 }
 
+InferenceStatus ParseYawEncoding(const std::string& value,
+                                 YawEncoding* out_encoding,
+                                 std::string* out_error) {
+  if (out_encoding == nullptr) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "out_encoding is null");
+  }
+  const std::string normalized = NormalizeIdentifier(value);
+  if (normalized.empty() || normalized == "sin_cos" || normalized == "sincos") {
+    *out_encoding = YawEncoding::kSinCos;
+    return INFERENCE_STATUS_OK;
+  }
+  if (normalized == "direction_theta") {
+    *out_encoding = YawEncoding::kDirectionTheta;
+    return INFERENCE_STATUS_OK;
+  }
+  return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                  "Unsupported model.yaw_encoding: " + value);
+}
+
+int ExpectedCenterPointBboxChannelsPerTask(const ModelConfig& model) {
+  const int base_channels = 2 + 1 + 3;
+  const int yaw_channels =
+      model.yaw_encoding == YawEncoding::kDirectionTheta ? 1 : 0;
+  const int velocity_channels = model.has_velocity ? 2 : 0;
+  return base_channels + yaw_channels + velocity_channels;
+}
+
 template <size_t N>
 InferenceStatus LoadFloatArray(const YAML::Node& node,
                                const char* field_name,
@@ -309,6 +337,7 @@ void NormalizeTaskLayout(ModelConfig* model) {
     }
   } else if (model->task_num_classes.empty()) {
     model->task_num_classes = {1, 1, 1};
+    model->yaw_encoding = YawEncoding::kSinCos;
   }
 }
 
@@ -532,6 +561,17 @@ InferenceStatus ValidatePackageConfig(const PackageConfig& config, std::string* 
       return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                       "model.bbox_code_size must be at least 7 in CenterPoint mode");
     }
+    const int min_bbox_code_size = config.model.has_velocity ? 9 : 7;
+    if (config.model.bbox_code_size < min_bbox_code_size) {
+      std::ostringstream oss;
+      oss << "model.bbox_code_size must be at least " << min_bbox_code_size
+          << " when model.has_velocity=" << (config.model.has_velocity ? "true" : "false");
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+    }
+    if (ExpectedCenterPointBboxChannelsPerTask(config.model) <= 0) {
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                      "model centerpoint bbox layout is invalid");
+    }
   }
   return ValidatePostprocessConfig(config.model, config.postprocess, out_error);
 }
@@ -567,6 +607,14 @@ InferenceStatus ApplyPackageConfigNode(const YAML::Node& root,
     if (model["decode_mode"]) {
       InferenceStatus status = ParseDecodeMode(model["decode_mode"].as<std::string>(),
                                                &out_config->model.decode_mode, out_error);
+      if (status != INFERENCE_STATUS_OK) {
+        return status;
+      }
+    }
+    if (model["yaw_encoding"]) {
+      InferenceStatus status = ParseYawEncoding(model["yaw_encoding"].as<std::string>(),
+                                                &out_config->model.yaw_encoding,
+                                                out_error);
       if (status != INFERENCE_STATUS_OK) {
         return status;
       }
@@ -804,6 +852,7 @@ inference_internal::RuntimeConfig ToInternalRuntimeConfig(const PackageConfig& c
   runtime.out_size_factor = config.model.out_size_factor;
   runtime.score_threshold = config.runtime.score_threshold;
   runtime.decode_mode = config.model.decode_mode;
+  runtime.yaw_encoding = config.model.yaw_encoding;
   runtime.bbox_code_size = config.model.bbox_code_size;
   runtime.norm_bbox = config.model.norm_bbox;
   runtime.has_velocity = config.model.has_velocity;

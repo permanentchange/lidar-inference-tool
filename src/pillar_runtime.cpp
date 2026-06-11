@@ -26,9 +26,9 @@ namespace inference_internal {
 namespace {
 
 constexpr int kBoxDim = 7;
-constexpr int kBBoxChannelsPerTask = 8;
 constexpr int kDirChannelsPerTask = 2;
 constexpr int kLabelCount = 3;
+constexpr float kPi = 3.14159265358979323846f;
 
 double ElapsedMs(const std::chrono::steady_clock::time_point& start,
                  const std::chrono::steady_clock::time_point& end) {
@@ -66,6 +66,48 @@ float SafeExp(float value) {
   constexpr float kClampMin = -20.0f;
   constexpr float kClampMax = 20.0f;
   return std::exp(std::max(kClampMin, std::min(kClampMax, value)));
+}
+
+int CenterPointBboxChannelsPerTask(const RuntimeConfig& config) {
+  const int base_channels = 2 + 1 + 3;
+  const int yaw_channels =
+      config.yaw_encoding == inference::YawEncoding::kDirectionTheta ? 1 : 0;
+  const int velocity_channels = config.has_velocity ? 2 : 0;
+  return base_channels + yaw_channels + velocity_channels;
+}
+
+float WrapAnglePi(float yaw) {
+  if (!std::isfinite(yaw)) {
+    return yaw;
+  }
+  float wrapped = std::fmod(yaw + kPi, 2.0f * kPi);
+  if (wrapped < 0.0f) {
+    wrapped += 2.0f * kPi;
+  }
+  return wrapped - kPi;
+}
+
+float DecodeYaw(const RuntimeConfig& config,
+                const float* bbox,
+                const float* dir,
+                int hw,
+                int index) {
+  if (config.yaw_encoding == inference::YawEncoding::kDirectionTheta) {
+    const float theta = bbox[6 * hw + index];
+    const float dir0 = dir[0 * hw + index];
+    const float dir1 = dir[1 * hw + index];
+    if (!std::isfinite(theta) || !std::isfinite(dir0) || !std::isfinite(dir1)) {
+      return std::numeric_limits<float>::quiet_NaN();
+    }
+    const int dir_label = dir1 > dir0 ? 1 : 0;
+    return WrapAnglePi(theta + static_cast<float>(dir_label) * kPi);
+  }
+  const float rot_sine = dir[0 * hw + index];
+  const float rot_cosine = dir[1 * hw + index];
+  if (!std::isfinite(rot_sine) || !std::isfinite(rot_cosine)) {
+    return std::numeric_limits<float>::quiet_NaN();
+  }
+  return std::atan2(rot_sine, rot_cosine);
 }
 
 InferenceStatus CheckCuda(cudaError_t error,
@@ -528,7 +570,8 @@ InferenceStatus DecodeLegacyOutputs(const RuntimeConfig& config,
   for (int task_id = 0; task_id < task_count; ++task_id) {
     const float* heat = raw_outputs.cls_score + static_cast<size_t>(task_id) * hw;
     const float* bbox = raw_outputs.bbox_pred +
-                        static_cast<size_t>(task_id) * kBBoxChannelsPerTask * hw;
+                        static_cast<size_t>(task_id) *
+                            CenterPointBboxChannelsPerTask(config) * hw;
     const float* dir = raw_outputs.dir_cls_pred +
                        static_cast<size_t>(task_id) * kDirChannelsPerTask * hw;
 
@@ -570,9 +613,7 @@ InferenceStatus DecodeLegacyOutputs(const RuntimeConfig& config,
       const float dim_x = SafeExp(bbox[3 * hw + entry.index]);
       const float dim_y = SafeExp(bbox[4 * hw + entry.index]);
       const float dim_z = SafeExp(bbox[5 * hw + entry.index]);
-      const float rot_sine = dir[0 * hw + entry.index];
-      const float rot_cosine = dir[1 * hw + entry.index];
-      const float yaw = std::atan2(rot_sine, rot_cosine);
+      const float yaw = DecodeYaw(config, bbox, dir, hw, entry.index);
 
       const float center_x =
           (static_cast<float>(x_idx) + reg_x) * config.out_size_factor * config.pillar_size[0] +
@@ -644,7 +685,9 @@ InferenceStatus DecodeCenterPointOutputs(const RuntimeConfig& config,
     const float* heat =
         raw_outputs.cls_score + static_cast<size_t>(class_offset) * static_cast<size_t>(hw);
     const float* bbox = raw_outputs.bbox_pred +
-                        static_cast<size_t>(task_id) * kBBoxChannelsPerTask * static_cast<size_t>(hw);
+                        static_cast<size_t>(task_id) *
+                            CenterPointBboxChannelsPerTask(config) *
+                            static_cast<size_t>(hw);
     const float* dir = raw_outputs.dir_cls_pred +
                        static_cast<size_t>(task_id) * kDirChannelsPerTask * static_cast<size_t>(hw);
 
@@ -696,9 +739,7 @@ InferenceStatus DecodeCenterPointOutputs(const RuntimeConfig& config,
       const float dim_z =
           config.norm_bbox ? SafeExp(bbox[5 * hw + entry.spatial_index])
                            : bbox[5 * hw + entry.spatial_index];
-      const float rot_sine = dir[0 * hw + entry.spatial_index];
-      const float rot_cosine = dir[1 * hw + entry.spatial_index];
-      const float yaw = std::atan2(rot_sine, rot_cosine);
+      const float yaw = DecodeYaw(config, bbox, dir, hw, entry.spatial_index);
 
       const float center_x =
           (static_cast<float>(x_idx) + reg_x) * config.out_size_factor * config.pillar_size[0] +

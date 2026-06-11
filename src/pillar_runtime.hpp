@@ -25,6 +25,7 @@ struct RuntimeConfig {
   int out_size_factor = 4;
   float score_threshold = 0.1f;
   inference::DecodeMode decode_mode = inference::DecodeMode::kLegacy;
+  inference::YawEncoding yaw_encoding = inference::YawEncoding::kSinCos;
   int bbox_code_size = 7;
   bool norm_bbox = false;
   bool has_velocity = false;

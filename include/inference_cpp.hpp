@@ -21,6 +21,11 @@ enum class DecodeMode {
   kCenterPoint = 1,
 };
 
+enum class YawEncoding {
+  kSinCos = 0,
+  kDirectionTheta = 1,
+};
+
 struct ModelConfig {
   std::string engine_path;
   std::array<float, 6> point_cloud_range{{-25.6f, -25.6f, -5.0f, 25.6f, 25.6f, 3.0f}};
@@ -29,6 +34,7 @@ struct ModelConfig {
   int num_point_features = 5;
   int out_size_factor = 4;
   DecodeMode decode_mode = DecodeMode::kLegacy;
+  YawEncoding yaw_encoding = YawEncoding::kSinCos;
   int bbox_code_size = 7;
   bool norm_bbox = false;
   bool has_velocity = false;

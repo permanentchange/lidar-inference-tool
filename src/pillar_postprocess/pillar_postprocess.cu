@@ -17,8 +17,8 @@ namespace inference_internal {
 namespace {
 
 constexpr int kBoxDim = 7;
-constexpr int kBBoxChannelsPerTask = 8;
 constexpr int kDirChannelsPerTask = 2;
+constexpr float kPi = 3.14159265358979323846f;
 
 struct DeviceCandidate {
   float score = -1.0f;
@@ -111,6 +111,22 @@ __device__ inline float SafeExp(float value) {
   return expf(fmaxf(kClampMin, fminf(kClampMax, value)));
 }
 
+int CenterPointBboxChannelsPerTask(const RuntimeConfig& config) {
+  const int base_channels = 2 + 1 + 3;
+  const int yaw_channels =
+      config.yaw_encoding == inference::YawEncoding::kDirectionTheta ? 1 : 0;
+  const int velocity_channels = config.has_velocity ? 2 : 0;
+  return base_channels + yaw_channels + velocity_channels;
+}
+
+__device__ inline float WrapAnglePi(float yaw) {
+  float wrapped = fmodf(yaw + kPi, 2.0f * kPi);
+  if (wrapped < 0.0f) {
+    wrapped += 2.0f * kPi;
+  }
+  return wrapped - kPi;
+}
+
 struct CandidateCompare {
   __host__ __device__ bool operator()(const DeviceCandidate& lhs,
                                       const DeviceCandidate& rhs) const {
@@ -148,7 +164,9 @@ __global__ void FinalizeDecodeCandidatesKernel(const float* bbox_pred,
                                                const float* pillar_size,
                                                int out_size_factor,
                                                int decode_mode,
+                                               int yaw_encoding,
                                                bool norm_bbox,
+                                               int bbox_channels_per_task,
                                                DeviceCandidate* candidates) {
   const int slot = blockDim.x * blockIdx.x + threadIdx.x;
   const int total_slots = task_segment_offsets[task_count];
@@ -182,7 +200,8 @@ __global__ void FinalizeDecodeCandidatesKernel(const float* bbox_pred,
     return;
   }
 
-  const float* bbox = bbox_pred + task_id * kBBoxChannelsPerTask * height * width;
+  const float* bbox =
+      bbox_pred + task_id * bbox_channels_per_task * height * width;
   const float* dir = dir_cls_pred + task_id * kDirChannelsPerTask * height * width;
   const int y_idx = spatial_index / width;
   const int x_idx = spatial_index % width;
@@ -202,9 +221,21 @@ __global__ void FinalizeDecodeCandidatesKernel(const float* bbox_pred,
       (decode_mode == static_cast<int>(inference::DecodeMode::kCenterPoint) && !norm_bbox)
           ? bbox[5 * height * width + spatial_index]
           : SafeExp(bbox[5 * height * width + spatial_index]);
-  const float rot_sine = dir[0 * height * width + spatial_index];
-  const float rot_cosine = dir[1 * height * width + spatial_index];
-  const float yaw = atan2f(rot_sine, rot_cosine);
+  float yaw = 0.0f;
+  if (yaw_encoding == static_cast<int>(inference::YawEncoding::kDirectionTheta)) {
+    const float theta = bbox[6 * height * width + spatial_index];
+    const float dir0 = dir[0 * height * width + spatial_index];
+    const float dir1 = dir[1 * height * width + spatial_index];
+    if (!isfinite(theta) || !isfinite(dir0) || !isfinite(dir1)) {
+      candidates[slot].score = -1.0f;
+      return;
+    }
+    yaw = WrapAnglePi(theta + (dir1 > dir0 ? kPi : 0.0f));
+  } else {
+    const float rot_sine = dir[0 * height * width + spatial_index];
+    const float rot_cosine = dir[1 * height * width + spatial_index];
+    yaw = atan2f(rot_sine, rot_cosine);
+  }
   if (!isfinite(reg_x) || !isfinite(reg_y) || !isfinite(height_value) || !isfinite(dim_x) ||
       !isfinite(dim_y) || !isfinite(dim_z) || !isfinite(yaw)) {
     candidates[slot].score = -1.0f;
@@ -331,6 +362,20 @@ InferenceStatus GpuDecodedCandidates::Initialize(const RuntimeConfig& config,
       config.task_num_classes.size() != static_cast<size_t>(task_count)) {
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                     "GPU decode CenterPoint task layout does not match runtime config");
+  }
+  const int bbox_channels_per_task = CenterPointBboxChannelsPerTask(config);
+  if (bbox_channels != task_count * bbox_channels_per_task) {
+    std::ostringstream oss;
+    oss << "GPU decode bbox layout mismatch: engine bbox_channels="
+        << bbox_channels << " expected "
+        << task_count * bbox_channels_per_task;
+    return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
+  }
+  if (dir_channels != task_count * kDirChannelsPerTask) {
+    std::ostringstream oss;
+    oss << "GPU decode dir layout mismatch: engine dir_channels="
+        << dir_channels << " expected " << task_count * kDirChannelsPerTask;
+    return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
   }
   auto impl = std::make_unique<Impl>();
   impl->config = config;
@@ -516,7 +561,9 @@ InferenceStatus GpuDecodedCandidates::Decode(const float* d_bbox_pred,
       impl_->d_task_global_label_ids, impl_->task_count, impl_->height,
       impl_->width, impl_->config.score_threshold, impl_->d_point_cloud_range,
       impl_->d_post_center_range, impl_->d_pillar_size, impl_->config.out_size_factor,
-      static_cast<int>(impl_->config.decode_mode), impl_->config.norm_bbox, impl_->d_workspace);
+      static_cast<int>(impl_->config.decode_mode),
+      static_cast<int>(impl_->config.yaw_encoding), impl_->config.norm_bbox,
+      CenterPointBboxChannelsPerTask(impl_->config), impl_->d_workspace);
   InferenceStatus status =
       CheckCuda(cudaPeekAtLastError(), "FinalizeDecodeCandidatesKernel", out_error);
   if (status != INFERENCE_STATUS_OK) {
