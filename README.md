@@ -8,11 +8,12 @@
 - `lidar_model_downloader`: an installed command-line helper for fetching model assets after package installation
 - `minimal_cpp_api_example`: a model-package-driven executable under `examples/` that shows the recommended C++ integration path
 
-## v1.5.0
+## v1.6.0
 
 - Added CenterPoint task-label remapping through `model.task_label_ids`.
 - Added global-label grouped NMS and final mapped business labels.
-- Updated the demo model package for the 6-task / 9-label layout.
+- Added `model.yaw_encoding` support for `sin_cos` and `direction_theta` CenterPoint model packages.
+- Centralized internal head-layout resolution without changing the recommended C++ wrapper usage.
 
 See [CHANGELOG.md](./CHANGELOG.md) for version history.
 
@@ -63,7 +64,7 @@ Additional assumptions enforced by the runtime:
 - the `voxels`, `num_points`, and `coors` inputs must agree on the same min/opt/max pillar range
 - output tensors must be 4D `BCHW`
 - output feature-map spatial sizes must match
-- `bbox_pred0` must have `bbox_code_size * task_count` channels
+- `bbox_pred0` channels must match the resolved head layout for the configured decode mode, yaw encoding, and velocity fields
 - `dir_cls_pred0` must have `2 * task_count` channels
 - `cls_score0` channels must match the sum of `model.task_num_classes`
 - decoded labels are global label ids resolved through `model.task_label_ids`
@@ -173,7 +174,7 @@ The generated `.deb` installs its runtime commands under `/usr/local/bin`, inclu
 - `perf_debug_tool`
 - `lidar_model_downloader`
 
-Installed CMake package files include a version file, so downstream projects can require this release with `find_package(lidar-inference-tool 1.5.0 CONFIG REQUIRED)`.
+Installed CMake package files include a version file, so downstream projects can require this release with `find_package(lidar-inference-tool 1.6.0 CONFIG REQUIRED)`.
 
 The package build now runs from `build/`, so CPack temporary files stay under `build/_CPack_Packages/` instead of the repository root.
 
@@ -283,6 +284,7 @@ The current demo `model.yaml` includes:
 - `model.pillar_size`
 - `model.out_size_factor`
 - `model.label_names`
+- `model.yaw_encoding`
 - `runtime.max_points_per_pillar`
 - `model.task_num_classes`
 - `model.task_label_ids`
@@ -310,6 +312,17 @@ Label-related config uses two stages:
 - `postprocess.nms_label_groups` selects which global labels share one NMS pass.
 - `postprocess.label_mapping` maps global labels to final business labels returned by the public API.
 - `postprocess.mapped_label_names` names those final business labels.
+
+CenterPoint head layout also uses one explicit yaw field:
+
+- `model.yaw_encoding: sin_cos` keeps the legacy decode path where yaw is reconstructed from `dir_cls_pred`.
+- `model.yaw_encoding: direction_theta` uses the newer layout where `bbox_pred` carries `theta` and `dir_cls_pred` carries 2-way direction logits.
+
+The recommended public C++ example flow is unchanged in this release:
+
+- create one runtime with `LidarInferenceRuntime::CreateFromModelDir(...)`
+- run final detections with `runtime->Infer(...)`
+- use `runtime->InferDecoded(...)` only when pre-NMS debug candidates are needed
 
 The wrapper resolves relative `model.engine_path` values against the location of `model.yaml`.
 Optional override YAML files use the same schema and are applied with this precedence:

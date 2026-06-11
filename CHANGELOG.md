@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.6.0
+
+- Added `model.yaw_encoding` so CenterPoint model packages can declare `sin_cos` or `direction_theta` yaw decoding explicitly.
+- Added compatibility for the newer CenterPoint/MMDeploy `direction_theta` head layout while keeping existing `sin_cos` model packages working unchanged.
+- Centralized internal head-layout resolution so package validation, TensorRT output contract checks, CPU decode, and CUDA decode share the same task and channel semantics.
+- Kept the recommended high-level C++ API flow unchanged, including `LidarInferenceRuntime::CreateFromModelDir(...)` and `runtime->Infer(...)`.
+
 ## v1.5.0
 
 - Added `model.task_label_ids` so CenterPoint task-local output channels can be mapped back to global label ids during decode.
