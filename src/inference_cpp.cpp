@@ -125,14 +125,6 @@ InferenceStatus ParseYawEncoding(const std::string& value,
                   "Unsupported model.yaw_encoding: " + value);
 }
 
-int ExpectedCenterPointBboxChannelsPerTask(const ModelConfig& model) {
-  const int base_channels = 2 + 1 + 3;
-  const int yaw_channels =
-      model.yaw_encoding == YawEncoding::kDirectionTheta ? 1 : 0;
-  const int velocity_channels = model.has_velocity ? 2 : 0;
-  return base_channels + yaw_channels + velocity_channels;
-}
-
 template <size_t N>
 InferenceStatus LoadFloatArray(const YAML::Node& node,
                                const char* field_name,
@@ -568,9 +560,11 @@ InferenceStatus ValidatePackageConfig(const PackageConfig& config, std::string* 
           << " when model.has_velocity=" << (config.model.has_velocity ? "true" : "false");
       return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
     }
-    if (ExpectedCenterPointBboxChannelsPerTask(config.model) <= 0) {
-      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                      "model centerpoint bbox layout is invalid");
+    inference_internal::ResolvedHeadLayout layout;
+    InferenceStatus status =
+        inference_internal::ResolveHeadLayout(config.model, &layout, out_error);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
     }
   }
   return ValidatePostprocessConfig(config.model, config.postprocess, out_error);

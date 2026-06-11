@@ -111,14 +111,6 @@ __device__ inline float SafeExp(float value) {
   return expf(fmaxf(kClampMin, fminf(kClampMax, value)));
 }
 
-int CenterPointBboxChannelsPerTask(const RuntimeConfig& config) {
-  const int base_channels = 2 + 1 + 3;
-  const int yaw_channels =
-      config.yaw_encoding == inference::YawEncoding::kDirectionTheta ? 1 : 0;
-  const int velocity_channels = config.has_velocity ? 2 : 0;
-  return base_channels + yaw_channels + velocity_channels;
-}
-
 __device__ inline float WrapAnglePi(float yaw) {
   float wrapped = fmodf(yaw + kPi, 2.0f * kPi);
   if (wrapped < 0.0f) {
@@ -133,20 +125,6 @@ struct CandidateCompare {
     return lhs.score > rhs.score;
   }
 };
-
-int GlobalLabelForTaskClass(const RuntimeConfig& config, int task_id, int class_index) {
-  if (task_id >= 0 && task_id < static_cast<int>(config.task_label_ids.size())) {
-    const std::vector<int>& label_ids = config.task_label_ids[static_cast<size_t>(task_id)];
-    if (class_index >= 0 && class_index < static_cast<int>(label_ids.size())) {
-      return label_ids[static_cast<size_t>(class_index)];
-    }
-  }
-  int label_offset = 0;
-  for (int i = 0; i < task_id && i < static_cast<int>(config.task_num_classes.size()); ++i) {
-    label_offset += config.task_num_classes[static_cast<size_t>(i)];
-  }
-  return label_offset + class_index;
-}
 
 __global__ void FinalizeDecodeCandidatesKernel(const float* bbox_pred,
                                                const float* cls_score,
@@ -301,6 +279,7 @@ __global__ void PackTopKCandidatesKernel(const DeviceCandidate* sorted_candidate
 
 struct GpuDecodedCandidates::Impl {
   RuntimeConfig config;
+  ResolvedHeadLayout layout;
   int task_count = 0;
   int height = 0;
   int width = 0;
@@ -346,6 +325,7 @@ GpuDecodedCandidates::GpuDecodedCandidates() = default;
 GpuDecodedCandidates::~GpuDecodedCandidates() = default;
 
 InferenceStatus GpuDecodedCandidates::Initialize(const RuntimeConfig& config,
+                                                 const ResolvedHeadLayout& layout,
                                                  int task_count,
                                                  int bbox_channels,
                                                  int cls_channels,
@@ -358,27 +338,28 @@ InferenceStatus GpuDecodedCandidates::Initialize(const RuntimeConfig& config,
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                     "GPU decode received invalid engine shape metadata");
   }
-  if (config.decode_mode == inference::DecodeMode::kCenterPoint &&
-      config.task_num_classes.size() != static_cast<size_t>(task_count)) {
+  if (layout.decode_mode == inference::DecodeMode::kCenterPoint &&
+      layout.task_count != task_count) {
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                     "GPU decode CenterPoint task layout does not match runtime config");
   }
-  const int bbox_channels_per_task = CenterPointBboxChannelsPerTask(config);
-  if (bbox_channels != task_count * bbox_channels_per_task) {
+  if (bbox_channels != task_count * layout.bbox_channels_per_task) {
     std::ostringstream oss;
     oss << "GPU decode bbox layout mismatch: engine bbox_channels="
         << bbox_channels << " expected "
-        << task_count * bbox_channels_per_task;
+        << task_count * layout.bbox_channels_per_task;
     return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
   }
-  if (dir_channels != task_count * kDirChannelsPerTask) {
+  if (dir_channels != task_count * layout.dir_channels_per_task) {
     std::ostringstream oss;
     oss << "GPU decode dir layout mismatch: engine dir_channels="
-        << dir_channels << " expected " << task_count * kDirChannelsPerTask;
+        << dir_channels << " expected "
+        << task_count * layout.dir_channels_per_task;
     return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
   }
   auto impl = std::make_unique<Impl>();
   impl->config = config;
+  impl->layout = layout;
   impl->task_count = task_count;
   impl->height = height;
   impl->width = width;
@@ -393,14 +374,14 @@ InferenceStatus GpuDecodedCandidates::Initialize(const RuntimeConfig& config,
   int class_offset = 0;
   for (int task_id = 0; task_id < task_count; ++task_id) {
     const int task_classes =
-        config.decode_mode == inference::DecodeMode::kCenterPoint
-            ? config.task_num_classes[static_cast<size_t>(task_id)]
+        layout.decode_mode == inference::DecodeMode::kCenterPoint
+            ? layout.task_num_classes[static_cast<size_t>(task_id)]
             : 1;
     impl->host_task_num_classes.push_back(task_classes);
     impl->host_task_label_offsets.push_back(class_offset);
     for (int class_index = 0; class_index < task_classes; ++class_index) {
       impl->host_task_global_label_ids.push_back(
-          GlobalLabelForTaskClass(config, task_id, class_index));
+          GlobalLabelForTaskClass(layout, task_id, class_index));
     }
     const int next_offset =
         impl->host_task_segment_offsets.back() + task_classes * height * width;
@@ -561,9 +542,9 @@ InferenceStatus GpuDecodedCandidates::Decode(const float* d_bbox_pred,
       impl_->d_task_global_label_ids, impl_->task_count, impl_->height,
       impl_->width, impl_->config.score_threshold, impl_->d_point_cloud_range,
       impl_->d_post_center_range, impl_->d_pillar_size, impl_->config.out_size_factor,
-      static_cast<int>(impl_->config.decode_mode),
-      static_cast<int>(impl_->config.yaw_encoding), impl_->config.norm_bbox,
-      CenterPointBboxChannelsPerTask(impl_->config), impl_->d_workspace);
+      static_cast<int>(impl_->layout.decode_mode),
+      static_cast<int>(impl_->layout.yaw_encoding), impl_->layout.norm_bbox,
+      impl_->layout.bbox_channels_per_task, impl_->d_workspace);
   InferenceStatus status =
       CheckCuda(cudaPeekAtLastError(), "FinalizeDecodeCandidatesKernel", out_error);
   if (status != INFERENCE_STATUS_OK) {

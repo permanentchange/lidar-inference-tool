@@ -34,6 +34,27 @@ struct RuntimeConfig {
   int label_count = 0;
 };
 
+struct ResolvedHeadLayout {
+  inference::DecodeMode decode_mode = inference::DecodeMode::kLegacy;
+  inference::YawEncoding yaw_encoding = inference::YawEncoding::kSinCos;
+  bool has_velocity = false;
+  bool norm_bbox = false;
+  int task_count = 0;
+  int label_count = 0;
+  int cls_channels_total = 0;
+  int bbox_channels_per_task = 0;
+  int dir_channels_per_task = 2;
+  int reg_offset = 0;
+  int height_offset = 2;
+  int dim_offset = 3;
+  int theta_offset = -1;
+  int vel_offset = -1;
+  std::vector<int> task_num_classes;
+  std::vector<int> task_class_offsets;
+  std::vector<std::vector<int>> task_label_ids;
+  std::vector<int> flat_global_label_ids;
+};
+
 struct PostprocessConfig {
   struct NmsLabelGroup {
     std::vector<int> labels;
@@ -134,6 +155,17 @@ struct PointCloudLoadInfo {
 InferenceStatus ParseRuntimeConfig(const InferenceConfig& config,
                                    RuntimeConfig* out_config,
                                    std::string* out_error);
+InferenceStatus ResolveHeadLayout(const inference::ModelConfig& config,
+                                  ResolvedHeadLayout* out_layout,
+                                  std::string* out_error);
+InferenceStatus ResolveHeadLayout(const RuntimeConfig& config,
+                                  ResolvedHeadLayout* out_layout,
+                                  std::string* out_error);
+int GlobalLabelForTaskClass(const ResolvedHeadLayout& layout,
+                            int task_id,
+                            int class_index);
+const std::vector<int>& GlobalLabelsForTask(const ResolvedHeadLayout& layout,
+                                            size_t task_index);
 void SetDefaultPostprocessConfig(PostprocessConfig* out_config);
 InferenceStatus ParsePostprocessConfig(const InferencePostprocessConfig& config,
                                        PostprocessConfig* out_config,

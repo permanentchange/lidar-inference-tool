@@ -68,14 +68,6 @@ float SafeExp(float value) {
   return std::exp(std::max(kClampMin, std::min(kClampMax, value)));
 }
 
-int CenterPointBboxChannelsPerTask(const RuntimeConfig& config) {
-  const int base_channels = 2 + 1 + 3;
-  const int yaw_channels =
-      config.yaw_encoding == inference::YawEncoding::kDirectionTheta ? 1 : 0;
-  const int velocity_channels = config.has_velocity ? 2 : 0;
-  return base_channels + yaw_channels + velocity_channels;
-}
-
 float WrapAnglePi(float yaw) {
   if (!std::isfinite(yaw)) {
     return yaw;
@@ -87,13 +79,13 @@ float WrapAnglePi(float yaw) {
   return wrapped - kPi;
 }
 
-float DecodeYaw(const RuntimeConfig& config,
+float DecodeYaw(const ResolvedHeadLayout& layout,
                 const float* bbox,
                 const float* dir,
                 int hw,
                 int index) {
-  if (config.yaw_encoding == inference::YawEncoding::kDirectionTheta) {
-    const float theta = bbox[6 * hw + index];
+  if (layout.theta_offset >= 0) {
+    const float theta = bbox[layout.theta_offset * hw + index];
     const float dir0 = dir[0 * hw + index];
     const float dir1 = dir[1 * hw + index];
     if (!std::isfinite(theta) || !std::isfinite(dir0) || !std::isfinite(dir1)) {
@@ -297,39 +289,6 @@ void FilterByLabelScoreThreshold(CandidateDetections* detections,
   detections->scores.swap(filtered.scores);
   detections->labels.swap(filtered.labels);
   detections->boxes.swap(filtered.boxes);
-}
-
-int GlobalLabelForTaskClass(const RuntimeConfig& config, int task_id, int class_index) {
-  if (task_id >= 0 && task_id < static_cast<int>(config.task_label_ids.size())) {
-    const std::vector<int>& label_ids = config.task_label_ids[static_cast<size_t>(task_id)];
-    if (class_index >= 0 && class_index < static_cast<int>(label_ids.size())) {
-      return label_ids[static_cast<size_t>(class_index)];
-    }
-  }
-  int label_offset = 0;
-  for (int i = 0; i < task_id && i < static_cast<int>(config.task_num_classes.size()); ++i) {
-    label_offset += config.task_num_classes[static_cast<size_t>(i)];
-  }
-  return label_offset + class_index;
-}
-
-std::vector<int> GlobalLabelsForTask(const RuntimeConfig& config, size_t task_index) {
-  if (task_index < config.task_label_ids.size()) {
-    return config.task_label_ids[task_index];
-  }
-  std::vector<int> labels;
-  if (task_index >= config.task_num_classes.size()) {
-    return labels;
-  }
-  int label_offset = 0;
-  for (size_t i = 0; i < task_index; ++i) {
-    label_offset += config.task_num_classes[i];
-  }
-  labels.reserve(static_cast<size_t>(config.task_num_classes[task_index]));
-  for (int i = 0; i < config.task_num_classes[task_index]; ++i) {
-    labels.push_back(label_offset + i);
-  }
-  return labels;
 }
 
 void SortCandidatesDescending(CandidateDetections* out_candidates);
@@ -542,6 +501,7 @@ void SortCandidatesDescending(CandidateDetections* out_candidates) {
 }
 
 InferenceStatus DecodeLegacyOutputs(const RuntimeConfig& config,
+                                    const ResolvedHeadLayout& layout,
                                     const RawHeadView& raw_outputs,
                                     CandidateDetections* out_candidates,
                                     std::string* out_error) {
@@ -571,7 +531,7 @@ InferenceStatus DecodeLegacyOutputs(const RuntimeConfig& config,
     const float* heat = raw_outputs.cls_score + static_cast<size_t>(task_id) * hw;
     const float* bbox = raw_outputs.bbox_pred +
                         static_cast<size_t>(task_id) *
-                            CenterPointBboxChannelsPerTask(config) * hw;
+                            layout.bbox_channels_per_task * hw;
     const float* dir = raw_outputs.dir_cls_pred +
                        static_cast<size_t>(task_id) * kDirChannelsPerTask * hw;
 
@@ -613,7 +573,7 @@ InferenceStatus DecodeLegacyOutputs(const RuntimeConfig& config,
       const float dim_x = SafeExp(bbox[3 * hw + entry.index]);
       const float dim_y = SafeExp(bbox[4 * hw + entry.index]);
       const float dim_z = SafeExp(bbox[5 * hw + entry.index]);
-      const float yaw = DecodeYaw(config, bbox, dir, hw, entry.index);
+      const float yaw = DecodeYaw(layout, bbox, dir, hw, entry.index);
 
       const float center_x =
           (static_cast<float>(x_idx) + reg_x) * config.out_size_factor * config.pillar_size[0] +
@@ -651,6 +611,7 @@ InferenceStatus DecodeLegacyOutputs(const RuntimeConfig& config,
 }
 
 InferenceStatus DecodeCenterPointOutputs(const RuntimeConfig& config,
+                                         const ResolvedHeadLayout& layout,
                                          const RawHeadView& raw_outputs,
                                          CandidateDetections* out_candidates,
                                          std::string* out_error) {
@@ -670,7 +631,7 @@ InferenceStatus DecodeCenterPointOutputs(const RuntimeConfig& config,
     return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
                     "Raw outputs have invalid dimensions");
   }
-  if (config.task_num_classes.size() != static_cast<size_t>(task_count)) {
+  if (layout.task_count != task_count) {
     return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
                     "CenterPoint task layout does not match engine contract");
   }
@@ -681,12 +642,12 @@ InferenceStatus DecodeCenterPointOutputs(const RuntimeConfig& config,
 
   int class_offset = 0;
   for (int task_id = 0; task_id < task_count; ++task_id) {
-    const int task_classes = config.task_num_classes[static_cast<size_t>(task_id)];
+    const int task_classes = layout.task_num_classes[static_cast<size_t>(task_id)];
     const float* heat =
         raw_outputs.cls_score + static_cast<size_t>(class_offset) * static_cast<size_t>(hw);
     const float* bbox = raw_outputs.bbox_pred +
                         static_cast<size_t>(task_id) *
-                            CenterPointBboxChannelsPerTask(config) *
+                            layout.bbox_channels_per_task *
                             static_cast<size_t>(hw);
     const float* dir = raw_outputs.dir_cls_pred +
                        static_cast<size_t>(task_id) * kDirChannelsPerTask * static_cast<size_t>(hw);
@@ -739,7 +700,7 @@ InferenceStatus DecodeCenterPointOutputs(const RuntimeConfig& config,
       const float dim_z =
           config.norm_bbox ? SafeExp(bbox[5 * hw + entry.spatial_index])
                            : bbox[5 * hw + entry.spatial_index];
-      const float yaw = DecodeYaw(config, bbox, dir, hw, entry.spatial_index);
+      const float yaw = DecodeYaw(layout, bbox, dir, hw, entry.spatial_index);
 
       const float center_x =
           (static_cast<float>(x_idx) + reg_x) * config.out_size_factor * config.pillar_size[0] +
@@ -762,7 +723,7 @@ InferenceStatus DecodeCenterPointOutputs(const RuntimeConfig& config,
 
       out_candidates->scores.push_back(entry.score);
       out_candidates->labels.push_back(
-          GlobalLabelForTaskClass(config, task_id, entry.class_index));
+          GlobalLabelForTaskClass(layout, task_id, entry.class_index));
       out_candidates->boxes.push_back(center_x);
       out_candidates->boxes.push_back(center_y);
       out_candidates->boxes.push_back(center_z);
@@ -777,13 +738,16 @@ InferenceStatus DecodeCenterPointOutputs(const RuntimeConfig& config,
 }
 
 InferenceStatus DecodeOutputs(const RuntimeConfig& config,
+                              const ResolvedHeadLayout& layout,
                               const RawHeadView& raw_outputs,
                               CandidateDetections* out_candidates,
                               std::string* out_error) {
   if (config.decode_mode == inference::DecodeMode::kCenterPoint) {
-    return DecodeCenterPointOutputs(config, raw_outputs, out_candidates, out_error);
+    return DecodeCenterPointOutputs(config, layout, raw_outputs, out_candidates,
+                                    out_error);
   }
-  return DecodeLegacyOutputs(config, raw_outputs, out_candidates, out_error);
+  return DecodeLegacyOutputs(config, layout, raw_outputs, out_candidates,
+                             out_error);
 }
 
 InferenceStatus CopyOutputsToResponse(const CandidateDetections& candidates,
@@ -823,6 +787,109 @@ InferenceStatus CopyOutputsToResponse(const CandidateDetections& candidates,
 }
 
 }  // namespace
+
+InferenceStatus ResolveHeadLayout(const inference::ModelConfig& config,
+                                  ResolvedHeadLayout* out_layout,
+                                  std::string* out_error) {
+  RuntimeConfig runtime_config;
+  runtime_config.decode_mode = config.decode_mode;
+  runtime_config.yaw_encoding = config.yaw_encoding;
+  runtime_config.bbox_code_size = config.bbox_code_size;
+  runtime_config.norm_bbox = config.norm_bbox;
+  runtime_config.has_velocity = config.has_velocity;
+  runtime_config.task_num_classes = config.task_num_classes;
+  runtime_config.task_label_ids = config.task_label_ids;
+  runtime_config.label_count = static_cast<int>(config.label_names.size());
+  return ResolveHeadLayout(runtime_config, out_layout, out_error);
+}
+
+InferenceStatus ResolveHeadLayout(const RuntimeConfig& config,
+                                  ResolvedHeadLayout* out_layout,
+                                  std::string* out_error) {
+  if (out_layout == nullptr) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "out_layout is null");
+  }
+
+  ResolvedHeadLayout layout;
+  layout.decode_mode = config.decode_mode;
+  layout.yaw_encoding = config.yaw_encoding;
+  layout.has_velocity = config.has_velocity;
+  layout.norm_bbox = config.norm_bbox;
+  layout.task_num_classes = config.task_num_classes;
+  layout.label_count = config.label_count;
+  layout.task_count = static_cast<int>(layout.task_num_classes.size());
+  layout.theta_offset =
+      layout.yaw_encoding == inference::YawEncoding::kDirectionTheta ? 6 : -1;
+  layout.vel_offset = layout.has_velocity ? (layout.theta_offset >= 0 ? 7 : 6) : -1;
+  layout.bbox_channels_per_task =
+      2 + 1 + 3 + (layout.theta_offset >= 0 ? 1 : 0) + (layout.has_velocity ? 2 : 0);
+  if (layout.task_count <= 0 || layout.bbox_channels_per_task <= 0) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "resolved head layout is invalid");
+  }
+
+  layout.task_class_offsets.reserve(layout.task_num_classes.size());
+  layout.task_label_ids.reserve(layout.task_num_classes.size());
+  layout.flat_global_label_ids.reserve(static_cast<size_t>(layout.label_count));
+  int class_offset = 0;
+  for (size_t task_index = 0; task_index < layout.task_num_classes.size();
+       ++task_index) {
+    const int task_classes = layout.task_num_classes[task_index];
+    if (task_classes <= 0) {
+      std::ostringstream oss;
+      oss << "task_num_classes[" << task_index << "] must be positive";
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+    }
+    std::vector<int> label_ids;
+    if (task_index < config.task_label_ids.size()) {
+      label_ids = config.task_label_ids[task_index];
+    } else {
+      label_ids.reserve(static_cast<size_t>(task_classes));
+      for (int i = 0; i < task_classes; ++i) {
+        label_ids.push_back(class_offset + i);
+      }
+    }
+    if (label_ids.size() != static_cast<size_t>(task_classes)) {
+      std::ostringstream oss;
+      oss << "task_label_ids[" << task_index
+          << "] size must match task_num_classes[" << task_index << "]";
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+    }
+    layout.task_class_offsets.push_back(class_offset);
+    layout.task_label_ids.push_back(label_ids);
+    for (const int label_id : label_ids) {
+      layout.flat_global_label_ids.push_back(label_id);
+    }
+    class_offset += task_classes;
+  }
+  layout.cls_channels_total = class_offset;
+  *out_layout = std::move(layout);
+  return INFERENCE_STATUS_OK;
+}
+
+int GlobalLabelForTaskClass(const ResolvedHeadLayout& layout,
+                            int task_id,
+                            int class_index) {
+  if (task_id < 0 || task_id >= static_cast<int>(layout.task_label_ids.size())) {
+    return class_index;
+  }
+  const std::vector<int>& label_ids =
+      layout.task_label_ids[static_cast<size_t>(task_id)];
+  if (class_index < 0 || class_index >= static_cast<int>(label_ids.size())) {
+    return class_index;
+  }
+  return label_ids[static_cast<size_t>(class_index)];
+}
+
+const std::vector<int>& GlobalLabelsForTask(const ResolvedHeadLayout& layout,
+                                            size_t task_index) {
+  static const std::vector<int> kEmptyLabels;
+  if (task_index >= layout.task_label_ids.size()) {
+    return kEmptyLabels;
+  }
+  return layout.task_label_ids[task_index];
+}
 
 InferenceStatus ParseRuntimeConfig(const InferenceConfig& config,
                                    RuntimeConfig* out_config,
@@ -877,6 +944,7 @@ InferenceStatus ParseRuntimeConfig(const InferenceConfig& config,
   out_config->out_size_factor = config.out_size_factor;
   out_config->score_threshold = config.score_threshold;
   out_config->decode_mode = inference::DecodeMode::kLegacy;
+  out_config->yaw_encoding = inference::YawEncoding::kSinCos;
   out_config->bbox_code_size = kBoxDim;
   out_config->norm_bbox = false;
   out_config->has_velocity = false;
@@ -954,16 +1022,23 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
     return RunGroupedNms(candidates, config, runtime_config, out_result, out_error);
   }
   if (runtime_config.decode_mode == inference::DecodeMode::kCenterPoint) {
+    ResolvedHeadLayout layout;
+    InferenceStatus status =
+        ResolveHeadLayout(runtime_config, &layout, out_error);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
     out_result->scores.clear();
     out_result->boxes.clear();
     out_result->labels.clear();
 
-    for (size_t task_index = 0; task_index < runtime_config.task_num_classes.size(); ++task_index) {
+    for (size_t task_index = 0; task_index < layout.task_num_classes.size();
+         ++task_index) {
       CandidateDetections per_task;
       per_task.scores.reserve(candidates.scores.size());
       per_task.labels.reserve(candidates.labels.size());
       per_task.boxes.reserve(candidates.boxes.size());
-      const std::vector<int> task_labels = GlobalLabelsForTask(runtime_config, task_index);
+      const std::vector<int>& task_labels = GlobalLabelsForTask(layout, task_index);
       CollectByLabelSet(candidates, task_labels, runtime_config.label_count, &per_task);
       if (config.nms_type == INFERENCE_NMS_CIRCLE) {
         const float radius = task_index < config.circle_nms_min_radius.size()
@@ -1057,6 +1132,7 @@ InferenceOutputSpec MakeOutputSpec(int task_count, int bbox_max_num) {
 }
 
 struct PillarRuntime::Impl {
+  ResolvedHeadLayout layout;
   TrtExecutor trt;
   std::unique_ptr<GpuDecodedCandidates> gpu_decoder;
   std::shared_ptr<Voxelization> voxelizer;
@@ -1111,7 +1187,12 @@ PillarRuntime::~PillarRuntime() = default;
 
 InferenceStatus PillarRuntime::Initialize() {
   impl_ = std::make_unique<Impl>();
-  InferenceStatus status = impl_->trt.Load(config_, config_.end2end_file, &last_error_);
+  InferenceStatus status = ResolveHeadLayout(config_, &impl_->layout, &last_error_);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
+  status = impl_->trt.Load(config_, impl_->layout, config_.end2end_file,
+                           &last_error_);
   if (status != INFERENCE_STATUS_OK) {
     return status;
   }
@@ -1215,9 +1296,10 @@ InferenceStatus PillarRuntime::Initialize() {
     return status;
   }
   impl_->gpu_decoder = std::make_unique<GpuDecodedCandidates>();
-  status = impl_->gpu_decoder->Initialize(config_, contract.task_count, contract.bbox_channels,
-                                          contract.cls_channels, contract.dir_channels,
-                                          contract.height, contract.width, &last_error_);
+  status = impl_->gpu_decoder->Initialize(
+      config_, impl_->layout, contract.task_count, contract.bbox_channels,
+      contract.cls_channels, contract.dir_channels, contract.height,
+      contract.width, &last_error_);
   if (status != INFERENCE_STATUS_OK) {
     return status;
   }
@@ -1461,7 +1543,8 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
     }
 
     start = std::chrono::steady_clock::now();
-    status = DecodeOutputs(config_, raw_outputs, &candidates, &last_error_);
+    status = DecodeOutputs(config_, impl_->layout, raw_outputs, &candidates,
+                           &last_error_);
     end = std::chrono::steady_clock::now();
     local_timings.decode_ms = ElapsedMs(start, end);
     if (status != INFERENCE_STATUS_OK) {

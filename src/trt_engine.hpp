@@ -39,6 +39,7 @@ class TrtExecutor {
   TrtExecutor& operator=(const TrtExecutor&) = delete;
 
   InferenceStatus Load(const RuntimeConfig& config,
+                       const ResolvedHeadLayout& layout,
                        const std::string& engine_path,
                        std::string* out_error);
   InferenceStatus ConfigureShapes(const RuntimeConfig& config,

@@ -157,14 +157,6 @@ struct ContextDeleter {
   }
 };
 
-int CenterPointBboxChannelsPerTask(const RuntimeConfig& config) {
-  const int base_channels = 2 + 1 + 3;
-  const int yaw_channels =
-      config.yaw_encoding == inference::YawEncoding::kDirectionTheta ? 1 : 0;
-  const int velocity_channels = config.has_velocity ? 2 : 0;
-  return base_channels + yaw_channels + velocity_channels;
-}
-
 const char* YawEncodingName(inference::YawEncoding encoding) {
   switch (encoding) {
     case inference::YawEncoding::kDirectionTheta:
@@ -294,6 +286,7 @@ InferenceStatus ValidateInputProfiles(const RuntimeConfig& config,
 }
 
 InferenceStatus BuildContract(const RuntimeConfig& config,
+                              const ResolvedHeadLayout& layout,
                               nvinfer1::ICudaEngine& engine,
                               EngineContract* out_contract,
                               std::string* out_error) {
@@ -357,39 +350,31 @@ InferenceStatus BuildContract(const RuntimeConfig& config,
       return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
                       "CenterPoint runtime config requires task_num_classes");
     }
-    const int expected_task_count = static_cast<int>(config.task_num_classes.size());
-    int expected_cls_channels = 0;
-    for (const int task_classes : config.task_num_classes) {
-      expected_cls_channels += task_classes;
-    }
-    const int expected_bbox_channels_per_task =
-        CenterPointBboxChannelsPerTask(config);
+    const int expected_task_count = layout.task_count;
     if (contract.bbox_channels !=
-            expected_task_count * expected_bbox_channels_per_task ||
-        contract.dir_channels != expected_task_count * kDirChannelsPerTask ||
-        contract.cls_channels != expected_cls_channels) {
+            expected_task_count * layout.bbox_channels_per_task ||
+        contract.dir_channels != expected_task_count * layout.dir_channels_per_task ||
+        contract.cls_channels != layout.cls_channels_total) {
       std::ostringstream oss;
       oss << "Engine channels do not match CenterPoint task layout: bbox="
           << contract.bbox_channels << " cls=" << contract.cls_channels
           << " dir=" << contract.dir_channels << " expected bbox="
-          << expected_task_count * expected_bbox_channels_per_task << " cls="
-          << expected_cls_channels << " dir="
-          << expected_task_count * kDirChannelsPerTask
-          << " for yaw_encoding=" << YawEncodingName(config.yaw_encoding);
+          << expected_task_count * layout.bbox_channels_per_task << " cls="
+          << layout.cls_channels_total << " dir="
+          << expected_task_count * layout.dir_channels_per_task
+          << " for yaw_encoding=" << YawEncodingName(layout.yaw_encoding);
       return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
     }
     contract.task_count = expected_task_count;
   } else {
-    const int expected_bbox_channels_per_task =
-        CenterPointBboxChannelsPerTask(config);
-    if (contract.bbox_channels != contract.cls_channels * expected_bbox_channels_per_task ||
-        contract.dir_channels != contract.cls_channels * kDirChannelsPerTask) {
+    if (contract.bbox_channels != contract.cls_channels * layout.bbox_channels_per_task ||
+        contract.dir_channels != contract.cls_channels * layout.dir_channels_per_task) {
       std::ostringstream oss;
       oss << "Engine channels do not match expected legacy CenterPoint head layout: bbox="
           << contract.bbox_channels << " cls=" << contract.cls_channels
           << " dir=" << contract.dir_channels << " expected bbox="
-          << contract.cls_channels * expected_bbox_channels_per_task
-          << " dir=" << contract.cls_channels * kDirChannelsPerTask;
+          << contract.cls_channels * layout.bbox_channels_per_task
+          << " dir=" << contract.cls_channels * layout.dir_channels_per_task;
       return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
     }
     contract.task_count = contract.cls_channels;
@@ -412,6 +397,7 @@ TrtExecutor::TrtExecutor() = default;
 TrtExecutor::~TrtExecutor() = default;
 
 InferenceStatus TrtExecutor::Load(const RuntimeConfig& config,
+                                  const ResolvedHeadLayout& layout,
                                   const std::string& engine_path,
                                   std::string* out_error) {
   contract_ = EngineContract{};
@@ -462,7 +448,7 @@ InferenceStatus TrtExecutor::Load(const RuntimeConfig& config,
                     "Failed to activate TensorRT optimization profile 0");
   }
 
-  return BuildContract(config, *impl_->engine, &contract_, out_error);
+  return BuildContract(config, layout, *impl_->engine, &contract_, out_error);
 }
 
 InferenceStatus TrtExecutor::ConfigureShapes(const RuntimeConfig& config,

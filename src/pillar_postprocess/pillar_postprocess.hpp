@@ -18,6 +18,7 @@ class GpuDecodedCandidates {
   GpuDecodedCandidates& operator=(const GpuDecodedCandidates&) = delete;
 
   InferenceStatus Initialize(const RuntimeConfig& config,
+                             const ResolvedHeadLayout& layout,
                              int task_count,
                              int bbox_channels,
                              int cls_channels,
