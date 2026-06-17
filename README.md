@@ -6,14 +6,15 @@
 - `infer_debug_tool`: a single-sample debug executable that validates high-level C++ API inference results and writes visualization-friendly artifacts
 - `perf_debug_tool`: a profiling executable for single-sample inference performance breakdowns
 - `lidar_model_downloader`: an installed command-line helper for fetching model assets after package installation
+- `lidar_model_uploader`: an installed command-line helper for publishing model release assets to MinIO
 - `minimal_cpp_api_example`: a model-package-driven executable under `examples/` that shows the recommended C++ integration path
 
-## v1.6.0
+## v1.6.1
 
-- Added CenterPoint task-label remapping through `model.task_label_ids`.
-- Added global-label grouped NMS and final mapped business labels.
-- Added `model.yaw_encoding` support for `sin_cos` and `direction_theta` CenterPoint model packages.
-- Centralized internal head-layout resolution without changing the recommended C++ wrapper usage.
+- Improved model download and ONNX-to-engine helper workflows for release packaging.
+- Added `lidar_model_uploader` plus MD5 metadata-based upload and download validation.
+- Packaged prebuilt downloader and uploader binaries from `scripts/dist/` for deployment, including ARM builds.
+- Kept the recommended C++ runtime wrapper usage unchanged.
 
 See [CHANGELOG.md](./CHANGELOG.md) for version history.
 
@@ -32,7 +33,10 @@ This README intentionally uses repository-relative paths and placeholders such a
 - `src/pillar_debug_utils.cpp`: debug-tool config assembly, point-cloud loading, and artifact export
 - `tools/infer_debug_tool.cpp`: high-level C++ API result debug CLI entry point
 - `tools/perf_debug_tool.cpp`: performance debug CLI entry point
-- `tools/onnx2engine.sh`: helper script for `trtexec`
+- `scripts/lidar_model_downloader.py`: source implementation of the model downloader utility
+- `scripts/lidar_model_uploader.py`: source implementation of the model uploader utility
+- `scripts/dist/`: prebuilt downloader/uploader binaries that are shipped in the DEB package
+- `scripts/onnx2engine.sh`: helper script for `trtexec`
 - `tools/visualize_infer_debug.py`: BEV and interactive 3D visualization for dumped infer-debug artifacts
 - `examples/minimal_cpp_api/`: minimal executable example for the public C++ wrapper API
 - `demo/model.yaml`: example model package config for the public C++ wrapper
@@ -173,8 +177,11 @@ The generated `.deb` installs its runtime commands under `/usr/local/bin`, inclu
 - `infer_debug_tool`
 - `perf_debug_tool`
 - `lidar_model_downloader`
+- `lidar_model_uploader`
 
-Installed CMake package files include a version file, so downstream projects can require this release with `find_package(lidar-inference-tool 1.6.0 CONFIG REQUIRED)`.
+The downloader and uploader commands in the DEB come from the prebuilt binaries under `scripts/dist/`. The Python source files `scripts/lidar_model_downloader.py` and `scripts/lidar_model_uploader.py` remain repository-side source utilities.
+
+Installed CMake package files include a version file, so downstream projects can require this release with `find_package(lidar-inference-tool 1.6.1 CONFIG REQUIRED)`.
 
 The package build now runs from `build/`, so CPack temporary files stay under `build/_CPack_Packages/` instead of the repository root.
 
@@ -515,25 +522,26 @@ Important semantics:
 
 ## ONNX to TensorRT
 
-Use the helper script to build an engine and then run a quick `trtexec` profile:
+Use the helper script to build an engine and then run a quick `trtexec` profile. It supports both a short form with default profile sizes and a full form with explicit profile sizes:
 
 ```bash
-bash tools/onnx2engine.sh <onnx_path> <engine_path> <min_points> <opt_points> <max_points> [fp32|fp16|int8]
+bash scripts/onnx2engine.sh <onnx_path> <engine_path> [fp32|fp16|int8]
+bash scripts/onnx2engine.sh <onnx_path> <engine_path> <min_points> <opt_points> <max_points> [fp32|fp16|int8]
 ```
 
 Show the built-in help:
 
 ```bash
-bash tools/onnx2engine.sh --help
+bash scripts/onnx2engine.sh --help
 ```
 
 Arguments:
 
 - `<onnx_path>`: input ONNX model path
 - `<engine_path>`: output TensorRT engine path
-- `<min_points>`: minimum optimization-profile pillar/point count
-- `<opt_points>`: optimal optimization-profile pillar/point count
-- `<max_points>`: maximum optimization-profile pillar/point count
+- `<min_points>`: optional minimum optimization-profile pillar/point count, default `10000`
+- `<opt_points>`: optional optimal optimization-profile pillar/point count, default `30000`
+- `<max_points>`: optional maximum optimization-profile pillar/point count, default `50000`
 - `[precision]`: optional precision mode, one of `fp32`, `fp16`, `int8`, default `fp16`
 
 The helper assumes the current repository contract:
@@ -542,28 +550,35 @@ The helper assumes the current repository contract:
 - `num_points`: `<N>`
 - `coors`: `<N>x4`
 
-FP16 example:
+Default FP16 example:
 
 ```bash
-bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end.engine 10000 40000 50000
+bash scripts/onnx2engine.sh demo/end2end.onnx demo/end2end.engine
+```
+
+Explicit-profile FP16 example:
+
+```bash
+bash scripts/onnx2engine.sh demo/end2end.onnx demo/end2end.engine 10000 40000 50000
 ```
 
 FP32 example:
 
 ```bash
-bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end_fp32.engine 10000 40000 50000 fp32
+bash scripts/onnx2engine.sh demo/end2end.onnx demo/end2end_fp32.engine 10000 40000 50000 fp32
 ```
 
 INT8 example for a quantized / Q-DQ ONNX model:
 
 ```bash
-bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end_int8.engine 10000 40000 50000 int8
+bash scripts/onnx2engine.sh demo/end2end.onnx demo/end2end_int8.engine 10000 40000 50000 int8
 ```
 
 Requirements and behavior:
 
 - `trtexec` must be available in `PATH`
 - the ONNX file must already exist
+- if profile sizes are omitted, the helper uses `10000 / 30000 / 50000`
 - `<min_points>`, `<opt_points>`, and `<max_points>` must be positive integers
 - the helper requires `min_points <= opt_points <= max_points`
 - the generated engine must preserve the current external binding contract: `voxels=float32`, `num_points=int32`, `coors=int32`, outputs `float32`

@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.6.1
+
+- Improved the model download helper and ONNX-to-engine build helper workflow for release packaging and deployment.
+- Added `lidar_model_uploader` for publishing model release assets to MinIO with upload-time integrity metadata.
+- Fixed downloader/uploader MD5 validation to prefer real MinIO object metadata instead of unreliable multipart ETag values.
+- Added packaged prebuilt `lidar_model_downloader` and `lidar_model_uploader` binaries from `scripts/dist/`, including ARM release artifacts.
+
 ## v1.6.0
 
 - Added `model.yaw_encoding` so CenterPoint model packages can declare `sin_cos` or `direction_theta` yaw decoding explicitly.
