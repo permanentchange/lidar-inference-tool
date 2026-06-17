@@ -39,15 +39,35 @@ configure_runtime_library_path
 usage() {
   cat <<'EOF'
 Usage:
-  bash tools/onnx2engine.sh <onnx_path> <engine_path> <min_points> <opt_points> <max_points> [fp32|fp16|int8]
+  bash tools/onnx2engine.sh <onnx_path> <engine_path> [precision]
+  bash tools/onnx2engine.sh <onnx_path> <engine_path> <min_points> <opt_points> <max_points> [precision]
 
 Arguments:
   <onnx_path>     Input ONNX model path.
   <engine_path>   Output TensorRT engine path.
-  <min_points>    Min optimization-profile pillar/point count.
-  <opt_points>    Opt optimization-profile pillar/point count.
-  <max_points>    Max optimization-profile pillar/point count.
-  [precision]     Optional precision mode. Default: fp16.
+  <min_points>    Optional min optimization-profile pillar/point count.
+                  Default: 10000.
+  <opt_points>    Optional opt optimization-profile pillar/point count.
+                  Default: 30000.
+  <max_points>    Optional max optimization-profile pillar/point count.
+                  Default: 50000.
+  [precision]     Optional precision mode: fp32, fp16, or int8.
+                  Default: fp16.
+
+Supported calling forms:
+  1. ONNX + engine only:
+       bash tools/onnx2engine.sh model.onnx model.engine
+
+  2. ONNX + engine + precision:
+       bash tools/onnx2engine.sh model.onnx model.engine fp32
+       bash tools/onnx2engine.sh model.onnx model.engine fp16
+       bash tools/onnx2engine.sh model.onnx model.engine int8
+
+  3. ONNX + engine + min/opt/max:
+       bash tools/onnx2engine.sh model.onnx model.engine 10000 30000 50000
+
+  4. ONNX + engine + min/opt/max + precision:
+       bash tools/onnx2engine.sh model.onnx model.engine 10000 30000 50000 fp16
 
 This helper assumes the exported ONNX/TensorRT contract used by this repository:
   - voxels:     <N>x20x5
@@ -55,9 +75,12 @@ This helper assumes the exported ONNX/TensorRT contract used by this repository:
   - coors:      <N>x4
 
 Examples:
-  bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end.engine 10000 40000 50000
-  bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end_fp32.engine 10000 40000 50000 fp32
-  bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end_int8.engine 10000 40000 50000 int8
+  bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end.engine
+  bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end_fp32.engine fp32
+  bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end_fp16.engine fp16
+  bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end_int8.engine int8
+  bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end.engine 10000 30000 50000
+  bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end.engine 10000 30000 50000 fp16
 
 Behavior:
   1. If <engine_path> does not exist, build the TensorRT engine with trtexec.
@@ -71,18 +94,70 @@ if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   exit 0
 fi
 
-if [ "$#" -lt 5 ] || [ "$#" -gt 6 ]; then
-  echo "Invalid argument count: expected 5 or 6, got $#." >&2
+if [ "$#" -lt 2 ] || [ "$#" -gt 6 ]; then
+  echo "Invalid argument count: expected 2, 3, 5, or 6, got $#." >&2
   usage >&2
   exit 1
 fi
 
 onnx_path=$1
 trt_path=$2
-min_num_points=$3
-opt_num_points=$4
-max_num_points=$5
-precision=${6:-fp16}
+
+default_min_num_points=10000
+default_opt_num_points=30000
+default_max_num_points=50000
+default_precision=fp16
+
+min_num_points=$default_min_num_points
+opt_num_points=$default_opt_num_points
+max_num_points=$default_max_num_points
+precision=$default_precision
+
+is_precision() {
+  case "$1" in
+    fp32|fp16|int8) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+case "$#" in
+  2)
+    # Use default shape and default precision.
+    ;;
+
+  3)
+    # Use default shape and explicit precision.
+    if is_precision "$3"; then
+      precision=$3
+    else
+      echo "Invalid third argument: $3" >&2
+      echo "When only 3 arguments are provided, the third argument must be precision: fp32, fp16, or int8." >&2
+      usage >&2
+      exit 1
+    fi
+    ;;
+
+  5)
+    # Use explicit min/opt/max and default precision.
+    min_num_points=$3
+    opt_num_points=$4
+    max_num_points=$5
+    ;;
+
+  6)
+    # Use explicit min/opt/max and explicit precision.
+    min_num_points=$3
+    opt_num_points=$4
+    max_num_points=$5
+    precision=$6
+    ;;
+
+  *)
+    echo "Invalid argument count: expected 2, 3, 5, or 6, got $#." >&2
+    usage >&2
+    exit 1
+    ;;
+esac
 
 if ! command -v trtexec >/dev/null 2>&1; then
   echo "trtexec was not found in PATH." >&2

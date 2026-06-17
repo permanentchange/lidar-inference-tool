@@ -4,16 +4,17 @@ import argparse
 import os
 import re
 import sys
+import hashlib
 
 # ====================== 从环境变量读取 MinIO 配置 ======================
-MINIO_URL = os.getenv("MINIO_URL")
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT")
 ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY")
 SECRET_KEY = os.getenv("MINIO_SECRET_KEY")
 BUCKET_NAME = os.getenv("MINIO_BUCKET")
 
 # 检查必要配置是否存在
-if not MINIO_URL:
-    print("❌ 错误：请设置环境变量 MINIO_URL")
+if not MINIO_ENDPOINT:
+    print("❌ 错误：请设置环境变量 MINIO_ENDPOINT")
     sys.exit(1)
 if not ACCESS_KEY:
     print("❌ 错误：请设置环境变量 MINIO_ACCESS_KEY")
@@ -27,7 +28,7 @@ if not BUCKET_NAME:
 # ====================================================================
 
 client = Minio(
-    MINIO_URL,
+    MINIO_ENDPOINT,
     access_key=ACCESS_KEY,
     secret_key=SECRET_KEY,
     secure=False
@@ -39,14 +40,25 @@ MODEL_FILES = [
     "model.yaml"
 ]
 
+# ====================== MD5工具函数 ======================
+def get_file_md5(file_path: str) -> str:
+    """计算本地文件MD5值"""
+    if not os.path.exists(file_path):
+        return ""
+    md5_hash = hashlib.md5()
+    with open(file_path, "rb") as f:
+        while chunk := f.read(1024 * 1024):
+            md5_hash.update(chunk)
+    return md5_hash.hexdigest()
+# =========================================================
+
 # ====================== 进度条函数 ======================
-def download_with_progress(client, bucket, minio_path, local_path):
+def download_with_progress(client, bucket, minio_path, local_path, remote_md5):
     try:
-        stat = client.stat_object(bucket, minio_path)
-        total_size = stat.size
+        total_size = client.stat_object(bucket, minio_path).size
         abs_local_path = os.path.abspath(local_path)
 
-        print(f"\n📥 下载中: {os.path.basename(local_path)}")
+        print(f"\n📥 文件MD5不一致，开始下载: {os.path.basename(local_path)}")
 
         with open(local_path, "wb") as f:
             downloaded = 0
@@ -62,7 +74,14 @@ def download_with_progress(client, bucket, minio_path, local_path):
                 sys.stdout.write(f"\r[{bar}] {progress:.1f}%")
                 sys.stdout.flush()
 
-        sys.stdout.write(f"\n✅ 已保存至: {abs_local_path}\n")
+        # 下载完成二次校验MD5
+        local_md5 = get_file_md5(local_path)
+        if local_md5 != remote_md5:
+            print(f"\n❌ 校验失败：本地MD5({local_md5}) != 远端MD5({remote_md5})")
+            os.remove(local_path)
+            return False
+
+        sys.stdout.write(f"\n✅ 校验通过，已保存至: {abs_local_path}\n")
         return True
     except S3Error as e:
         print(f"❌ 下载失败: {str(e)}")
@@ -105,17 +124,33 @@ def download_model(version=None, save_dir=None):
 
     os.makedirs(save_dir, exist_ok=True)
     abs_save_dir = os.path.abspath(save_dir)
-    print(f"🚀 开始下载模型版本：{version}，目标保存目录：{abs_save_dir}")
+    print(f"🚀 开始处理模型版本：{version}，目标目录：{abs_save_dir}")
 
     for filename in MODEL_FILES:
         minio_path = f"releases/{version}/{filename}"
         local_path = os.path.join(save_dir, filename)
-        download_with_progress(client, BUCKET_NAME, minio_path, local_path)
 
-    print(f"\n🎉 版本 {version} 全部下载完成！所有文件已保存至：{abs_save_dir}")
+        # 获取远端文件ETag(MD5)
+        try:
+            stat_info = client.stat_object(BUCKET_NAME, minio_path)
+            remote_md5 = stat_info.etag.strip('"')  # etag自带双引号，去除
+        except S3Error as e:
+            print(f"❌ 获取远端文件信息失败 {minio_path}: {str(e)}")
+            continue
+
+        # 对比本地MD5
+        local_md5 = get_file_md5(local_path)
+        if local_md5 == remote_md5:
+            print(f"\n⏭️  {filename} MD5一致，跳过下载")
+            continue
+
+        # MD5不同/文件不存在，执行下载
+        download_with_progress(client, BUCKET_NAME, minio_path, local_path, remote_md5)
+
+    print(f"\n🎉 版本 {version} 文件处理完成！目录：{abs_save_dir}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="激光雷达模型下载工具")
+    parser = argparse.ArgumentParser(description="激光雷达模型下载工具（支持MD5增量校验）")
     parser.add_argument("--version", type=str, default=None, help="指定版本，如 v1.0，不指定则自动最新")
     parser.add_argument("--save-dir", type=str, default=None, help="模型保存目录，默认 ~/lidar_perception_config")
     args = parser.parse_args()

@@ -751,7 +751,7 @@ def parse_args():
     parser.add_argument("dump_dir", type=Path)
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--point-resolution", type=float, default=0.05)
-    parser.add_argument("--zmin", type=float, default=-0.5)
+    parser.add_argument("--zmin", type=float, default=-1.0)
     parser.add_argument("--zmax", type=float, default=2.5)
     parser.add_argument("--final-score-threshold", type=float, default=0.0)
     parser.add_argument("--candidate-score-threshold", type=float, default=0.0)
