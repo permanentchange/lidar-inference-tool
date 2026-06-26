@@ -359,6 +359,7 @@ InferenceStatus AppendCircleNmsResult(CandidateDetections* detections,
 }
 
 InferenceStatus AppendIouNmsResult(CandidateDetections* detections,
+                                   InferenceNmsType nms_type,
                                    float nms_thresh,
                                    int pre_maxsize,
                                    int post_maxsize,
@@ -378,9 +379,19 @@ InferenceStatus AppendIouNmsResult(CandidateDetections* detections,
 
   ApplyPreMaxsize(&detections->scores, &detections->boxes, &detections->labels, pre_maxsize);
   std::vector<long> keep(detections->scores.size(), 0);
-  const int keep_count =
-      nms_gpu(detections->boxes.data(), keep.data(), nms_thresh,
-              static_cast<int>(detections->scores.size()));
+  int keep_count = 0;
+  if (nms_type == INFERENCE_NMS_IOU_BEV) {
+    keep_count =
+        nms_gpu(detections->boxes.data(), keep.data(), nms_thresh,
+                static_cast<int>(detections->scores.size()));
+  } else if (nms_type == INFERENCE_NMS_IOU_MIN_BEV) {
+    keep_count =
+        nms_normalized_gpu(detections->boxes.data(), keep.data(), nms_thresh,
+                           static_cast<int>(detections->scores.size()));
+  } else {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "IoU NMS type is invalid");
+  }
   const size_t final_count =
       std::min(static_cast<size_t>(keep_count), static_cast<size_t>(post_maxsize));
   for (size_t i = 0; i < final_count; ++i) {
@@ -410,8 +421,9 @@ InferenceStatus RunGroupedNms(const CandidateDetections& candidates,
       status = AppendCircleNmsResult(&per_group, group.circle_nms_min_radius,
                                      group.nms_post_maxsize, out_result, out_error);
     } else {
-      status = AppendIouNmsResult(&per_group, group.nms_thresh, group.nms_pre_maxsize,
-                                  group.nms_post_maxsize, out_result, out_error);
+      status = AppendIouNmsResult(&per_group, config.nms_type, group.nms_thresh,
+                                  group.nms_pre_maxsize, group.nms_post_maxsize,
+                                  out_result, out_error);
     }
     if (status != INFERENCE_STATUS_OK) {
       return status;
@@ -967,7 +979,9 @@ InferenceStatus ParsePostprocessConfig(const InferencePostprocessConfig& config,
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                     "out_config is null");
   }
-  if (config.nms_type != INFERENCE_NMS_IOU_BEV && config.nms_type != INFERENCE_NMS_CIRCLE) {
+  if (config.nms_type != INFERENCE_NMS_IOU_BEV &&
+      config.nms_type != INFERENCE_NMS_IOU_MIN_BEV &&
+      config.nms_type != INFERENCE_NMS_CIRCLE) {
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                     "nms_type is invalid");
   }
@@ -1010,7 +1024,9 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                     "out_result is null");
   }
-  if (config.nms_type != INFERENCE_NMS_IOU_BEV && config.nms_type != INFERENCE_NMS_CIRCLE) {
+  if (config.nms_type != INFERENCE_NMS_IOU_BEV &&
+      config.nms_type != INFERENCE_NMS_IOU_MIN_BEV &&
+      config.nms_type != INFERENCE_NMS_CIRCLE) {
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                     "nms_type is invalid");
   }
@@ -1050,7 +1066,7 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
           return status;
         }
       } else {
-        InferenceStatus status = AppendIouNmsResult(&per_task, config.nms_thresh,
+        InferenceStatus status = AppendIouNmsResult(&per_task, config.nms_type, config.nms_thresh,
                                                     config.nms_pre_maxsize,
                                                     config.nms_post_maxsize, out_result,
                                                     out_error);
@@ -1117,7 +1133,7 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
   filtered.scores = std::move(scores);
   filtered.boxes = std::move(boxes);
   filtered.labels = std::move(labels);
-  return AppendIouNmsResult(&filtered, config.nms_thresh, config.nms_pre_maxsize,
+  return AppendIouNmsResult(&filtered, config.nms_type, config.nms_thresh, config.nms_pre_maxsize,
                             config.nms_post_maxsize, out_result, out_error);
 }
 

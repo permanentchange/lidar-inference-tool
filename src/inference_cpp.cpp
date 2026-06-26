@@ -73,6 +73,10 @@ InferenceStatus ParseNmsType(const std::string& value,
     *out_type = INFERENCE_NMS_CIRCLE;
     return INFERENCE_STATUS_OK;
   }
+  if (normalized == "iou_min" || normalized == "iou_min_bev" || normalized == "iouminbev") {
+    *out_type = INFERENCE_NMS_IOU_MIN_BEV;
+    return INFERENCE_STATUS_OK;
+  }
   if (normalized == "iou" || normalized == "iou_bev" || normalized == "ioubev") {
     *out_type = INFERENCE_NMS_IOU_BEV;
     return INFERENCE_STATUS_OK;

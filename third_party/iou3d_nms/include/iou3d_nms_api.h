@@ -41,6 +41,20 @@ int nms_gpu(const float *boxes,
             const int num_boxes);
 
 /**
+ * @brief GPU版本的BEV NMS，使用 overlap / min(area_a, area_b) 作为抑制度量
+ * @note 编译时定义HAVE_CUDA_ENABLE则启用CUDA加速，否则退化为CPU模拟实现
+ * @param boxes 输入检测框数据，形状为(N,7)，格式[x, y, z, dx, dy, dz, heading]
+ * @param keep 输出保留的框索引，数组长度需至少为N
+ * @param nms_overlap_thresh NMS重叠度阈值
+ * @param num_boxes 输入检测框的数量（N）
+ * @return int 保留的框的数量
+ */
+int nms_normalized_gpu(const float *boxes,
+                       long *keep,
+                       float nms_overlap_thresh,
+                       const int num_boxes);
+
+/**
  * @brief GPU版本的Circle NMS，按输入顺序贪心保留中心距离足够远的框
  * @note 编译时定义HAVE_CUDA_ENABLE则启用CUDA加速，否则退化为CPU模拟实现
  * @param boxes 输入检测框数据，形状为(N,7)，格式[x, y, z, dx, dy, dz, heading]
