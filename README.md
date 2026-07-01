@@ -6,15 +6,16 @@
 - `infer_debug_tool`: a single-sample debug executable that validates high-level C++ API inference results and writes visualization-friendly artifacts
 - `perf_debug_tool`: a profiling executable for single-sample inference performance breakdowns
 - `lidar_model_downloader`: an installed command-line helper for fetching model assets after package installation
-- `lidar_model_uploader`: an installed command-line helper for publishing model release assets to MinIO
 - `minimal_cpp_api_example`: a model-package-driven executable under `examples/` that shows the recommended C++ integration path
 
-## v1.6.1
+## v1.7.0
 
-- Improved model download and ONNX-to-engine helper workflows for release packaging.
-- Added `lidar_model_uploader` plus MD5 metadata-based upload and download validation.
-- Packaged prebuilt downloader and uploader binaries from `scripts/dist/` for deployment, including ARM builds.
-- Kept the recommended C++ runtime wrapper usage unchanged.
+- Added directory batch mode to `infer_debug_tool` for top-level `.pcd` / `.bin` sequences.
+- Added per-frame dump directories plus `sequence_manifest.json` and `sequence_detections.jsonl` outputs for downstream tracking workflows.
+- Documented selectable postprocess NMS modes, including `iou_min_bev`.
+- Updated the demo postprocess defaults with lower per-label score thresholds and one shared NMS label group.
+- Removed the model uploader script and packaged uploader binary from the repository.
+- Updated `lidar_model_downloader` to download all files in a release by default and support selective downloads with `--files`.
 
 See [CHANGELOG.md](./CHANGELOG.md) for version history.
 
@@ -34,8 +35,7 @@ This README intentionally uses repository-relative paths and placeholders such a
 - `tools/infer_debug_tool.cpp`: high-level C++ API result debug CLI entry point
 - `tools/perf_debug_tool.cpp`: performance debug CLI entry point
 - `scripts/lidar_model_downloader.py`: source implementation of the model downloader utility
-- `scripts/lidar_model_uploader.py`: source implementation of the model uploader utility
-- `scripts/dist/`: prebuilt downloader/uploader binaries that are shipped in the DEB package
+- `scripts/dist/`: prebuilt downloader binary that is shipped in the DEB package
 - `scripts/onnx2engine.sh`: helper script for `trtexec`
 - `tools/visualize_infer_debug.py`: BEV and interactive 3D visualization for dumped infer-debug artifacts
 - `examples/minimal_cpp_api/`: minimal executable example for the public C++ wrapper API
@@ -177,11 +177,10 @@ The generated `.deb` installs its runtime commands under `/usr/local/bin`, inclu
 - `infer_debug_tool`
 - `perf_debug_tool`
 - `lidar_model_downloader`
-- `lidar_model_uploader`
 
-The downloader and uploader commands in the DEB come from the prebuilt binaries under `scripts/dist/`. The Python source files `scripts/lidar_model_downloader.py` and `scripts/lidar_model_uploader.py` remain repository-side source utilities.
+The downloader command in the DEB comes from the prebuilt binary under `scripts/dist/`. The Python source file `scripts/lidar_model_downloader.py` remains the repository-side source utility.
 
-Installed CMake package files include a version file, so downstream projects can require this release with `find_package(lidar-inference-tool 1.6.1 CONFIG REQUIRED)`.
+Installed CMake package files include a version file, so downstream projects can require this release with `find_package(lidar-inference-tool 1.7.0 CONFIG REQUIRED)`.
 
 The package build now runs from `build/`, so CPack temporary files stay under `build/_CPack_Packages/` instead of the repository root.
 
@@ -306,11 +305,15 @@ The current demo `model.yaml` includes:
 - `postprocess.nms_pre_maxsize`
 - `postprocess.nms_post_maxsize`
 - `postprocess.final_score_threshold`
-- `postprocess.circle_nms_min_radius`
 - `postprocess.nms_label_groups`
 - `postprocess.label_score_thresh`
 - `postprocess.label_mapping`
 - `postprocess.mapped_label_names`
+
+`postprocess.nms_type` supports `iou_bev`, `iou_min_bev`, and `circle`.
+`iou_min_bev` uses `overlap / min(area_a, area_b)` in BEV, which suppresses fully-contained small boxes more aggressively than standard IoU.
+
+The current demo config uses lower per-label score thresholds than the previous release and runs one shared NMS pass over all nine global labels. Override these values in `model.yaml` or an override YAML when a deployment needs class-specific NMS groups.
 
 Label-related config uses two stages:
 
@@ -343,7 +346,7 @@ Optional override YAML files use the same schema and are applied with this prece
 `infer_debug_tool` follows the same model-directory entry style as the public C++ wrapper and treats `runtime->Infer(...)` as the authoritative final result:
 
 ```bash
-./build/infer_debug_tool <model_dir> <pcd_path> [dump_dir]
+./build/infer_debug_tool <model_dir> <input_path> [dump_dir]
 ```
 
 Supported options:
@@ -359,17 +362,20 @@ Examples:
 ./build/infer_debug_tool demo demo/pcd.bin outputs/infer_debug --dump-decoded
 ./build/infer_debug_tool demo demo/pcd.bin outputs/infer_debug --dump-decoded --dump-internal
 ./build/infer_debug_tool demo demo/pcd.bin outputs/infer_debug --override-config overrides/model_override.yaml
+./build/infer_debug_tool /path/to/model_dir /path/to/point_cloud_dir outputs/infer_debug_sequence
 ```
 
 Behavior:
 
 - `model_dir` must contain `model.yaml`
 - runtime and postprocess settings come from `<model_dir>/model.yaml`
-- `pcd_path` is the input point cloud for this one debug run
+- `input_path` may be one `.pcd` / `.bin` file or a directory containing top-level `.pcd` / `.bin` files
 - `dump_dir` controls where result `.npy` and `.json` artifacts are written
 - `override_config_path` applies the same package-schema YAML override used by the public C++ wrapper
 - final detections come from the high-level C++ API, so `mapped_label_names` is reflected in `result.json`
 - `--dump-internal` writes raw internal tensors for auxiliary diagnosis only
+- directory mode sorts numerically by filename stem when all stems are unsigned integers; otherwise it falls back to lexicographic filename order
+- directory mode reuses one runtime instance and writes one subdirectory per frame under `dump_dir/frames/`
 
 `perf_debug_tool` uses the internal runtime path to profile one sample:
 
@@ -397,6 +403,12 @@ A successful `infer_debug_tool` run writes these files into `dump_dir`:
 - `final_label_names.json`
 - `result.json`
 - `metadata.json`
+
+In directory batch mode, the root `dump_dir` additionally contains:
+
+- `frames/<frame_index>_<file_stem>/...` per-frame artifact directories
+- `sequence_manifest.json`
+- `sequence_detections.jsonl`
 
 With `--dump-decoded`, it also writes:
 
@@ -426,6 +438,9 @@ Notes:
 - `result.json` contains final detections returned by `runtime->Infer(...)`
 - final boxes use `[x, y, z, dx, dy, dz, yaw]` with `z` at the box geometric center
 - `label_name` fields in `result.json` come from the high-level API and honor `postprocess.mapped_label_names`
+- per-frame `metadata.json` now also includes `input_path_kind`, optional `frame_index`, and optional `timestamp_ns` / `timestamp_seconds`
+- `sequence_manifest.json` records ordered frame metadata for downstream consumers
+- `sequence_detections.jsonl` writes one JSON object per frame with ordered detections for downstream Python Kalman-filter code
 - `perf_debug_tool/timings.json` contains both the single-run timing breakdown and aggregated profile statistics
 
 ## Infer Debug Visualization

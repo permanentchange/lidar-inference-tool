@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.7.0
+
+- Added directory batch mode to `infer_debug_tool` for top-level `.pcd` / `.bin` input sequences.
+- Added ordered per-frame dump directories under `dump_dir/frames/`.
+- Added `sequence_manifest.json` and `sequence_detections.jsonl` outputs for downstream Python tracking workflows.
+- Added per-frame metadata fields for input path kind, frame index, and filename-derived timestamps.
+- Documented `postprocess.nms_type` modes, including `iou_min_bev`.
+- Updated the demo postprocess defaults with lower per-label score thresholds and one shared NMS label group.
+- Removed `lidar_model_uploader` source and packaged uploader binary from the repository.
+- Updated `lidar_model_downloader` to discover and download all release files by default, with `--files` for selective downloads.
+
 ## v1.6.1
 
 - Improved the model download helper and ONNX-to-engine build helper workflow for release packaging and deployment.
