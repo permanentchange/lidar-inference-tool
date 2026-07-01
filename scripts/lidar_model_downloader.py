@@ -6,10 +6,10 @@ import re
 import sys
 import hashlib
 
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT")
-ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY")
-SECRET_KEY = os.getenv("MINIO_SECRET_KEY")
-BUCKET_NAME = os.getenv("MINIO_BUCKET")
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "121.237.181.98:9000")
+ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "qsJ37pF1ErbHYhM8i3mt")
+SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "c6RhaPje5ZtiMZSWvjZcexUoKbh6polP97mJGgn6")
+BUCKET_NAME = os.getenv("MINIO_BUCKET", "lidar-detection-models")
 
 if not MINIO_ENDPOINT:
     print("❌ 错误：请设置环境变量 MINIO_ENDPOINT")
@@ -30,12 +30,6 @@ client = Minio(
     secret_key=SECRET_KEY,
     secure=False
 )
-
-MODEL_FILES = [
-    "end2end.engine",
-    "end2end.onnx",
-    "model.yaml"
-]
 
 CHUNK_SIZE = 1024 * 1024
 MD5_META_KEY = "md5"
@@ -88,27 +82,30 @@ def download_with_progress(client, bucket, minio_path, local_path, remote_md5):
         total_size = client.stat_object(bucket, minio_path).size
         abs_local_path = os.path.abspath(local_path)
 
-        print(f"\n📥 开始下载: {os.path.basename(local_path)}")
+        os.makedirs(os.path.dirname(abs_local_path), exist_ok=True)
+
+        print(f"\n📥 开始下载: {minio_path}")
 
         response = None
-        with open(local_path, "wb") as f:
-            downloaded = 0
-            response = client.get_object(bucket, minio_path)
+        try:
+            with open(local_path, "wb") as f:
+                downloaded = 0
+                response = client.get_object(bucket, minio_path)
 
-            for data in response.stream(CHUNK_SIZE):
-                f.write(data)
-                downloaded += len(data)
+                for data in response.stream(CHUNK_SIZE):
+                    f.write(data)
+                    downloaded += len(data)
 
-                progress = downloaded / total_size * 100 if total_size else 100
-                bar_length = 30
-                block = int(bar_length * progress / 100)
-                bar = "█" * block + "-" * (bar_length - block)
-                sys.stdout.write(f"\r[{bar}] {progress:.1f}%")
-                sys.stdout.flush()
-
-        if response is not None:
-            response.close()
-            response.release_conn()
+                    progress = downloaded / total_size * 100 if total_size else 100
+                    bar_length = 30
+                    block = int(bar_length * progress / 100)
+                    bar = "█" * block + "-" * (bar_length - block)
+                    sys.stdout.write(f"\r[{bar}] {progress:.1f}%")
+                    sys.stdout.flush()
+        finally:
+            if response is not None:
+                response.close()
+                response.release_conn()
 
         local_md5 = get_file_md5(local_path)
 
@@ -149,7 +146,42 @@ def get_latest_version():
     return versions[-1] if versions else None
 
 
-def download_model(version=None, save_dir=None):
+def get_all_files(version: str) -> list[str]:
+    prefix = f"releases/{version}/"
+    files = []
+
+    for obj in client.list_objects(BUCKET_NAME, prefix=prefix, recursive=True):
+        if obj.is_dir:
+            continue
+
+        relative_path = obj.object_name[len(prefix):]
+        if relative_path:
+            files.append(relative_path)
+
+    files.sort()
+    return files
+
+
+def normalize_requested_files(files: list[str] | None) -> list[str] | None:
+    if not files:
+        return None
+
+    normalized_files = []
+    for file_name in files:
+        file_name = file_name.strip().lstrip("/")
+
+        if not file_name:
+            continue
+
+        if ".." in file_name.split("/"):
+            raise ValueError(f"非法文件路径：{file_name}")
+
+        normalized_files.append(file_name)
+
+    return normalized_files
+
+
+def download_model(version=None, save_dir=None, files=None):
     all_versions = get_all_versions()
 
     if not all_versions:
@@ -171,9 +203,26 @@ def download_model(version=None, save_dir=None):
     os.makedirs(save_dir, exist_ok=True)
     abs_save_dir = os.path.abspath(save_dir)
 
+    try:
+        requested_files = normalize_requested_files(files)
+    except ValueError as e:
+        print(f"❌ {e}")
+        return
+
+    if requested_files is None:
+        target_files = get_all_files(version)
+        if not target_files:
+            print(f"❌ 版本 {version} 下未找到任何文件！")
+            return
+
+        print(f"📦 未指定 --files，将下载版本 {version} 下的全部文件，共 {len(target_files)} 个")
+    else:
+        target_files = requested_files
+        print(f"📦 指定 --files，将只下载 {len(target_files)} 个文件")
+
     print(f"🚀 开始处理模型版本：{version}，目标目录：{abs_save_dir}")
 
-    for filename in MODEL_FILES:
+    for filename in target_files:
         minio_path = f"releases/{version}/{filename}"
         local_path = os.path.join(save_dir, filename)
 
@@ -219,6 +268,16 @@ if __name__ == "__main__":
         default=None,
         help="模型保存目录，默认 ~/lidar_perception_config"
     )
+    parser.add_argument(
+        "--files",
+        nargs="+",
+        default=None,
+        help="指定要下载的文件列表；不指定则下载该版本下的全部文件。例如：--files end2end.engine model.yaml"
+    )
 
     args = parser.parse_args()
-    download_model(version=args.version, save_dir=args.save_dir)
+    download_model(
+        version=args.version,
+        save_dir=args.save_dir,
+        files=args.files
+    )

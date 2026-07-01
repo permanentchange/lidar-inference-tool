@@ -311,6 +311,15 @@ float iou_bev(const float *box_a, const float *box_b){
     return s_overlap / fmaxf(sa + sb - s_overlap, EPS);
 }
 
+float iou_min_bev(const float *box_a, const float *box_b){
+    // params: box_a (7) [x, y, z, dx, dy, dz, heading]
+    // params: box_b (7) [x, y, z, dx, dy, dz, heading]
+    float sa = box_a[3] * box_a[4];
+    float sb = box_b[3] * box_b[4];
+    float s_overlap = box_overlap(box_a, box_b);
+    return s_overlap / fmaxf(fminf(sa, sb), EPS);
+}
+
 float overlap_bev(const float *box_a, const float *box_b){
     return box_overlap(box_a, box_b);
 }

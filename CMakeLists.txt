@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.0.2)
 project(lidar-inference-tool 
-  VERSION 1.6.1
+  VERSION 1.7.0
   DESCRIPTION "TensorRT lidar-inference-tool library"
   LANGUAGES CXX
 )
@@ -316,7 +316,6 @@ endif()
 
 install(PROGRAMS
   ${DIST_TOOLS_DIR}/lidar_model_downloader
-  ${DIST_TOOLS_DIR}/lidar_model_uploader
   DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 

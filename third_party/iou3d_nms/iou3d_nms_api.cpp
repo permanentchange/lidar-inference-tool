@@ -26,6 +26,7 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 const int THREADS_PER_BLOCK_NMS = sizeof(unsigned long long) * 8;
 
 void nmsLauncher(const float *boxes, unsigned long long * mask, int boxes_num, float nms_overlap_thresh);
+void nmsNormalizedLauncher(const float *boxes, unsigned long long * mask, int boxes_num, float nms_overlap_thresh);
 void circleNmsLauncher(const float *boxes, unsigned long long * mask, int boxes_num, float distance_threshold);
 void boxesoverlapLauncher(const int num_a, const float *boxes_a, const int num_b, const float *boxes_b, float *ans_overlap);
 void boxesunionLauncher(const int num_a, const float *boxes_a, const int num_b, const float *boxes_b, float *ans_union);
@@ -75,6 +76,53 @@ int nms_gpu(const float *boxes, long *keep, float nms_overlap_thresh, const int 
     std::vector<unsigned long long> mask_cpu(boxes_num * col_blocks);
 
 //    printf("boxes_num=%d, col_blocks=%d\n", boxes_num, col_blocks);
+    CHECK_ERROR(cudaMemcpy(&mask_cpu[0], mask_data, boxes_num * col_blocks * sizeof(unsigned long long),
+                           cudaMemcpyDeviceToHost));
+
+    cudaFree(mask_data);
+	  cudaFree(boxes_data_cuda);
+
+    unsigned long long remv_cpu[col_blocks];
+    memset(remv_cpu, 0, col_blocks * sizeof(unsigned long long));
+
+    int num_to_keep = 0;
+
+    for (int i = 0; i < boxes_num; i++){
+        int nblock = i / THREADS_PER_BLOCK_NMS;
+        int inblock = i % THREADS_PER_BLOCK_NMS;
+
+        if (!(remv_cpu[nblock] & (1ULL << inblock))){
+            keep_data[num_to_keep++] = i;
+            unsigned long long *p = &mask_cpu[0] + i * col_blocks;
+            for (int j = nblock; j < col_blocks; j++){
+                remv_cpu[j] |= p[j];
+            }
+        }
+    }
+    if ( cudaSuccess != cudaGetLastError() ) {
+        std::cerr<<"Error!";
+    }
+
+    return num_to_keep;
+}
+
+int nms_normalized_gpu(const float *boxes, long *keep, float nms_overlap_thresh, const int num_boxes){
+    int boxes_num = num_boxes;
+
+	  float *boxes_data_cuda = NULL;
+	  cudaMalloc((void**)&boxes_data_cuda, num_boxes * 7 * sizeof(float));
+	  cudaMemcpy(boxes_data_cuda, boxes, num_boxes * 7 * sizeof(float), cudaMemcpyHostToDevice);
+
+    const float * boxes_data = boxes_data_cuda;
+    long * keep_data = keep;
+
+    const int col_blocks = DIVUP(boxes_num, THREADS_PER_BLOCK_NMS);
+
+    unsigned long long *mask_data = NULL;
+    CHECK_ERROR(cudaMalloc((void**)&mask_data, boxes_num * col_blocks * sizeof(unsigned long long)));
+    nmsNormalizedLauncher(boxes_data, mask_data, boxes_num, nms_overlap_thresh);
+
+    std::vector<unsigned long long> mask_cpu(boxes_num * col_blocks);
     CHECK_ERROR(cudaMemcpy(&mask_cpu[0], mask_data, boxes_num * col_blocks * sizeof(unsigned long long),
                            cudaMemcpyDeviceToHost));
 
@@ -225,6 +273,37 @@ int nms_gpu(const float *boxes, long *keep, float nms_overlap_thresh, const int 
     for (int i = 0; i < boxes_num; i++){
         for (int j = 0; j < boxes_num; j++){
             if (iou_bev(boxes_data + i * 7, boxes_data + j * 7) > nms_overlap_thresh) {
+                mask_cpu[i * boxes_num + j] = 1;
+            }
+        }
+    }
+
+    unsigned int remv_cpu[boxes_num];
+    memset(remv_cpu, 0, boxes_num * sizeof(unsigned int));
+
+    int num_to_keep = 0;
+
+    for (int i = 0; i < boxes_num; i++){
+        if (!remv_cpu[i]){
+            keep_data[num_to_keep++] = i;
+            for (int j = i + 1; j < boxes_num; j++){
+                remv_cpu[j] |= mask_cpu[i * boxes_num + j];
+            }
+        }
+    }
+
+    return num_to_keep;
+}
+
+int nms_normalized_gpu(const float *boxes, long *keep, float nms_overlap_thresh, const int num_boxes){
+    int boxes_num = num_boxes;
+    const float * boxes_data = boxes;
+    long * keep_data = keep;
+
+    std::vector<unsigned int> mask_cpu(boxes_num * boxes_num, 0);
+    for (int i = 0; i < boxes_num; i++){
+        for (int j = 0; j < boxes_num; j++){
+            if (iou_min_bev(boxes_data + i * 7, boxes_data + j * 7) > nms_overlap_thresh) {
                 mask_cpu[i * boxes_num + j] = 1;
             }
         }

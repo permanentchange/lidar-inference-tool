@@ -50,7 +50,6 @@ runtime:
   score_threshold: 0.1
 
 postprocess:
-  nms_type: "iou_bev"
   nms_thresh: 0.2
   nms_pre_maxsize: 1000
   nms_post_maxsize: 83
@@ -58,28 +57,18 @@ postprocess:
   # Global-label order. Values match train.py deploy_label_score_thresh.
   # precision >= 0.8
   # recall >= 0.7 recall >=0.6
-  label_score_thresh: [0.435, 0.45, 0.435, 0.475, 0.3, 0.48, 0.6, 0.45, 0.45]
+  label_score_thresh: [0.35, 0.35, 0.35, 0.4, 0.3, 0.4, 0.5, 0.4, 0.4]
   # Global-label order, same indexing as label_score_thresh.
-  circle_nms_min_radius: [0.8, 0.4, 0.8, 0.6, 2.0, 1.5, 0.6, 1.5, 1.5]
+
+  nms_type: "iou_min_bev"
   nms_label_groups:
-    # labels are global label ids. This group intentionally merges
-    # electric two-wheelers and bicycles into the final "bicycle" class.
-    - labels: [0, 2, 3, 6] # bicycle-like
+  #   # labels are global label ids. This group intentionally merges
+  #   # electric two-wheelers and bicycles into the final "bicycle" class.
+    - labels: [0, 1, 2, 3, 4, 5, 6, 7, 8] # bicycle-like
       nms_thresh: 0.3
       nms_pre_maxsize: 500
       nms_post_maxsize: 50
-    - labels: [1] # pedestrian
-      nms_thresh: 0.4
-      nms_pre_maxsize: 500
-      nms_post_maxsize: 50
-    - labels: [4, 5] # car
-      nms_thresh: 0.2
-      nms_pre_maxsize: 500
-      nms_post_maxsize: 50
-    - labels: [7, 8] # tricycle
-      nms_thresh: 0.3
-      nms_pre_maxsize: 500
-      nms_post_maxsize: 50
+
   # Global label id -> mapped label id used in final result.json and
   # visualization. Mapped ids are defined by mapped_label_names below.
   label_mapping: [0, 1, 0, 0, 3, 4, 0, 2, 2]

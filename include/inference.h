@@ -47,6 +47,8 @@ typedef enum InferenceStatus {
 typedef enum InferenceNmsType {
   /** Apply IoU-based BEV NMS using the built-in IoU/NMS backend. */
   INFERENCE_NMS_IOU_BEV = 0,
+  /** Apply BEV NMS using overlap / min(box area) as the suppression metric. */
+  INFERENCE_NMS_IOU_MIN_BEV = 2,
   /** Apply per-label circle NMS using center distance thresholds. */
   INFERENCE_NMS_CIRCLE = 1,
 } InferenceNmsType;
@@ -94,9 +96,9 @@ typedef struct InferenceConfig {
 typedef struct InferencePostprocessConfig {
   /** NMS algorithm to apply to decoded candidates. See ::InferenceNmsType. */
   int nms_type;
-  /** IoU threshold used by ::INFERENCE_NMS_IOU_BEV. */
+  /** Overlap threshold used by ::INFERENCE_NMS_IOU_BEV and ::INFERENCE_NMS_IOU_MIN_BEV. */
   float nms_thresh;
-  /** Maximum number of pre-NMS candidates considered by IoU BEV NMS. */
+  /** Maximum number of pre-NMS candidates considered by BEV overlap NMS modes. */
   int nms_pre_maxsize;
   /** Maximum number of post-NMS detections kept. */
   int nms_post_maxsize;
