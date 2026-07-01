@@ -7,9 +7,9 @@ model:
   #   2-way direction logits
   yaw_encoding: "direction_theta"
   num_point_features: 5
-  point_cloud_range: [-10.0, -15.0, -5.0, 20.4, 15.4, 3.0]
-  post_center_range: [-15.0, -20.0, -10.0, 25.4, 20.4, 10.0]
-  pillar_size: [0.1, 0.1, 8.0]
+  point_cloud_range: [-8.0, -8.0, -2.0, 16.0, 8.0, 4.0]
+  post_center_range: [-10.0, -10.0, -2.0, 18.0, 10.0, 4.0]
+  pillar_size: [0.05, 0.05, 6.0]
   out_size_factor: 4
   bbox_code_size: 9
   norm_bbox: true
@@ -59,12 +59,12 @@ postprocess:
   # recall >= 0.7 recall >=0.6
   label_score_thresh: [0.35, 0.35, 0.35, 0.4, 0.3, 0.4, 0.5, 0.4, 0.4]
   # Global-label order, same indexing as label_score_thresh.
-
+  
   nms_type: "iou_min_bev"
   nms_label_groups:
   #   # labels are global label ids. This group intentionally merges
   #   # electric two-wheelers and bicycles into the final "bicycle" class.
-    - labels: [0, 1, 2, 3, 4, 5, 6, 7, 8] # bicycle-like
+    - labels: [0, 1, 2, 3, 4, 5, 6, 7, 8]
       nms_thresh: 0.3
       nms_pre_maxsize: 500
       nms_post_maxsize: 50

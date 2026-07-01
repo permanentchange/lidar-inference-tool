@@ -51,7 +51,7 @@ Arguments:
                   Default: 30000.
   <max_points>    Optional max optimization-profile pillar/point count.
                   Default: 50000.
-  [precision]     Optional precision mode: fp32, fp16, or int8.
+  [precision]     Optional precision mode: fp32, fp16, int8, or best.
                   Default: fp16.
 
 Supported calling forms:
@@ -62,12 +62,14 @@ Supported calling forms:
        bash tools/onnx2engine.sh model.onnx model.engine fp32
        bash tools/onnx2engine.sh model.onnx model.engine fp16
        bash tools/onnx2engine.sh model.onnx model.engine int8
+       bash tools/onnx2engine.sh model.onnx model.engine best
 
   3. ONNX + engine + min/opt/max:
        bash tools/onnx2engine.sh model.onnx model.engine 10000 30000 50000
 
   4. ONNX + engine + min/opt/max + precision:
        bash tools/onnx2engine.sh model.onnx model.engine 10000 30000 50000 fp16
+       bash tools/onnx2engine.sh model.onnx model.engine 10000 30000 50000 best
 
 This helper assumes the exported ONNX/TensorRT contract used by this repository:
   - voxels:     <N>x20x5
@@ -79,8 +81,10 @@ Examples:
   bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end_fp32.engine fp32
   bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end_fp16.engine fp16
   bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end_int8.engine int8
+  bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end_best.engine best
   bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end.engine 10000 30000 50000
   bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end.engine 10000 30000 50000 fp16
+  bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end.engine 10000 30000 50000 best
 
 Behavior:
   1. If <engine_path> does not exist, build the TensorRT engine with trtexec.
@@ -115,7 +119,7 @@ precision=$default_precision
 
 is_precision() {
   case "$1" in
-    fp32|fp16|int8) return 0 ;;
+    fp32|fp16|int8|best) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -131,7 +135,7 @@ case "$#" in
       precision=$3
     else
       echo "Invalid third argument: $3" >&2
-      echo "When only 3 arguments are provided, the third argument must be precision: fp32, fp16, or int8." >&2
+      echo "When only 3 arguments are provided, the third argument must be precision: fp32, fp16, int8, or best." >&2
       usage >&2
       exit 1
     fi
@@ -150,6 +154,13 @@ case "$#" in
     opt_num_points=$4
     max_num_points=$5
     precision=$6
+
+    if ! is_precision "$precision"; then
+      echo "Invalid precision argument: $precision" >&2
+      echo "Precision must be one of: fp32, fp16, int8, best." >&2
+      usage >&2
+      exit 1
+    fi
     ;;
 
   *)
@@ -193,8 +204,11 @@ case "$precision" in
   int8)
     precision_flag="--int8"
     ;;
+  best)
+    precision_flag="--best"
+    ;;
   *)
-    echo "Unsupported precision '$precision'. Use fp32, fp16, or int8." >&2
+    echo "Unsupported precision '$precision'. Use fp32, fp16, int8, or best." >&2
     exit 1
     ;;
 esac

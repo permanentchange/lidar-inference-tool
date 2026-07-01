@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import hashlib
+from typing import List, Optional
 
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "121.237.181.98:9000")
 ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "qsJ37pF1ErbHYhM8i3mt")
@@ -41,7 +42,10 @@ def get_file_md5(file_path: str) -> str:
 
     md5_hash = hashlib.md5()
     with open(file_path, "rb") as f:
-        while chunk := f.read(CHUNK_SIZE):
+        while True:
+            chunk = f.read(CHUNK_SIZE)
+            if not chunk:
+                break
             md5_hash.update(chunk)
 
     return md5_hash.hexdigest()
@@ -146,7 +150,7 @@ def get_latest_version():
     return versions[-1] if versions else None
 
 
-def get_all_files(version: str) -> list[str]:
+def get_all_files(version: str) -> List[str]:
     prefix = f"releases/{version}/"
     files = []
 
@@ -162,7 +166,7 @@ def get_all_files(version: str) -> list[str]:
     return files
 
 
-def normalize_requested_files(files: list[str] | None) -> list[str] | None:
+def normalize_requested_files(files: Optional[List[str]]) -> Optional[List[str]]:
     if not files:
         return None
 
