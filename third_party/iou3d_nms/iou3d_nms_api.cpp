@@ -25,8 +25,10 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 
 const int THREADS_PER_BLOCK_NMS = sizeof(unsigned long long) * 8;
 
-void nmsLauncher(const float *boxes, unsigned long long * mask, int boxes_num, float nms_overlap_thresh);
-void nmsNormalizedLauncher(const float *boxes, unsigned long long * mask, int boxes_num, float nms_overlap_thresh);
+void nmsLauncher(const float *boxes, unsigned long long * mask, int boxes_num,
+                 float nms_overlap_thresh, float self_car_overlap_thresh);
+void nmsNormalizedLauncher(const float *boxes, unsigned long long * mask, int boxes_num,
+                           float nms_overlap_thresh, float self_car_overlap_thresh);
 void circleNmsLauncher(const float *boxes, unsigned long long * mask, int boxes_num, float distance_threshold);
 void boxesoverlapLauncher(const int num_a, const float *boxes_a, const int num_b, const float *boxes_b, float *ans_overlap);
 void boxesunionLauncher(const int num_a, const float *boxes_a, const int num_b, const float *boxes_b, float *ans_union);
@@ -52,7 +54,8 @@ int boxes_iou_bev_cpu(const float *boxes_a_tensor, const float *boxes_b_tensor, 
 }
 
 #ifdef HAVE_CUDA_ENABLE
-int nms_gpu(const float *boxes, long *keep, float nms_overlap_thresh, const int num_boxes){
+int nms_gpu_with_self_car(const float *boxes, long *keep, float nms_overlap_thresh,
+                          float self_car_overlap_thresh, const int num_boxes){
     // params boxes: (N, 7) [x, y, z, dx, dy, dz, heading]
     // params keep: (N);
 
@@ -69,7 +72,8 @@ int nms_gpu(const float *boxes, long *keep, float nms_overlap_thresh, const int 
 
     unsigned long long *mask_data = NULL;
     CHECK_ERROR(cudaMalloc((void**)&mask_data, boxes_num * col_blocks * sizeof(unsigned long long)));
-    nmsLauncher(boxes_data, mask_data, boxes_num, nms_overlap_thresh);
+    nmsLauncher(boxes_data, mask_data, boxes_num, nms_overlap_thresh,
+                self_car_overlap_thresh);
 
     // unsigned long long mask_cpu[boxes_num * col_blocks];
     // unsigned long long *mask_cpu = new unsigned long long [boxes_num * col_blocks];
@@ -106,7 +110,15 @@ int nms_gpu(const float *boxes, long *keep, float nms_overlap_thresh, const int 
     return num_to_keep;
 }
 
-int nms_normalized_gpu(const float *boxes, long *keep, float nms_overlap_thresh, const int num_boxes){
+int nms_gpu(const float *boxes, long *keep, float nms_overlap_thresh, const int num_boxes){
+    return nms_gpu_with_self_car(boxes, keep, nms_overlap_thresh,
+                                 nms_overlap_thresh, num_boxes);
+}
+
+int nms_normalized_gpu_with_self_car(const float *boxes, long *keep,
+                                     float nms_overlap_thresh,
+                                     float self_car_overlap_thresh,
+                                     const int num_boxes){
     int boxes_num = num_boxes;
 
 	  float *boxes_data_cuda = NULL;
@@ -120,7 +132,8 @@ int nms_normalized_gpu(const float *boxes, long *keep, float nms_overlap_thresh,
 
     unsigned long long *mask_data = NULL;
     CHECK_ERROR(cudaMalloc((void**)&mask_data, boxes_num * col_blocks * sizeof(unsigned long long)));
-    nmsNormalizedLauncher(boxes_data, mask_data, boxes_num, nms_overlap_thresh);
+    nmsNormalizedLauncher(boxes_data, mask_data, boxes_num, nms_overlap_thresh,
+                          self_car_overlap_thresh);
 
     std::vector<unsigned long long> mask_cpu(boxes_num * col_blocks);
     CHECK_ERROR(cudaMemcpy(&mask_cpu[0], mask_data, boxes_num * col_blocks * sizeof(unsigned long long),
@@ -151,6 +164,12 @@ int nms_normalized_gpu(const float *boxes, long *keep, float nms_overlap_thresh,
     }
 
     return num_to_keep;
+}
+
+int nms_normalized_gpu(const float *boxes, long *keep, float nms_overlap_thresh,
+                       const int num_boxes){
+    return nms_normalized_gpu_with_self_car(boxes, keep, nms_overlap_thresh,
+                                            nms_overlap_thresh, num_boxes);
 }
 
 int circle_nms_gpu(const float *boxes, long *keep, float distance_threshold, const int num_boxes){
@@ -261,7 +280,8 @@ int boxes_union_bev_gpu(const float *boxes_a, const float *boxes_b, float *ans_u
 
 #else
 
-int nms_gpu(const float *boxes, long *keep, float nms_overlap_thresh, const int num_boxes){
+int nms_gpu_with_self_car(const float *boxes, long *keep, float nms_overlap_thresh,
+                          float self_car_overlap_thresh, const int num_boxes){
     // params boxes: (N, 7) [x, y, z, dx, dy, dz, heading]
     // params keep: (N);
 
@@ -271,8 +291,9 @@ int nms_gpu(const float *boxes, long *keep, float nms_overlap_thresh, const int 
 
     std::vector<unsigned int> mask_cpu(boxes_num * boxes_num, 0);
     for (int i = 0; i < boxes_num; i++){
+        const float overlap_thresh = i == 0 ? self_car_overlap_thresh : nms_overlap_thresh;
         for (int j = 0; j < boxes_num; j++){
-            if (iou_bev(boxes_data + i * 7, boxes_data + j * 7) > nms_overlap_thresh) {
+            if (iou_bev(boxes_data + i * 7, boxes_data + j * 7) > overlap_thresh) {
                 mask_cpu[i * boxes_num + j] = 1;
             }
         }
@@ -295,15 +316,24 @@ int nms_gpu(const float *boxes, long *keep, float nms_overlap_thresh, const int 
     return num_to_keep;
 }
 
-int nms_normalized_gpu(const float *boxes, long *keep, float nms_overlap_thresh, const int num_boxes){
+int nms_gpu(const float *boxes, long *keep, float nms_overlap_thresh, const int num_boxes){
+    return nms_gpu_with_self_car(boxes, keep, nms_overlap_thresh,
+                                 nms_overlap_thresh, num_boxes);
+}
+
+int nms_normalized_gpu_with_self_car(const float *boxes, long *keep,
+                                     float nms_overlap_thresh,
+                                     float self_car_overlap_thresh,
+                                     const int num_boxes){
     int boxes_num = num_boxes;
     const float * boxes_data = boxes;
     long * keep_data = keep;
 
     std::vector<unsigned int> mask_cpu(boxes_num * boxes_num, 0);
     for (int i = 0; i < boxes_num; i++){
+        const float overlap_thresh = i == 0 ? self_car_overlap_thresh : nms_overlap_thresh;
         for (int j = 0; j < boxes_num; j++){
-            if (iou_min_bev(boxes_data + i * 7, boxes_data + j * 7) > nms_overlap_thresh) {
+            if (iou_min_bev(boxes_data + i * 7, boxes_data + j * 7) > overlap_thresh) {
                 mask_cpu[i * boxes_num + j] = 1;
             }
         }
@@ -324,6 +354,12 @@ int nms_normalized_gpu(const float *boxes, long *keep, float nms_overlap_thresh,
     }
 
     return num_to_keep;
+}
+
+int nms_normalized_gpu(const float *boxes, long *keep, float nms_overlap_thresh,
+                       const int num_boxes){
+    return nms_normalized_gpu_with_self_car(boxes, keep, nms_overlap_thresh,
+                                            nms_overlap_thresh, num_boxes);
 }
 
 int circle_nms_gpu(const float *boxes, long *keep, float distance_threshold, const int num_boxes){

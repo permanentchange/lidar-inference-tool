@@ -1,9 +1,12 @@
 cmake_minimum_required(VERSION 3.0.2)
 project(lidar-inference-tool 
-  VERSION 1.7.0
+  VERSION 1.7.1
   DESCRIPTION "TensorRT lidar-inference-tool library"
   LANGUAGES CXX
 )
+
+option(BUILD_TESTING "Build regression tests" OFF)
+include(CTest)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -279,6 +282,32 @@ else()
   if(BUILD_EXAMPLES)
     add_subdirectory(examples)
   endif()
+
+  if(BUILD_TESTING)
+    add_executable(self_car_nms_test
+      tests/self_car_nms_test.cpp
+      third_party/iou3d_nms/iou3d_cpu.cpp
+      third_party/iou3d_nms/iou3d_nms_api.cpp
+    )
+    target_include_directories(self_car_nms_test
+      PRIVATE
+        ${INFERENCE_PUBLIC_INCLUDE_DIR}
+        ${INFERENCE_PRIVATE_INCLUDE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/iou3d_nms/include
+    )
+    target_link_libraries(self_car_nms_test
+      PRIVATE
+        inference
+    )
+    add_test(NAME self_car_nms_test COMMAND self_car_nms_test)
+    add_test(
+      NAME package_arch_test
+      COMMAND bash
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/package_arch_test.sh
+        ${CMAKE_BINARY_DIR}
+        ${CMAKE_SYSTEM_PROCESSOR}
+    )
+  endif()
 endif()
 
 # ===================== CPack (DEB) Packaging =====================
@@ -314,10 +343,12 @@ if(TARGET infer_debug_tool)
   )
 endif()
 
-install(PROGRAMS
-  ${DIST_TOOLS_DIR}/lidar_model_downloader
-  DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+  install(PROGRAMS
+    ${DIST_TOOLS_DIR}/lidar_model_downloader
+    DESTINATION ${CMAKE_INSTALL_BINDIR}
+  )
+endif()
 
 # ===================== CMake package 支持 =====================
 include(CMakePackageConfigHelpers)
@@ -369,7 +400,7 @@ set(CPACK_DEBIAN_PACKAGE_DEPENDS "libc6 (>= 2.31)")
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
 
 # 系统架构，同义映射
-if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
   set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "arm64")
 elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
   set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")

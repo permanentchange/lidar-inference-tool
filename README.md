@@ -8,6 +8,11 @@
 - `lidar_model_downloader`: an installed command-line helper for fetching model assets after package installation
 - `minimal_cpp_api_example`: a model-package-driven executable under `examples/` that shows the recommended C++ integration path
 
+## v1.7.1
+
+- Added optional self-car-box filtering for `iou_bev` and `iou_min_bev` NMS without adding an NMS pass or consuming configured NMS capacities.
+- Fixed amd64 DEB packaging by excluding the ARM64-only `lidar_model_downloader`; ARM64 packages retain the downloader.
+
 ## v1.7.0
 
 - Added directory batch mode to `infer_debug_tool` for top-level `.pcd` / `.bin` sequences.
@@ -180,7 +185,7 @@ The generated `.deb` installs its runtime commands under `/usr/local/bin`, inclu
 
 The downloader command in the DEB comes from the prebuilt binary under `scripts/dist/`. The Python source file `scripts/lidar_model_downloader.py` remains the repository-side source utility.
 
-Installed CMake package files include a version file, so downstream projects can require this release with `find_package(lidar-inference-tool 1.7.0 CONFIG REQUIRED)`.
+Installed CMake package files include a version file, so downstream projects can require this release with `find_package(lidar-inference-tool 1.7.1 CONFIG REQUIRED)`.
 
 The package build now runs from `build/`, so CPack temporary files stay under `build/_CPack_Packages/` instead of the repository root.
 
@@ -305,6 +310,8 @@ The current demo `model.yaml` includes:
 - `postprocess.nms_pre_maxsize`
 - `postprocess.nms_post_maxsize`
 - `postprocess.final_score_threshold`
+- `postprocess.self_car_box`
+- `postprocess.self_car_nms_thresh`
 - `postprocess.nms_label_groups`
 - `postprocess.label_score_thresh`
 - `postprocess.label_mapping`
@@ -312,6 +319,16 @@ The current demo `model.yaml` includes:
 
 `postprocess.nms_type` supports `iou_bev`, `iou_min_bev`, and `circle`.
 `iou_min_bev` uses `overlap / min(area_a, area_b)` in BEV, which suppresses fully-contained small boxes more aggressively than standard IoU.
+
+`postprocess.self_car_box` optionally configures the ego-vehicle box as
+`[x, y, z, dx, dy, dz, yaw]`. It must be configured together with
+`postprocess.self_car_nms_thresh`; omitting both fields preserves the original NMS behavior.
+When enabled, the ego box is inserted as the first candidate in each IoU NMS pass. Comparisons
+from the ego box use `self_car_nms_thresh`, while comparisons between detected boxes continue to
+use the normal group or global `nms_thresh`. A detected box is suppressed when its configured BEV
+overlap metric is strictly greater than the ego threshold. The ego box is removed from the result
+and does not consume `nms_pre_maxsize` or `nms_post_maxsize` capacity. Ego-box filtering supports
+`iou_bev` and `iou_min_bev`; it is rejected with `circle` NMS.
 
 The current demo config uses lower per-label score thresholds than the previous release and runs one shared NMS pass over all nine global labels. Override these values in `model.yaml` or an override YAML when a deployment needs class-specific NMS groups.
 
@@ -533,6 +550,7 @@ Important semantics:
 - `Detection::label_name` points into the runtime-owned config and stays valid while the runtime exists
 - use `LoadPackageConfig(...)` if you want to load YAML, edit typed fields in code, and then call `Create(...)`
 - `Infer()` uses the runtime's configured `postprocess` section and returns final detections after built-in NMS
+- `PostprocessConfig::self_car_box` and `self_car_nms_thresh` are optional together and can also be supplied through `InferWithPostprocess(...)`
 - `InferDecoded()` and `Infer()` both return boxes as `[x, y, z, dx, dy, dz, yaw]` with `z` at the box geometric center
 
 ## ONNX to TensorRT

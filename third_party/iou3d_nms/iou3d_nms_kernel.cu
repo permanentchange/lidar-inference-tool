@@ -376,6 +376,7 @@ __global__ void boxes_union_kernel(const int num_a, const float *boxes_a, const 
 }
 
 __global__ void nms_kernel(const int boxes_num, const float nms_overlap_thresh,
+                           const float self_car_overlap_thresh,
                            const float *boxes, unsigned long long *mask){
     //params: boxes (N, 7) [x, y, z, dx, dy, dz, heading]
     //params: mask (N, N/THREADS_PER_BLOCK_NMS)
@@ -411,8 +412,10 @@ __global__ void nms_kernel(const int boxes_num, const float nms_overlap_thresh,
         if (row_start == col_start) {
           start = threadIdx.x + 1;
         }
+        const float overlap_thresh =
+            cur_box_idx == 0 ? self_car_overlap_thresh : nms_overlap_thresh;
         for (i = start; i < col_size; i++) {
-            if (iou_bev(cur_box, block_boxes + i * 7) > nms_overlap_thresh){
+            if (iou_bev(cur_box, block_boxes + i * 7) > overlap_thresh){
                 t |= 1ULL << i;
             }
         }
@@ -422,6 +425,7 @@ __global__ void nms_kernel(const int boxes_num, const float nms_overlap_thresh,
 }
 
 __global__ void nms_normalized_kernel(const int boxes_num, const float nms_overlap_thresh,
+                                      const float self_car_overlap_thresh,
                                       const float *boxes, unsigned long long *mask){
     const int row_start = blockIdx.y;
     const int col_start = blockIdx.x;
@@ -452,8 +456,10 @@ __global__ void nms_normalized_kernel(const int boxes_num, const float nms_overl
         if (row_start == col_start) {
           start = threadIdx.x + 1;
         }
+        const float overlap_thresh =
+            cur_box_idx == 0 ? self_car_overlap_thresh : nms_overlap_thresh;
         for (i = start; i < col_size; i++) {
-            if (iou_min_bev(cur_box, block_boxes + i * 7) > nms_overlap_thresh){
+            if (iou_min_bev(cur_box, block_boxes + i * 7) > overlap_thresh){
                 t |= 1ULL << i;
             }
         }
@@ -504,18 +510,22 @@ __global__ void circle_nms_kernel(const int boxes_num, const float distance_thre
 }
 
 
-void nmsLauncher(const float *boxes, unsigned long long * mask, int boxes_num, float nms_overlap_thresh){
+void nmsLauncher(const float *boxes, unsigned long long * mask, int boxes_num,
+                 float nms_overlap_thresh, float self_car_overlap_thresh){
     dim3 blocks(DIVUP(boxes_num, THREADS_PER_BLOCK_NMS),
                 DIVUP(boxes_num, THREADS_PER_BLOCK_NMS));
     dim3 threads(THREADS_PER_BLOCK_NMS);
-    nms_kernel<<<blocks, threads>>>(boxes_num, nms_overlap_thresh, boxes, mask);
+    nms_kernel<<<blocks, threads>>>(boxes_num, nms_overlap_thresh,
+                                    self_car_overlap_thresh, boxes, mask);
 }
 
-void nmsNormalizedLauncher(const float *boxes, unsigned long long * mask, int boxes_num, float nms_overlap_thresh){
+void nmsNormalizedLauncher(const float *boxes, unsigned long long * mask, int boxes_num,
+                           float nms_overlap_thresh, float self_car_overlap_thresh){
     dim3 blocks(DIVUP(boxes_num, THREADS_PER_BLOCK_NMS),
                 DIVUP(boxes_num, THREADS_PER_BLOCK_NMS));
     dim3 threads(THREADS_PER_BLOCK_NMS);
-    nms_normalized_kernel<<<blocks, threads>>>(boxes_num, nms_overlap_thresh, boxes, mask);
+    nms_normalized_kernel<<<blocks, threads>>>(boxes_num, nms_overlap_thresh,
+                                               self_car_overlap_thresh, boxes, mask);
 }
 
 void circleNmsLauncher(const float *boxes, unsigned long long * mask, int boxes_num, float distance_threshold){

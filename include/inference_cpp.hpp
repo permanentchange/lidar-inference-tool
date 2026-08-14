@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -72,6 +73,8 @@ struct PostprocessConfig {
   std::vector<NmsLabelGroup> nms_label_groups;
   std::vector<int> label_mapping;
   std::vector<std::string> mapped_label_names;
+  std::optional<std::array<float, kBoxDimension>> self_car_box;
+  std::optional<float> self_car_nms_thresh;
 };
 
 struct PackageConfig {

@@ -5,7 +5,7 @@ project(pillar_postprocess LANGUAGES CXX CUDA)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_BUILD_TYPE "Release")
-string(APPEND CMAKE_CUDA_FLAGS " -gencode arch=compute_87,code=sm_87")
+string(APPEND CMAKE_CUDA_FLAGS " -std=c++17 -gencode arch=compute_87,code=sm_87")
 
 if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 11.8)
   string(APPEND CMAKE_CUDA_FLAGS " -gencode arch=compute_89,code=sm_89")
@@ -28,3 +28,13 @@ target_link_libraries(pillar_postprocess
   PRIVATE
     ${CUDA_LIBRARIES}
 )
+
+if(BUILD_TESTING)
+  add_library(cuda_cxx17_compile_test OBJECT
+    ${CMAKE_SOURCE_DIR}/tests/cuda_cxx17_compile_test.cu
+  )
+  target_include_directories(cuda_cxx17_compile_test
+    PRIVATE
+      ${CMAKE_SOURCE_DIR}/include
+  )
+endif()

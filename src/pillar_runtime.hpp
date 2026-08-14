@@ -72,6 +72,8 @@ struct PostprocessConfig {
   std::vector<float> circle_nms_min_radius{4.0f, 12.0f, 10.0f};
   std::vector<float> label_score_thresh{0.45f, 0.3f, 0.45f};
   std::vector<NmsLabelGroup> nms_label_groups;
+  std::optional<std::array<float, inference::kBoxDimension>> self_car_box;
+  std::optional<float> self_car_nms_thresh;
 };
 
 struct StageTimings {

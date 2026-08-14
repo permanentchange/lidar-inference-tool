@@ -341,6 +341,35 @@ InferenceStatus ValidatePostprocessConfig(const ModelConfig& model,
                                           const PostprocessConfig& postprocess,
                                           std::string* out_error) {
   const int label_count = static_cast<int>(model.label_names.size());
+  if (postprocess.self_car_box.has_value() !=
+      postprocess.self_car_nms_thresh.has_value()) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "postprocess.self_car_box and self_car_nms_thresh must be configured together");
+  }
+  if (postprocess.self_car_box.has_value()) {
+    for (const float value : *postprocess.self_car_box) {
+      if (!std::isfinite(value)) {
+        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                        "postprocess.self_car_box must contain finite values");
+      }
+    }
+    if ((*postprocess.self_car_box)[3] <= 0.0f ||
+        (*postprocess.self_car_box)[4] <= 0.0f ||
+        (*postprocess.self_car_box)[5] <= 0.0f) {
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                      "postprocess.self_car_box dimensions must be positive");
+    }
+    if (!std::isfinite(*postprocess.self_car_nms_thresh) ||
+        *postprocess.self_car_nms_thresh < 0.0f) {
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                      "postprocess.self_car_nms_thresh must be finite and non-negative");
+    }
+    if (postprocess.nms_type != INFERENCE_NMS_IOU_BEV &&
+        postprocess.nms_type != INFERENCE_NMS_IOU_MIN_BEV) {
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                      "postprocess self-car NMS only supports iou_bev and iou_min_bev");
+    }
+  }
   for (const float value : postprocess.label_score_thresh) {
     if (!std::isfinite(value) || value < 0.0f) {
       return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
@@ -696,6 +725,20 @@ InferenceStatus ApplyPackageConfigNode(const YAML::Node& root,
       return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                       "postprocess must be a YAML map");
     }
+    if (postprocess["self_car_box"]) {
+      std::array<float, kBoxDimension> self_car_box{};
+      InferenceStatus status =
+          LoadFloatArray(postprocess["self_car_box"], "postprocess.self_car_box",
+                         &self_car_box, out_error);
+      if (status != INFERENCE_STATUS_OK) {
+        return status;
+      }
+      out_config->postprocess.self_car_box = self_car_box;
+    }
+    if (postprocess["self_car_nms_thresh"]) {
+      out_config->postprocess.self_car_nms_thresh =
+          postprocess["self_car_nms_thresh"].as<float>();
+    }
     if (postprocess["nms_type"]) {
       InferenceStatus status =
           ParseNmsType(postprocess["nms_type"].as<std::string>(),
@@ -868,6 +911,8 @@ inference_internal::PostprocessConfig ToInternalPostprocessConfig(
   internal.nms_pre_maxsize = config.nms_pre_maxsize;
   internal.nms_post_maxsize = config.nms_post_maxsize;
   internal.final_score_threshold = config.final_score_threshold;
+  internal.self_car_box = config.self_car_box;
+  internal.self_car_nms_thresh = config.self_car_nms_thresh;
   internal.circle_nms_min_radius = config.circle_nms_min_radius;
   internal.label_score_thresh = config.label_score_thresh;
   internal.nms_label_groups.reserve(config.nms_label_groups.size());

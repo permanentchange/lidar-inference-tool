@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.7.1
+
+- Added optional `postprocess.self_car_box` and `postprocess.self_car_nms_thresh` filtering for `iou_bev` and `iou_min_bev` NMS.
+- Kept ego-box filtering inside the existing NMS pass and removed the temporary ego box without consuming configured pre/post NMS capacity.
+- C++ integrations using `PostprocessConfig` must rebuild against the updated public header.
+- Fixed CUDA compilation of the C++17 public API on ARM CUDA 11.4 and CMake 3.16 by passing `-std=c++17` directly to nvcc.
+- Fixed amd64 DEB packaging by excluding the ARM64-only `lidar_model_downloader`; ARM64 packages retain the downloader.
+
 ## v1.7.0
 
 - Added directory batch mode to `infer_debug_tool` for top-level `.pcd` / `.bin` input sequences.

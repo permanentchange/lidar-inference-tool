@@ -94,6 +94,8 @@ PostprocessConfig PostprocessConfigFromPackage(const inference::PackageConfig& p
   postprocess.nms_pre_maxsize = package.postprocess.nms_pre_maxsize;
   postprocess.nms_post_maxsize = package.postprocess.nms_post_maxsize;
   postprocess.final_score_threshold = package.postprocess.final_score_threshold;
+  postprocess.self_car_box = package.postprocess.self_car_box;
+  postprocess.self_car_nms_thresh = package.postprocess.self_car_nms_thresh;
   postprocess.circle_nms_min_radius = package.postprocess.circle_nms_min_radius;
   postprocess.label_score_thresh = package.postprocess.label_score_thresh;
   postprocess.nms_label_groups.reserve(package.postprocess.nms_label_groups.size());

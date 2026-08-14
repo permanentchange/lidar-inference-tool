@@ -41,6 +41,15 @@ int nms_gpu(const float *boxes,
             const int num_boxes);
 
 /**
+ * @brief IoU BEV NMS where boxes[0] uses a dedicated threshold when suppressing later boxes.
+ */
+int nms_gpu_with_self_car(const float *boxes,
+                          long *keep,
+                          float nms_overlap_thresh,
+                          float self_car_overlap_thresh,
+                          const int num_boxes);
+
+/**
  * @brief GPU版本的BEV NMS，使用 overlap / min(area_a, area_b) 作为抑制度量
  * @note 编译时定义HAVE_CUDA_ENABLE则启用CUDA加速，否则退化为CPU模拟实现
  * @param boxes 输入检测框数据，形状为(N,7)，格式[x, y, z, dx, dy, dz, heading]
@@ -53,6 +62,15 @@ int nms_normalized_gpu(const float *boxes,
                        long *keep,
                        float nms_overlap_thresh,
                        const int num_boxes);
+
+/**
+ * @brief IoU-min BEV NMS where boxes[0] uses a dedicated threshold.
+ */
+int nms_normalized_gpu_with_self_car(const float *boxes,
+                                     long *keep,
+                                     float nms_overlap_thresh,
+                                     float self_car_overlap_thresh,
+                                     const int num_boxes);
 
 /**
  * @brief GPU版本的Circle NMS，按输入顺序贪心保留中心距离足够远的框

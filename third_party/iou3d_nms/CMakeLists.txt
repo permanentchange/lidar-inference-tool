@@ -15,7 +15,7 @@ endif()
 set(CMAKE_C_FLAGS "-Wall")
 set(CMAKE_CXX_FLAGS "-std=c++17")
 set(CMAKE_BUILD_TYPE "Release")
-string(APPEND CMAKE_CUDA_FLAGS " -gencode arch=compute_87,code=sm_87")
+string(APPEND CMAKE_CUDA_FLAGS " -std=c++17 -gencode arch=compute_87,code=sm_87")
 
 if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 11.8)
   string(APPEND CMAKE_CUDA_FLAGS " -gencode arch=compute_89,code=sm_89")
@@ -31,7 +31,7 @@ add_library(iou3d_nms STATIC
   iou3d_nms_api.cpp
   ${NVCC_FILES}
 )
-set_target_properties(iou3d_nms PROPERTIES POSITION_INDEPENDENT_CODE ON )
+set_target_properties(iou3d_nms PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 if(CUDA_FOUND)
   target_compile_definitions(iou3d_nms PRIVATE HAVE_CUDA_ENABLE)

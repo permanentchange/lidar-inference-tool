@@ -363,6 +363,9 @@ InferenceStatus AppendIouNmsResult(CandidateDetections* detections,
                                    float nms_thresh,
                                    int pre_maxsize,
                                    int post_maxsize,
+                                   const std::optional<std::array<float, inference::kBoxDimension>>&
+                                       self_car_box,
+                                   const std::optional<float>& self_car_nms_thresh,
                                    CandidateDetections* out_result,
                                    std::string* out_error) {
   if (detections == nullptr || out_result == nullptr) {
@@ -378,27 +381,46 @@ InferenceStatus AppendIouNmsResult(CandidateDetections* detections,
   }
 
   ApplyPreMaxsize(&detections->scores, &detections->boxes, &detections->labels, pre_maxsize);
+  const bool use_self_car = self_car_box.has_value() && self_car_nms_thresh.has_value();
+  if (use_self_car) {
+    detections->scores.insert(detections->scores.begin(),
+                              std::numeric_limits<float>::max());
+    detections->labels.insert(detections->labels.begin(), -1);
+    detections->boxes.insert(detections->boxes.begin(), self_car_box->begin(),
+                             self_car_box->end());
+  }
   std::vector<long> keep(detections->scores.size(), 0);
   int keep_count = 0;
   if (nms_type == INFERENCE_NMS_IOU_BEV) {
-    keep_count =
-        nms_gpu(detections->boxes.data(), keep.data(), nms_thresh,
-                static_cast<int>(detections->scores.size()));
+    keep_count = use_self_car
+                     ? nms_gpu_with_self_car(detections->boxes.data(), keep.data(), nms_thresh,
+                                             *self_car_nms_thresh,
+                                             static_cast<int>(detections->scores.size()))
+                     : nms_gpu(detections->boxes.data(), keep.data(), nms_thresh,
+                               static_cast<int>(detections->scores.size()));
   } else if (nms_type == INFERENCE_NMS_IOU_MIN_BEV) {
-    keep_count =
-        nms_normalized_gpu(detections->boxes.data(), keep.data(), nms_thresh,
-                           static_cast<int>(detections->scores.size()));
+    keep_count = use_self_car
+                     ? nms_normalized_gpu_with_self_car(
+                           detections->boxes.data(), keep.data(), nms_thresh,
+                           *self_car_nms_thresh, static_cast<int>(detections->scores.size()))
+                     : nms_normalized_gpu(detections->boxes.data(), keep.data(), nms_thresh,
+                                          static_cast<int>(detections->scores.size()));
   } else {
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                     "IoU NMS type is invalid");
   }
-  const size_t final_count =
-      std::min(static_cast<size_t>(keep_count), static_cast<size_t>(post_maxsize));
-  for (size_t i = 0; i < final_count; ++i) {
+  size_t appended_count = 0;
+  for (size_t i = 0; i < static_cast<size_t>(keep_count) &&
+                     appended_count < static_cast<size_t>(post_maxsize);
+       ++i) {
     const size_t src = static_cast<size_t>(keep[i]);
+    if (use_self_car && src == 0U) {
+      continue;
+    }
     out_result->scores.push_back(detections->scores[src]);
     out_result->labels.push_back(detections->labels[src]);
     AppendBoxes(detections->boxes, src, &out_result->boxes);
+    ++appended_count;
   }
   return INFERENCE_STATUS_OK;
 }
@@ -423,6 +445,7 @@ InferenceStatus RunGroupedNms(const CandidateDetections& candidates,
     } else {
       status = AppendIouNmsResult(&per_group, config.nms_type, group.nms_thresh,
                                   group.nms_pre_maxsize, group.nms_post_maxsize,
+                                  config.self_car_box, config.self_car_nms_thresh,
                                   out_result, out_error);
     }
     if (status != INFERENCE_STATUS_OK) {
@@ -1030,6 +1053,32 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                     "nms_type is invalid");
   }
+  if (config.self_car_box.has_value() != config.self_car_nms_thresh.has_value()) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "self_car_box and self_car_nms_thresh must be configured together");
+  }
+  if (config.self_car_box.has_value()) {
+    if (config.nms_type == INFERENCE_NMS_CIRCLE) {
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                      "self-car NMS only supports IoU BEV modes");
+    }
+    if (!std::isfinite(*config.self_car_nms_thresh) ||
+        *config.self_car_nms_thresh < 0.0f) {
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                      "self_car_nms_thresh must be finite and non-negative");
+    }
+    for (const float value : *config.self_car_box) {
+      if (!std::isfinite(value)) {
+        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                        "self_car_box must contain finite values");
+      }
+    }
+    if ((*config.self_car_box)[3] <= 0.0f || (*config.self_car_box)[4] <= 0.0f ||
+        (*config.self_car_box)[5] <= 0.0f) {
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                      "self_car_box dimensions must be positive");
+    }
+  }
   if (config.nms_pre_maxsize <= 0 || config.nms_post_maxsize <= 0) {
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                     "NMS maxsize must be positive");
@@ -1068,8 +1117,10 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
       } else {
         InferenceStatus status = AppendIouNmsResult(&per_task, config.nms_type, config.nms_thresh,
                                                     config.nms_pre_maxsize,
-                                                    config.nms_post_maxsize, out_result,
-                                                    out_error);
+                                                    config.nms_post_maxsize,
+                                                    config.self_car_box,
+                                                    config.self_car_nms_thresh,
+                                                    out_result, out_error);
         if (status != INFERENCE_STATUS_OK) {
           return status;
         }
@@ -1133,8 +1184,10 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
   filtered.scores = std::move(scores);
   filtered.boxes = std::move(boxes);
   filtered.labels = std::move(labels);
-  return AppendIouNmsResult(&filtered, config.nms_type, config.nms_thresh, config.nms_pre_maxsize,
-                            config.nms_post_maxsize, out_result, out_error);
+  return AppendIouNmsResult(&filtered, config.nms_type, config.nms_thresh,
+                            config.nms_pre_maxsize, config.nms_post_maxsize,
+                            config.self_car_box, config.self_car_nms_thresh,
+                            out_result, out_error);
 }
 
 InferenceOutputSpec MakeOutputSpec(int task_count, int bbox_max_num) {

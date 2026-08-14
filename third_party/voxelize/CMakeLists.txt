@@ -16,7 +16,7 @@ endif()
 set(CMAKE_C_FLAGS "-Wall")
 set(CMAKE_CXX_FLAGS "-std=c++17")
 set(CMAKE_BUILD_TYPE "Release")
-string(APPEND CMAKE_CUDA_FLAGS " -gencode arch=compute_87,code=sm_87")
+string(APPEND CMAKE_CUDA_FLAGS " -std=c++17 -gencode arch=compute_87,code=sm_87")
 
 if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 11.8)
   string(APPEND CMAKE_CUDA_FLAGS " -gencode arch=compute_89,code=sm_89")
