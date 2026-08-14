@@ -1,287 +1,291 @@
 from minio import Minio
 from minio.error import S3Error
+
 import argparse
+import hashlib
 import os
 import re
 import sys
-import hashlib
-from typing import List, Optional
 
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "121.237.181.98:9000")
-ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "qsJ37pF1ErbHYhM8i3mt")
-SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "c6RhaPje5ZtiMZSWvjZcexUoKbh6polP97mJGgn6")
-BUCKET_NAME = os.getenv("MINIO_BUCKET", "lidar-detection-models")
 
-if not MINIO_ENDPOINT:
-    print("❌ 错误：请设置环境变量 MINIO_ENDPOINT")
-    sys.exit(1)
-if not ACCESS_KEY:
-    print("❌ 错误：请设置环境变量 MINIO_ACCESS_KEY")
-    sys.exit(1)
-if not SECRET_KEY:
-    print("❌ 错误：请设置环境变量 MINIO_SECRET_KEY")
-    sys.exit(1)
-if not BUCKET_NAME:
-    print("❌ 错误：请设置环境变量 MINIO_BUCKET")
-    sys.exit(1)
+MINIO_ENDPOINT = "minio.zhongkezhichi.com"
+ACCESS_KEY = "L01WU1Q4ISVER9HYC4KS"
+SECRET_KEY = "qP+IaXOsJoHSjiw28CZ4m8Xk9DqMyliAMwZDj387"
+
+CHUNK_SIZE = 1024 * 1024
 
 client = Minio(
     MINIO_ENDPOINT,
     access_key=ACCESS_KEY,
     secret_key=SECRET_KEY,
-    secure=False
+    secure=True
 )
 
-CHUNK_SIZE = 1024 * 1024
-MD5_META_KEY = "md5"
 
-
-def get_file_md5(file_path: str) -> str:
+def md5sum(file_path):
     if not os.path.exists(file_path):
         return ""
 
-    md5_hash = hashlib.md5()
+    md5 = hashlib.md5()
     with open(file_path, "rb") as f:
         while True:
-            chunk = f.read(CHUNK_SIZE)
-            if not chunk:
+            data = f.read(CHUNK_SIZE)
+            if not data:
                 break
-            md5_hash.update(chunk)
+            md5.update(data)
 
-    return md5_hash.hexdigest()
-
-
-def normalize_metadata_key(key: str) -> str:
-    return key.lower().replace("x-amz-meta-", "")
+    return md5.hexdigest()
 
 
-def get_remote_md5(minio_path: str) -> str:
-    """优先读取 uploader 写入的 x-amz-meta-md5。
+def parse_src(src):
+    parts = src.strip("/").split("/")
 
-    不要直接信任 ETag：
-    - 单段上传时 ETag 通常是 MD5
-    - multipart 上传时 ETag 类似 xxxx-10，不是真实 MD5
-    """
-    stat_info = client.stat_object(BUCKET_NAME, minio_path)
+    if len(parts) < 2:
+        raise ValueError("src格式错误，应为 bucket/object")
 
-    metadata = stat_info.metadata or {}
-    normalized = {
-        normalize_metadata_key(k): v
-        for k, v in metadata.items()
-    }
+    bucket = parts[0]
+    object_path = "/".join(parts[1:])
+    return bucket, object_path
 
-    remote_md5 = normalized.get(MD5_META_KEY, "")
-    if remote_md5:
-        return remote_md5.strip('"').lower()
 
-    etag = stat_info.etag.strip('"').lower()
+def get_remote_md5(bucket, object_name):
+    stat = client.stat_object(bucket, object_name)
+    metadata = stat.metadata or {}
+
+    # 优先读取上传时保存的MD5
+    for key, value in metadata.items():
+        if key.lower().endswith("md5"):
+            return value.strip('"').lower()
+
+    # 单part上传时ETag通常为MD5
+    etag = stat.etag.strip('"').lower()
     if re.fullmatch(r"[0-9a-f]{32}", etag):
         return etag
 
     return ""
 
 
-def download_with_progress(client, bucket, minio_path, local_path, remote_md5):
+def download_one(bucket, object_name, local_path):
     try:
-        total_size = client.stat_object(bucket, minio_path).size
-        abs_local_path = os.path.abspath(local_path)
+        stat = client.stat_object(bucket, object_name)
+        remote_md5 = get_remote_md5(bucket, object_name)
+    except S3Error as e:
+        print(f"❌ 获取远端文件信息失败: {object_name}")
+        print(e)
+        return False
 
-        os.makedirs(os.path.dirname(abs_local_path), exist_ok=True)
+    local_md5 = md5sum(local_path)
 
-        print(f"\n📥 开始下载: {minio_path}")
+    if remote_md5 and local_md5 and remote_md5 == local_md5:
+        print(f"⏭️ MD5一致，跳过: {local_path}")
+        return True
 
-        response = None
-        try:
-            with open(local_path, "wb") as f:
-                downloaded = 0
-                response = client.get_object(bucket, minio_path)
+    print(f"⬇️ 下载: {object_name}")
 
-                for data in response.stream(CHUNK_SIZE):
-                    f.write(data)
-                    downloaded += len(data)
+    os.makedirs(
+        os.path.dirname(os.path.abspath(local_path)),
+        exist_ok=True
+    )
 
-                    progress = downloaded / total_size * 100 if total_size else 100
-                    bar_length = 30
-                    block = int(bar_length * progress / 100)
-                    bar = "█" * block + "-" * (bar_length - block)
-                    sys.stdout.write(f"\r[{bar}] {progress:.1f}%")
+    response = None
+
+    try:
+        response = client.get_object(bucket, object_name)
+
+        downloaded = 0
+        total_size = stat.size
+
+        with open(local_path, "wb") as f:
+            for data in response.stream(CHUNK_SIZE):
+                f.write(data)
+                downloaded += len(data)
+
+                if total_size:
+                    progress = downloaded / total_size * 100
+                    sys.stdout.write(f"\r[{progress:6.2f}%]")
                     sys.stdout.flush()
-        finally:
-            if response is not None:
-                response.close()
-                response.release_conn()
 
-        local_md5 = get_file_md5(local_path)
+        if total_size:
+            print()
 
-        if remote_md5 and local_md5 != remote_md5:
-            print(f"\n❌ 校验失败：本地MD5({local_md5}) != 远端MD5({remote_md5})")
+    except Exception as e:
+        print(f"\n❌ 下载失败: {object_name}")
+        print(e)
+
+        if os.path.exists(local_path):
+            os.remove(local_path)
+
+        return False
+
+    finally:
+        if response:
+            response.close()
+            response.release_conn()
+
+    if remote_md5:
+        new_md5 = md5sum(local_path)
+
+        if new_md5 != remote_md5:
+            print(f"❌ MD5校验失败: {local_path}")
             os.remove(local_path)
             return False
 
-        if remote_md5:
-            sys.stdout.write(f"\n✅ 校验通过，已保存至: {abs_local_path}\n")
-        else:
-            sys.stdout.write(
-                f"\n⚠️  下载完成，但远端缺少真实MD5，无法做MD5校验: {abs_local_path}\n"
-            )
-
-        return True
-
-    except S3Error as e:
-        print(f"❌ 下载失败: {str(e)}")
-        return False
+    print(f"✅ 完成: {local_path}")
+    return True
 
 
-def get_all_versions():
-    versions = []
+def download_file_mode(src, dst):
+    bucket, object_name = parse_src(src)
 
-    for obj in client.list_objects(BUCKET_NAME, prefix="releases/", recursive=False):
-        if obj.is_dir:
-            dir_name = obj.object_name.strip("/").split("/")[-1]
-            if re.match(r"v\d+\.\d+$", dir_name):
-                versions.append(dir_name)
+    print(f"Bucket : {bucket}")
+    print(f"Object : {object_name}")
 
-    versions.sort(key=lambda x: list(map(int, x[1:].split("."))))
-    return versions
+    return download_one(bucket, object_name, dst)
 
 
-def get_latest_version():
-    versions = get_all_versions()
-    return versions[-1] if versions else None
+def download_dir_mode(src, dst):
+    bucket, prefix = parse_src(src)
 
+    if not prefix.endswith("/"):
+        prefix += "/"
 
-def get_all_files(version: str) -> List[str]:
-    prefix = f"releases/{version}/"
-    files = []
+    print(f"Bucket : {bucket}")
+    print(f"Prefix : {prefix}")
+    print(f"目标目录: {os.path.abspath(dst)}")
 
-    for obj in client.list_objects(BUCKET_NAME, prefix=prefix, recursive=True):
-        if obj.is_dir:
-            continue
-
-        relative_path = obj.object_name[len(prefix):]
-        if relative_path:
-            files.append(relative_path)
-
-    files.sort()
-    return files
-
-
-def normalize_requested_files(files: Optional[List[str]]) -> Optional[List[str]]:
-    if not files:
-        return None
-
-    normalized_files = []
-    for file_name in files:
-        file_name = file_name.strip().lstrip("/")
-
-        if not file_name:
-            continue
-
-        if ".." in file_name.split("/"):
-            raise ValueError(f"非法文件路径：{file_name}")
-
-        normalized_files.append(file_name)
-
-    return normalized_files
-
-
-def download_model(version=None, save_dir=None, files=None):
-    all_versions = get_all_versions()
-
-    if not all_versions:
-        print("❌ MinIO 中未找到任何模型版本！")
-        return
-
-    if version is None:
-        version = get_latest_version()
-        print(f"🔍 未指定版本，自动使用最新版：{version}")
-
-    if version not in all_versions:
-        print(f"❌ 错误：版本 {version} 不存在！")
-        print(f"✅ 可用版本：{', '.join(all_versions)}")
-        return
-
-    if save_dir is None:
-        save_dir = os.path.expanduser("~/lidar_perception_config")
-
-    os.makedirs(save_dir, exist_ok=True)
-    abs_save_dir = os.path.abspath(save_dir)
+    count = 0
+    success = 0
 
     try:
-        requested_files = normalize_requested_files(files)
-    except ValueError as e:
-        print(f"❌ {e}")
-        return
-
-    if requested_files is None:
-        target_files = get_all_files(version)
-        if not target_files:
-            print(f"❌ 版本 {version} 下未找到任何文件！")
-            return
-
-        print(f"📦 未指定 --files，将下载版本 {version} 下的全部文件，共 {len(target_files)} 个")
-    else:
-        target_files = requested_files
-        print(f"📦 指定 --files，将只下载 {len(target_files)} 个文件")
-
-    print(f"🚀 开始处理模型版本：{version}，目标目录：{abs_save_dir}")
-
-    for filename in target_files:
-        minio_path = f"releases/{version}/{filename}"
-        local_path = os.path.join(save_dir, filename)
-
-        try:
-            remote_md5 = get_remote_md5(minio_path)
-        except S3Error as e:
-            print(f"❌ 获取远端文件信息失败 {minio_path}: {str(e)}")
-            continue
-
-        local_md5 = get_file_md5(local_path)
-
-        if remote_md5 and local_md5 == remote_md5:
-            print(f"\n⏭️  {filename} MD5一致，跳过下载")
-            continue
-
-        if not remote_md5:
-            print(f"\n⚠️  {filename} 远端缺少真实MD5，将下载但无法可靠跳过")
-
-        download_with_progress(
-            client,
-            BUCKET_NAME,
-            minio_path,
-            local_path,
-            remote_md5
+        objects = client.list_objects(
+            bucket,
+            prefix=prefix,
+            recursive=True
         )
 
-    print(f"\n🎉 版本 {version} 文件处理完成！目录：{abs_save_dir}")
+        for obj in objects:
+            if obj.is_dir:
+                continue
 
+            relative_path = obj.object_name[len(prefix):]
+            if not relative_path:
+                continue
 
-if __name__ == "__main__":
+            local_path = os.path.join(dst, relative_path)
+
+            if download_one(bucket, obj.object_name, local_path):
+                success += 1
+
+            count += 1
+
+    except S3Error as e:
+        print("❌ MinIO错误:")
+        print(e)
+        return False
+
+    print(f"🎉 完成，共处理 {count} 个文件，成功 {success} 个")
+    return success == count
+
+def main():
     parser = argparse.ArgumentParser(
-        description="激光雷达模型下载工具（支持 metadata MD5 增量校验）"
+        description=(
+            "MinIO 模型下载工具\n"
+            "\n"
+            "默认以目录模式下载 MinIO 指定目录下的全部文件，并保持子目录结构。\n"
+            "下载前会比较本地文件与远端文件的 MD5，MD5 一致时自动跳过。\n"
+            "使用 --is-file 可切换为单文件模式，此模式不会调用 list_objects。"
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "示例:\n"
+            "\n"
+            "  1. 使用默认参数下载 latest 目录:\n"
+            "     %(prog)s\n"
+            "\n"
+            "  2. 下载指定模型版本目录:\n"
+            "     %(prog)s \\\n"
+            "       --src packages/lidar_detection_model/v6.0 \\\n"
+            "       --dst ~/lidar_perception_config\n"
+            "\n"
+            "  3. 下载单个文件:\n"
+            "     %(prog)s \\\n"
+            "       --src packages/lidar_detection_model/v6.0/end2end.engine \\\n"
+            "       --dst ~/lidar_perception_config/end2end.engine \\\n"
+            "       --is-file\n"
+            "\n"
+            "路径说明:\n"
+            "  --src 的第一段为 MinIO bucket 名，其余部分为 object/prefix。\n"
+            "\n"
+            "  例如:\n"
+            "    packages/lidar_detection_model/v6.0\n"
+            "\n"
+            "  将解析为:\n"
+            "    bucket = packages\n"
+            "    prefix = lidar_detection_model/v6.0/\n"
+            "\n"
+            "目录模式下载结果示例:\n"
+            "  MinIO:\n"
+            "    packages/lidar_detection_model/v6.0/end2end.engine\n"
+            "    packages/lidar_detection_model/v6.0/model.yaml\n"
+            "\n"
+            "  执行:\n"
+            "    %(prog)s \\\n"
+            "      --src packages/lidar_detection_model/v6.0 \\\n"
+            "      --dst ~/lidar_perception_config\n"
+            "\n"
+            "  本地结果:\n"
+            "    ~/lidar_perception_config/end2end.engine\n"
+            "    ~/lidar_perception_config/model.yaml\n"
+        )
     )
+
     parser.add_argument(
-        "--version",
-        type=str,
-        default=None,
-        help="指定版本，如 v4.0，不指定则自动最新"
+        "--src",
+        default="packages/lidar_detection_model/latest",
+        metavar="BUCKET/PATH",
+        help=(
+            "MinIO 源路径。\n"
+            "格式: bucket/object 或 bucket/prefix\n"
+            "默认: packages/lidar_detection_model/latest"
+        )
     )
+
     parser.add_argument(
-        "--save-dir",
-        type=str,
-        default=None,
-        help="模型保存目录，默认 ~/lidar_perception_config"
+        "--dst",
+        default="~/lidar_perception_config",
+        type=os.path.expanduser,
+        metavar="PATH",
+        help=(
+            "本地目标路径。\n"
+            "目录模式下表示目标目录；--is-file 模式下表示目标文件。\n"
+            "支持 ~ 用户目录展开。\n"
+            "默认: ~/lidar_perception_config"
+        )
     )
+
     parser.add_argument(
-        "--files",
-        nargs="+",
-        default=None,
-        help="指定要下载的文件列表；不指定则下载该版本下的全部文件。例如：--files end2end.engine model.yaml"
+        "--is-file",
+        action="store_true",
+        help=(
+            "启用单文件模式。\n"
+            "--src 和 --dst 都按单个文件处理，不调用 list_objects。\n"
+            "适用于没有 MinIO ListBucket 权限、但有指定对象读取权限的场景。"
+        )
     )
 
     args = parser.parse_args()
-    download_model(
-        version=args.version,
-        save_dir=args.save_dir,
-        files=args.files
-    )
+
+    try:
+        if args.is_file:
+            success = download_file_mode(args.src, args.dst)
+        else:
+            success = download_dir_mode(args.src, args.dst)
+    except ValueError as e:
+        print(f"❌ {e}")
+        success = False
+
+    sys.exit(0 if success else 1)
+
+
+if __name__ == "__main__":
+    main()
