@@ -50,7 +50,7 @@ runtime:
   score_threshold: 0.1
 
 postprocess:
-  self_car_box: [0.7, 0.0, 0.0, 1.8, 1.4, 0.2, 0.0] # x, y, z, dx, dy, dz, yaw
+  self_car_box: [0.64, 0.0, 0.75, 2.0, 1.1, 2.1, 0.0] # x, y, z, dx, dy, dz, yaw
   self_car_nms_thresh: 0.01
   nms_thresh: 0.2
   nms_pre_maxsize: 1000
