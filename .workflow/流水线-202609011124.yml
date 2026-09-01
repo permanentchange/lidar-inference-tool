@@ -62,8 +62,9 @@ triggers:
   trigger: auto
   push:
     tags:
-      prefix: []
+      prefix:
+      - V*
       precise: []
       include:
-      - V*
+      - '*V*'
 notify: []
