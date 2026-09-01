@@ -24,15 +24,6 @@ stages:
         tag="$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
       fi
 
-      echo "构建 Tag: $tag"
-
-      case "$tag" in
-        v*.*.*-debug*) upload_channel="debug"; package_suffix="${tag#*-}" ;;
-        v*.*.*-hotfix*) upload_channel="hotfix"; package_suffix="${tag#*-}" ;;
-        v*.*.*) upload_channel="release"; package_suffix="" ;;
-        *) echo "Tag 格式必须为 v1.1.1、v1.1.1-debug 或 v1.1.1-hotfix1"; exit 1 ;;
-      esac
-
       rm -rf "$work_dir"
       mkdir -p "$work_dir"
 
@@ -41,6 +32,21 @@ stages:
         "$source_dir"
 
       cd "$source_dir"
+      git fetch --tags origin
+
+      if [ -z "$tag" ]; then
+        tag="$(git tag --sort=-v:refname | head -n 1)"
+      fi
+
+      echo "构建 Tag: $tag"
+
+      case "$tag" in
+        [Vv]*.*.*-debug*) upload_channel="debug"; package_suffix="${tag#*-}" ;;
+        [Vv]*.*.*-hotfix*) upload_channel="hotfix"; package_suffix="${tag#*-}" ;;
+        [Vv]*.*.*) upload_channel="release"; package_suffix="" ;;
+        *) echo "Tag 格式必须为 v1.1.1、v1.1.1-debug 或 v1.1.1-hotfix1"; exit 1 ;;
+      esac
+
       git checkout "$tag"
       git submodule update --init --recursive
 
@@ -55,7 +61,7 @@ stages:
         fi
 
         mc cp "$deb" \
-          "igv_minio/packages/igv_modules/lidar_inference_tool/$upload_channel/$filename"
+          "igv_minio/packages/igv_deps/lidar_inference_tool/$upload_channel/$filename"
       done
     gitClone: "false"
     hostGroupID:
