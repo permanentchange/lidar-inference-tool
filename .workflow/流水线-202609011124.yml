@@ -65,5 +65,5 @@ triggers:
       prefix: []
       precise: []
       include:
-      - '*V*'
+      - V*
 notify: []
