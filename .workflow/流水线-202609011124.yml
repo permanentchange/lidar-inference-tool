@@ -63,7 +63,7 @@ triggers:
   push:
     tags:
       prefix:
-      - V*
+      - V
       precise: []
       include:
       - '*V*'
