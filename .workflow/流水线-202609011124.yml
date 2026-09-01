@@ -1,0 +1,69 @@
+version: "1.0"
+name: 流水线-202609011124
+displayName: 流水线-202609011124
+stages:
+- name: lidar工具打包
+  displayName: lidar工具打包
+  strategy: naturally
+  trigger: auto
+  steps:
+  - step: shell@agent
+    name: 6ef8f82c
+    displayName: lidar工具打包推送
+    schedulerType: DISTRIBUTED
+    scriptType: SH
+    script: |
+      #!/bin/sh
+      set -e
+
+      work_dir="$(pwd)/.build-work"
+      source_dir="$work_dir/lidar-inference-tool"
+      tag="${REPO_REF:-${CI_COMMIT_REF_NAME:-}}"
+
+      case "$tag" in
+        V*.*.*-debug*) upload_channel="debug"; package_suffix="${tag#*-}" ;;
+        V*.*.*-hotfix*) upload_channel="hotfix"; package_suffix="${tag#*-}" ;;
+        V*.*.*) upload_channel="release"; package_suffix="" ;;
+        *) echo "Tag 格式必须为 V1.1.1、V1.1.1-debug 或 V1.1.1-hotfix1"; exit 1 ;;
+      esac
+
+      rm -rf "$work_dir"
+      mkdir -p "$work_dir"
+
+      git clone --recursive \
+        git@gitee.com:jiangsu-zhongke-zhichi_1/lidar-inference-tool.git \
+        "$source_dir"
+
+      cd "$source_dir"
+      git checkout "$tag"
+      git submodule update --init --recursive
+
+      chmod +x rebuild.sh
+      ./rebuild.sh
+
+      for deb in "$source_dir"/build/*.deb; do
+        filename="$(basename "$deb")"
+
+        if [ -n "$package_suffix" ]; then
+          filename="${filename%.deb}-$package_suffix.deb"
+        fi
+
+        mc cp "$deb" \
+          "igv_minio/packages/igv_modules/lidar_inference_tool/$upload_channel/$filename"
+      done
+    gitClone: "false"
+    hostGroupID:
+      ID: 打包专用
+      hostID:
+      - 6edc1c9e-cc59-4c40-8972-5f513528f0e8
+    strategy:
+      retry: "0"
+triggers:
+  trigger: auto
+  push:
+    tags:
+      prefix: []
+      precise: []
+      include:
+      - '*V*'
+notify: []
