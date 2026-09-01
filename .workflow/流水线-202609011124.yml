@@ -49,7 +49,7 @@ stages:
         fi
 
         mc cp "$deb" \
-          "igv_minio/packages/igv_modules/lidar_inference_tool/$upload_channel/$filename"
+          "igv_minio/packages/igv_deps/lidar_inference_tool/$upload_channel/$filename"
       done
     gitClone: "false"
     hostGroupID:
