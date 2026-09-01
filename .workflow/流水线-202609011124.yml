@@ -18,13 +18,19 @@ stages:
 
       work_dir="$(pwd)/.build-work"
       source_dir="$work_dir/lidar-inference-tool"
-      tag="${REPO_REF:-${CI_COMMIT_REF_NAME:-}}"
+      tag="${REPO_REF:-${CI_COMMIT_REF_NAME:-${CI_COMMIT_REF_NAME_1:-}}}"
+
+      if [ -z "$tag" ]; then
+        tag="$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
+      fi
+
+      echo "构建 Tag: $tag"
 
       case "$tag" in
-        V*.*.*-debug*) upload_channel="debug"; package_suffix="${tag#*-}" ;;
-        V*.*.*-hotfix*) upload_channel="hotfix"; package_suffix="${tag#*-}" ;;
-        V*.*.*) upload_channel="release"; package_suffix="" ;;
-        *) echo "Tag 格式必须为 V1.1.1、V1.1.1-debug 或 V1.1.1-hotfix1"; exit 1 ;;
+        v*.*.*-debug*) upload_channel="debug"; package_suffix="${tag#*-}" ;;
+        v*.*.*-hotfix*) upload_channel="hotfix"; package_suffix="${tag#*-}" ;;
+        v*.*.*) upload_channel="release"; package_suffix="" ;;
+        *) echo "Tag 格式必须为 v1.1.1、v1.1.1-debug 或 v1.1.1-hotfix1"; exit 1 ;;
       esac
 
       rm -rf "$work_dir"
@@ -49,7 +55,7 @@ stages:
         fi
 
         mc cp "$deb" \
-          "igv_minio/packages/igv_deps/lidar_inference_tool/$upload_channel/$filename"
+          "igv_minio/packages/igv_modules/lidar_inference_tool/$upload_channel/$filename"
       done
     gitClone: "false"
     hostGroupID:
@@ -63,8 +69,8 @@ triggers:
   push:
     tags:
       prefix:
-      - V
+      - v
       precise: []
       include:
-      - '*V*'
+      - '*v*'
 notify: []
