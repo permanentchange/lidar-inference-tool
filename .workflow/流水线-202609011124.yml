@@ -63,7 +63,7 @@ stages:
         printf '%s\n' 'nvidia' | sudo -S -p '' dpkg -i "$deb"
 
         mc cp "$deb" \
-          "igv_minio/packages/igv_modules/lidar_inference_tool/$upload_channel/$filename"
+          "igv_minio/packages/igv_deps/lidar_inference_tool/$upload_channel/$filename"
       done
     gitClone: "false"
     hostGroupID:
