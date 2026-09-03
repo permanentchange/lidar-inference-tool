@@ -68,7 +68,10 @@ bool LoadPointCloudBin(const std::string& path,
 }
 
 void PrintUsage(const char* program) {
-  std::cerr << "Usage: " << program << " <model_dir> <pcd_bin_path>\n";
+  (void)program;
+  std::cerr
+      << "Usage: ./build/minimal_cpp_api_example MODEL_DIR POINT_CLOUD_BIN\n"
+      << "Example: ./build/minimal_cpp_api_example demo/centerpoint_pillar demo/data/test.bin\n";
 }
 
 void PrintDetections(const std::vector<inference::Detection>& detections) {

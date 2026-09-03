@@ -432,7 +432,7 @@ InferenceStatus GpuDecodedCandidates::Initialize(const RuntimeConfig& config,
   if (status != INFERENCE_STATUS_OK) {
     return status;
   }
-  status = AllocateDeviceBuffer(config.pillar_size.size(), "pillar_size", &impl->d_pillar_size,
+  status = AllocateDeviceBuffer(config.voxel_size.size(), "pillar_size", &impl->d_pillar_size,
                                 out_error);
   if (status != INFERENCE_STATUS_OK) {
     return status;
@@ -508,8 +508,8 @@ InferenceStatus GpuDecodedCandidates::Initialize(const RuntimeConfig& config,
   if (status != INFERENCE_STATUS_OK) {
     return status;
   }
-  status = CheckCuda(cudaMemcpy(impl->d_pillar_size, config.pillar_size.data(),
-                                config.pillar_size.size() * sizeof(float),
+  status = CheckCuda(cudaMemcpy(impl->d_pillar_size, config.voxel_size.data(),
+                                config.voxel_size.size() * sizeof(float),
                                 cudaMemcpyHostToDevice),
                      "cudaMemcpy(pillar_size)", out_error);
   if (status != INFERENCE_STATUS_OK) {

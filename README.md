@@ -1,16 +1,17 @@
 # lidar-inference-tool
 
-`lidar-inference-tool` is a C++17 LiDAR inference project built around TensorRT end-to-end pillar models. The repository exposes:
+`lidar-inference-tool` is a C++17 LiDAR inference project built around TensorRT LiDAR detection models. It supports the original end-to-end pillar package path and a CenterPoint voxel package path. The repository exposes:
 
 - `libinference.so`: a shared library exposing the recommended C++ wrapper for loading one model package and running decoded or final NMS-filtered detections
 - `infer_debug_tool`: a single-sample debug executable that validates high-level C++ API inference results and writes visualization-friendly artifacts
 - `perf_debug_tool`: a profiling executable for single-sample inference performance breakdowns
-- `lidar_model_downloader`: an installed command-line helper for fetching model assets after package installation
+- `lidar_model_downloader`: an ARM64 package command-line helper for fetching model assets after package installation
 - `minimal_cpp_api_example`: a model-package-driven executable under `examples/` that shows the recommended C++ integration path
 
 ## v1.7.1
 
 - Added optional self-car-box filtering for `iou_bev` and `iou_min_bev` NMS without adding an NMS pass or consuming configured NMS capacities.
+- Fixed CUDA compilation of the C++17 public API on ARM CUDA 11.4 / CMake 3.16 by passing `-std=c++17` directly to `nvcc`.
 - Fixed amd64 DEB packaging by excluding the ARM64-only `lidar_model_downloader`; ARM64 packages retain the downloader.
 
 ## v1.7.0
@@ -20,7 +21,7 @@
 - Documented selectable postprocess NMS modes, including `iou_min_bev`.
 - Updated the demo postprocess defaults with lower per-label score thresholds and one shared NMS label group.
 - Removed the model uploader script and packaged uploader binary from the repository.
-- Updated `lidar_model_downloader` to download all files in a release by default and support selective downloads with `--files`.
+- Updated the repository-side `lidar_model_downloader.py` to download MinIO prefixes by default and support single-object downloads with `--is-file`.
 
 See [CHANGELOG.md](./CHANGELOG.md) for version history.
 
@@ -40,18 +41,26 @@ This README intentionally uses repository-relative paths and placeholders such a
 - `tools/infer_debug_tool.cpp`: high-level C++ API result debug CLI entry point
 - `tools/perf_debug_tool.cpp`: performance debug CLI entry point
 - `scripts/lidar_model_downloader.py`: source implementation of the model downloader utility
-- `scripts/dist/`: prebuilt downloader binary that is shipped in the DEB package
+- `scripts/dist/`: prebuilt downloader binary that is shipped in ARM64 DEB packages
 - `scripts/onnx2engine.sh`: helper script for `trtexec`
+- `scripts/centerpoint_voxel_head2engine.sh`: helper script for CenterPoint voxel RPN/head TensorRT engines
 - `tools/visualize_infer_debug.py`: BEV and interactive 3D visualization for dumped infer-debug artifacts
 - `examples/minimal_cpp_api/`: minimal executable example for the public C++ wrapper API
 - `demo/model.yaml`: example model package config for the public C++ wrapper
-- `demo/end2end.onnx`: example ONNX model
-- `demo/end2end.engine`: example TensorRT engine
-- `demo/pcd.bin`: example point cloud
+- `demo/centerpoint_voxel/model.yaml`: example CenterPoint voxel model package config
+- `demo/end2end.onnx`: example end-to-end pillar ONNX model
+- `demo/end2end.engine`: example end-to-end pillar TensorRT engine
+- `demo/test.bin`: example float32 point-cloud binary
+- `demo/test.pcd`: example PCD point cloud
+- `demo/centerpoint_voxel/`: example CenterPoint voxel model package assets
+- `third_party/libspconv/`: optional CenterPoint voxel sparse-convolution runtime copied from CUDA-CenterPoint
 - `third_party/voxelize/`: vendored CUDA voxelization module
 - `third_party/iou3d_nms/`: low-level IoU / NMS module used by the runtime and debug tools
+- `tests/`: optional regression tests built with `-DBUILD_TESTING=ON`
 
 ## Runtime Contract
+
+### End-to-end pillar package
 
 The TensorRT engine may execute internally in FP16 or INT8, but it must expose these external bindings:
 
@@ -81,6 +90,32 @@ Additional assumptions enforced by the runtime:
 
 Initialization fails if the engine bindings, dtypes, optimization profile, or channel layout do not match these expectations.
 
+### CenterPoint voxel package
+
+Set `model.runtime_backend: centerpoint_voxel` in `model.yaml`. The high-level C++ API remains the same as the pillar package path; downstream code can continue using `LidarInferenceRuntime::CreateFromModelDir(...)`, `runtime->config().model.num_point_features`, `PointCloudView`, and `runtime->Infer(...)`.
+
+The voxel package runtime executes:
+
+```text
+points -> CUDA voxelization -> libspconv SCN -> TensorRT RPN/head -> decode -> NMS
+```
+
+Required model files in the model directory:
+
+- `model.scn_onnx_path`: sparse encoder / SCN ONNX consumed by `libspconv`
+- `model.head_engine_path`: TensorRT RPN/head engine
+
+Required voxel YAML fields:
+
+- `model.voxel_size`: `[x, y, z]`; legacy `model.pillar_size` is still accepted for existing pillar packages
+- `model.sparse_shape`: sparse grid shape passed to `libspconv`
+- `model.yaw_encoding: sin_cos`
+- `model.has_velocity: true`
+
+The head engine must expose one FP16 input from `libspconv` and separate FP32 CenterPoint head outputs. Output bindings may use canonical names such as `reg_0`, `height_0`, `dim_0`, `rot_0`, `vel_0`, `hm_0`, or the mmdetection3d export order `out0..out35`.
+
+Point-cloud loading supports 3D, 4D, and 5D float `.bin` files and PCD files with `FIELDS x y z intensity has_intensity`. Missing feature channels are padded as `[x, y, z, 0, 0]`; a present `intensity` without `has_intensity` is loaded as `[x, y, z, intensity, 1]`.
+
 ## Requirements
 
 ### Full native build
@@ -91,20 +126,24 @@ Initialization fails if the engine bindings, dtypes, optimization profile, or ch
 - CUDA Toolkit with `nvcc`
 - TensorRT headers and libraries
 - `yaml-cpp` development package
+- Protobuf headers, libraries, and a matching `protoc`
+- for `centerpoint_voxel` packages at runtime: compatible `libspconv.so` and its runtime dependencies
 
-Install the YAML dependency on Ubuntu:
+Install common development dependencies on Ubuntu:
 
 ```bash
-sudo apt-get install -y libyaml-cpp-dev
+sudo apt-get install -y libyaml-cpp-dev protobuf-compiler libprotobuf-dev
 ```
 
 Notes:
 
 - the full build requires CUDA and TensorRT at configure time
+- the full build also requires the vendored `third_party/libspconv` headers, parser proto files, and an architecture-matching `libspconv.so`
 - CMake rejects Conda-managed include and library paths on purpose; use system dependencies or explicit non-Conda roots
 - TensorRT auto-detection is limited to standard system prefixes such as `/usr`, `/usr/local`, and `/opt`
 - the build no longer scans personal directories such as `$HOME/TensorRT*` or `$HOME/workspace/TensorRT*`
 - if TensorRT or `yaml-cpp` is installed in a nonstandard location, pass `-DTENSORRT_ROOT=...` and / or `-DYAML_CPP_ROOT=...`
+- the selected Protobuf headers/libraries and `protoc` must report the same version
 
 ### Python utilities
 
@@ -113,11 +152,12 @@ Notes:
 - `pyyaml`
 - `matplotlib`
 - `plotly` for 3D HTML visualization
+- `minio` only when running `scripts/lidar_model_downloader.py` from source
 
 Install optional Python dependencies with:
 
 ```bash
-python3 -m pip install numpy pyyaml matplotlib plotly
+python3 -m pip install numpy pyyaml matplotlib plotly minio
 ```
 
 ## Build
@@ -169,6 +209,14 @@ A successful full build generates:
 - `build/perf_debug_tool`
 - `build/minimal_cpp_api_example` when `BUILD_EXAMPLES=ON`
 
+Build and run regression tests when CUDA, TensorRT, `yaml-cpp`, Protobuf, and the vendored runtime libraries are available:
+
+```bash
+cmake -S . -B build -DBUILD_TESTING=ON
+cmake --build build -j$(nproc)
+ctest --test-dir build --output-on-failure
+```
+
 ### DEB package
 
 Use the repository helper to rebuild and package:
@@ -181,9 +229,9 @@ The generated `.deb` installs its runtime commands under `/usr/local/bin`, inclu
 
 - `infer_debug_tool`
 - `perf_debug_tool`
-- `lidar_model_downloader`
+- `lidar_model_downloader` on ARM64 / `aarch64` packages only
 
-The downloader command in the DEB comes from the prebuilt binary under `scripts/dist/`. The Python source file `scripts/lidar_model_downloader.py` remains the repository-side source utility.
+The downloader command in ARM64 DEB packages comes from the prebuilt binary under `scripts/dist/`. The Python source file `scripts/lidar_model_downloader.py` remains the repository-side source utility.
 
 Installed CMake package files include a version file, so downstream projects can require this release with `find_package(lidar-inference-tool 1.7.1 CONFIG REQUIRED)`.
 
@@ -218,35 +266,22 @@ Stub behavior:
 
 ## Quick Start
 
-Run one API result debug session:
+Run the recommended API result debug sessions:
 
 ```bash
-./build/infer_debug_tool demo demo/pcd.bin
-```
-
-Write artifacts to a custom output directory:
-
-```bash
-./build/infer_debug_tool demo demo/pcd.bin outputs/infer_debug --dump-decoded
-```
-
-Run one performance profiling session:
-
-```bash
-./build/perf_debug_tool demo demo/pcd.bin outputs/perf_debug --warmup 10 --profile 50
-```
-
-Run the recommended C++ wrapper example with the demo model directory:
-
-```bash
-./build/minimal_cpp_api_example demo demo/pcd.bin
+./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test.bin --dump-dir demo/centerpoint_pillar_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test.bin --dump-dir demo/centerpoint_voxel_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
 ```
 
 The demo assets used by the public C++ API and debug tools are:
 
-- `demo/model.yaml`
-- `demo/end2end.engine`
-- `demo/pcd.bin`
+- `demo/centerpoint_pillar/model.yaml`
+- `demo/centerpoint_pillar/end2end.engine`
+- `demo/centerpoint_voxel/model.yaml`
+- `demo/centerpoint_voxel/centerpoint.scn.onnx`
+- `demo/centerpoint_voxel/rpn_centerhead.engine`
+- `demo/data/test.bin`
+- `demo/data/test.pcd`
 
 Typical `perf_debug_tool` console output includes:
 
@@ -278,29 +313,34 @@ Local README:
 The public C++ wrapper expects a model directory containing:
 
 - `model.yaml`
-- the TensorRT engine referenced by `model.engine_path`
+- for `pillar_end2end`: the TensorRT engine referenced by `model.engine_path`
+- for `centerpoint_voxel`: the SCN ONNX referenced by `model.scn_onnx_path` and the TensorRT head engine referenced by `model.head_engine_path`
 
 `model.yaml` is split into three sections:
 
-- `model`: engine path, point feature count, spatial ranges, pillar size, stride, label names
-- `runtime`: pillar and point capacity limits plus decode threshold
+- `model`: engine/backend paths, point feature count, spatial ranges, voxel size, stride, label names, and head layout
+- `runtime`: voxel and point capacity limits plus decode threshold
 - `postprocess`: NMS type, thresholds, and per-label filtering values
 
 The current demo `model.yaml` includes:
 
 - `model.engine_path`
+- `model.runtime_backend` for CenterPoint voxel packages
+- `model.scn_onnx_path` for CenterPoint voxel packages
+- `model.head_engine_path` for CenterPoint voxel packages
 - `model.num_point_features`
 - `model.point_cloud_range`
 - `model.post_center_range`
-- `model.pillar_size`
+- `model.voxel_size`; legacy `model.pillar_size` is still accepted
+- `model.sparse_shape` for CenterPoint voxel packages
 - `model.out_size_factor`
 - `model.label_names`
 - `model.yaw_encoding`
-- `runtime.max_points_per_pillar`
 - `model.task_num_classes`
 - `model.task_label_ids`
-- `runtime.min_pillars`
-- `runtime.max_pillars`
+- `runtime.max_points_per_voxel`; legacy `runtime.max_points_per_pillar` is still accepted
+- `runtime.min_voxels`; legacy `runtime.min_pillars` is still accepted
+- `runtime.max_voxels`; legacy `runtime.max_pillars` is still accepted
 - `runtime.max_points`
 - `runtime.frame_num`
 - `runtime.bbox_max_num`
@@ -363,36 +403,37 @@ Optional override YAML files use the same schema and are applied with this prece
 `infer_debug_tool` follows the same model-directory entry style as the public C++ wrapper and treats `runtime->Infer(...)` as the authoritative final result:
 
 ```bash
-./build/infer_debug_tool <model_dir> <input_path> [dump_dir]
+./build/infer_debug_tool --model-dir MODEL_DIR --input INPUT_PATH --dump-dir DUMP_DIR [--override-config PATH] [--dump-decoded] [--dump-internal] [--warmup N] [--profile-iters N]
 ```
 
 Supported options:
 
 - `--override-config PATH`
+- `--warmup N`
+- `--profile-iters N`
 - `--dump-decoded`
 - `--dump-internal`
 
-Examples:
+Recommended examples:
 
 ```bash
-./build/infer_debug_tool demo demo/pcd.bin
-./build/infer_debug_tool demo demo/pcd.bin outputs/infer_debug --dump-decoded
-./build/infer_debug_tool demo demo/pcd.bin outputs/infer_debug --dump-decoded --dump-internal
-./build/infer_debug_tool demo demo/pcd.bin outputs/infer_debug --override-config overrides/model_override.yaml
-./build/infer_debug_tool /path/to/model_dir /path/to/point_cloud_dir outputs/infer_debug_sequence
+./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test.bin --dump-dir demo/centerpoint_pillar_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test.bin --dump-dir demo/centerpoint_voxel_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
 ```
 
 Behavior:
 
-- `model_dir` must contain `model.yaml`
-- runtime and postprocess settings come from `<model_dir>/model.yaml`
-- `input_path` may be one `.pcd` / `.bin` file or a directory containing top-level `.pcd` / `.bin` files
-- `dump_dir` controls where result `.npy` and `.json` artifacts are written
-- `override_config_path` applies the same package-schema YAML override used by the public C++ wrapper
+- `--model-dir` must point to a directory containing `model.yaml`
+- runtime and postprocess settings come from `--model-dir` `model.yaml`
+- `--input` may be one `.pcd` / `.bin` file or a directory containing top-level `.pcd` / `.bin` files
+- `--dump-dir` controls where result `.npy` and `.json` artifacts are written
+- `--override-config PATH` applies the same package-schema YAML override used by the public C++ wrapper
 - final detections come from the high-level C++ API, so `mapped_label_names` is reflected in `result.json`
 - `--dump-internal` writes raw internal tensors for auxiliary diagnosis only
 - directory mode sorts numerically by filename stem when all stems are unsigned integers; otherwise it falls back to lexicographic filename order
+- numeric filename stems are treated as Unix nanosecond timestamps in per-frame metadata and sequence outputs
 - directory mode reuses one runtime instance and writes one subdirectory per frame under `dump_dir/frames/`
+- `--warmup` and `--profile-iters` repeat the high-level `runtime->Infer(...)` call and print total latency statistics
 
 `perf_debug_tool` uses the internal runtime path to profile one sample:
 
@@ -404,7 +445,8 @@ It writes timing/profile data only and does not write detection result artifacts
 
 Default values:
 
-- `infer_debug_tool` `dump_dir`: `outputs/infer_debug`
+- `infer_debug_tool` `warmup_iters`: `0`
+- `infer_debug_tool` `profile_iters`: `1`
 - `perf_debug_tool` `dump_dir`: `outputs/perf_debug`
 - `perf_debug_tool` `warmup_iters`: `10`
 - `perf_debug_tool` `profile_iters`: `50`
@@ -465,17 +507,17 @@ Notes:
 After an `infer_debug_tool` run, generate detailed BEV plots, an optional interactive 3D HTML view, an index page, and a visualization summary with one command:
 
 ```bash
-python3 tools/visualize_infer_debug.py demo outputs/infer_debug
+python3 tools/visualize_infer_debug.py demo/centerpoint_pillar demo/centerpoint_pillar_outputs
 ```
 
 For the common single-sample flow:
 
 ```bash
-./build/infer_debug_tool demo demo/test.bin demo_output
-python3 tools/visualize_infer_debug.py demo demo_output --zmin -0.2 --zmax 3
+./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test.bin --dump-dir demo/centerpoint_pillar_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+python3 tools/visualize_infer_debug.py demo/centerpoint_pillar demo/centerpoint_pillar_outputs --zmin -0.2 --zmax 3
 ```
 
-The script reads `demo/model.yaml` for the point-cloud range and reads final detections from `result.json`, so final box labels use the `label_name` values returned by the high-level C++ API and therefore honor `postprocess.mapped_label_names`.
+The script reads the selected model directory's `model.yaml` for the point-cloud range and reads final detections from `result.json`, so final box labels use the `label_name` values returned by the high-level C++ API and therefore honor `postprocess.mapped_label_names`.
 
 Typical outputs in the dump directory:
 
@@ -491,8 +533,8 @@ Typical outputs in the dump directory:
 For a more detailed run with decoded candidates and internal debug heatmap:
 
 ```bash
-./build/infer_debug_tool demo demo/test.bin demo_output --dump-decoded --dump-internal
-python3 tools/visualize_infer_debug.py demo demo_output --zmin -0.2 --zmax 3
+./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test.bin --dump-dir demo/centerpoint_voxel_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+python3 tools/visualize_infer_debug.py demo/centerpoint_voxel demo/centerpoint_voxel_outputs --zmin -0.2 --zmax 3
 ```
 
 Use `--max-candidates` and `--candidate-score-threshold` to reduce clutter when decoded candidate dumps are large.
@@ -558,8 +600,8 @@ Important semantics:
 Use the helper script to build an engine and then run a quick `trtexec` profile. It supports both a short form with default profile sizes and a full form with explicit profile sizes:
 
 ```bash
-bash scripts/onnx2engine.sh <onnx_path> <engine_path> [fp32|fp16|int8]
-bash scripts/onnx2engine.sh <onnx_path> <engine_path> <min_points> <opt_points> <max_points> [fp32|fp16|int8]
+bash scripts/onnx2engine.sh <onnx_path> <engine_path> [precision] [--cali-data DIR] [--report-dir DIR]
+bash scripts/onnx2engine.sh <onnx_path> <engine_path> <min_points> <opt_points> <max_points> [precision] [--cali-data DIR] [--report-dir DIR]
 ```
 
 Show the built-in help:
@@ -572,10 +614,12 @@ Arguments:
 
 - `<onnx_path>`: input ONNX model path
 - `<engine_path>`: output TensorRT engine path
-- `<min_points>`: optional minimum optimization-profile pillar/point count, default `10000`
+- `<min_points>`: optional minimum optimization-profile pillar/point count, default `20000`
 - `<opt_points>`: optional optimal optimization-profile pillar/point count, default `30000`
-- `<max_points>`: optional maximum optimization-profile pillar/point count, default `50000`
-- `[precision]`: optional precision mode, one of `fp32`, `fp16`, `int8`, default `fp16`
+- `<max_points>`: optional maximum optimization-profile pillar/point count, default `40000`
+- `[precision]`: optional precision mode, one of `fp32`, `fp16`, `int8`, `fp16int8`, `fp16in8`, or `best`, default `fp16`
+- `--cali-data DIR`: optional TensorRT PTQ calibration data directory for `int8`, `fp16int8`, or `best`
+- `--report-dir DIR`: optional report directory, default `<engine_path>.reports`
 
 The helper assumes the current repository contract:
 
@@ -586,38 +630,60 @@ The helper assumes the current repository contract:
 Default FP16 example:
 
 ```bash
-bash scripts/onnx2engine.sh demo/end2end.onnx demo/end2end.engine
+bash scripts/onnx2engine.sh demo/centerpoint_pillar/end2end.onnx demo/centerpoint_pillar/end2end.engine
 ```
 
 Explicit-profile FP16 example:
 
 ```bash
-bash scripts/onnx2engine.sh demo/end2end.onnx demo/end2end.engine 10000 40000 50000
+bash scripts/onnx2engine.sh demo/centerpoint_pillar/end2end.onnx demo/centerpoint_pillar/end2end.engine 10000 40000 50000
 ```
 
 FP32 example:
 
 ```bash
-bash scripts/onnx2engine.sh demo/end2end.onnx demo/end2end_fp32.engine 10000 40000 50000 fp32
+bash scripts/onnx2engine.sh demo/centerpoint_pillar/end2end.onnx demo/centerpoint_pillar/end2end_fp32.engine 10000 40000 50000 fp32
 ```
 
 INT8 example for a quantized / Q-DQ ONNX model:
 
 ```bash
-bash scripts/onnx2engine.sh demo/end2end.onnx demo/end2end_int8.engine 10000 40000 50000 int8
+bash scripts/onnx2engine.sh demo/centerpoint_pillar/end2end.onnx demo/centerpoint_pillar/end2end_int8.engine 10000 40000 50000 int8
+```
+
+FP16 plus INT8 PTQ calibration example:
+
+```bash
+bash scripts/onnx2engine.sh demo/centerpoint_pillar/end2end.onnx demo/centerpoint_pillar/end2end_fp16int8.engine fp16int8 --cali-data /path/to/cali_data
+```
+
+`best` precision example:
+
+```bash
+bash scripts/onnx2engine.sh demo/centerpoint_pillar/end2end.onnx demo/centerpoint_pillar/end2end_best.engine best
 ```
 
 Requirements and behavior:
 
 - `trtexec` must be available in `PATH`
 - the ONNX file must already exist
-- if profile sizes are omitted, the helper uses `10000 / 30000 / 50000`
+- if profile sizes are omitted, the helper uses `20000 / 30000 / 40000`
 - `<min_points>`, `<opt_points>`, and `<max_points>` must be positive integers
 - the helper requires `min_points <= opt_points <= max_points`
 - the generated engine must preserve the current external binding contract: `voxels=float32`, `num_points=int32`, `coors=int32`, outputs `float32`
 - the generated engine must keep a pillar-count optimization profile compatible with the runtime min/max settings
-- `int8` export assumes the ONNX graph is already quantized or otherwise buildable by TensorRT without adding a calibration path in this helper
-- the script prints the resolved min/opt/max TensorRT shapes before it starts building
-- if the target engine already exists, regeneration is skipped
+- `--cali-data` samples must contain `pillar_voxels.npy`, `pillar_num_points.npy`, and `pillar_coors.npy`
+- without `--cali-data`, if the target engine already exists, regeneration is skipped
+- with `--cali-data`, the helper rebuilds the engine and writes a calibration cache next to the engine
 - the script still runs a follow-up `trtexec --loadEngine ... --dumpProfile --verbose` pass against the existing engine
 - the final profiling pass always uses the opt shape
+- report files are written under `--report-dir` or `<engine_path>.reports`, including logs, metadata, summary, and supported `trtexec` layer/profile JSON exports
+
+Build a CenterPoint voxel RPN/head engine from an exported head ONNX:
+
+```bash
+bash scripts/centerpoint_voxel_head2engine.sh <head_onnx_path> <head_engine_path> [--report-dir DIR] [--fp32]
+```
+
+The CenterPoint voxel head helper expects one FP16 input from `libspconv` and separate FP32 task-head outputs. By default it builds with FP16 compute, writes reports to `<head_engine_path>.reports`, and accepts `--fp32` to disable the FP16 build flag.
+The helper adds common TensorRT, Conda, and PyTorch library directories to `LD_LIBRARY_PATH` before running `trtexec`. If `libnvinfer_plugin.so.8` still reports missing dependencies such as `libcudnn.so.8`, install the matching cuDNN 8 runtime or export `LD_LIBRARY_PATH` to the directory that contains it.

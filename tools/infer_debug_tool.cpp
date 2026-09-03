@@ -1,6 +1,8 @@
 #include "inference_cpp.hpp"
 #include "pillar_runtime.hpp"
 
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -8,8 +10,8 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <numeric>
 #include <optional>
-#include <algorithm>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -19,10 +21,12 @@ namespace {
 struct CliOptions {
   std::string model_dir;
   std::string input_path;
-  std::string dump_dir = "outputs/infer_debug";
+  std::string dump_dir;
   std::string override_config_path;
   bool dump_decoded = false;
   bool dump_internal = false;
+  int warmup_iters = 0;
+  int profile_iters = 1;
 };
 
 struct TimestampInfo {
@@ -49,11 +53,20 @@ struct FrameOutputSummary {
   size_t decoded_count = 0;
 };
 
+struct TimingStats {
+  double mean = 0.0;
+  double min = 0.0;
+  double max = 0.0;
+  double p50 = 0.0;
+  double p90 = 0.0;
+};
+
 void PrintUsage(const char* program) {
   std::cerr
       << "Usage: " << program
-      << " <model_dir> <input_path> [dump_dir] [--override-config PATH]"
-      << " [--dump-decoded] [--dump-internal]\n";
+      << " --model-dir MODEL_DIR --input INPUT_PATH --dump-dir DUMP_DIR"
+      << " [--override-config PATH] [--dump-decoded] [--dump-internal]"
+      << " [--warmup N] [--profile-iters N]\n";
 }
 
 bool ParseCliOptions(int argc, char** argv, CliOptions* out_options, std::string* out_error) {
@@ -61,23 +74,9 @@ bool ParseCliOptions(int argc, char** argv, CliOptions* out_options, std::string
     PrintUsage(argv[0]);
     std::exit(0);
   }
-  if (argc < 3) {
-    if (out_error != nullptr) {
-      *out_error = "model_dir and input_path are required";
-    }
-    return false;
-  }
 
   CliOptions options;
-  int arg_index = 1;
-  options.model_dir = argv[arg_index++];
-  options.input_path = argv[arg_index++];
-
-  if (arg_index < argc && std::string(argv[arg_index]).rfind("--", 0) != 0) {
-    options.dump_dir = argv[arg_index++];
-  }
-
-  while (arg_index < argc) {
+  for (int arg_index = 1; arg_index < argc;) {
     const std::string arg = argv[arg_index++];
     if (arg == "--override-config") {
       if (arg_index >= argc) {
@@ -87,6 +86,46 @@ bool ParseCliOptions(int argc, char** argv, CliOptions* out_options, std::string
         return false;
       }
       options.override_config_path = argv[arg_index++];
+    } else if (arg == "--model-dir") {
+      if (arg_index >= argc) {
+        if (out_error != nullptr) {
+          *out_error = "Missing path for --model-dir";
+        }
+        return false;
+      }
+      options.model_dir = argv[arg_index++];
+    } else if (arg == "--input") {
+      if (arg_index >= argc) {
+        if (out_error != nullptr) {
+          *out_error = "Missing path for --input";
+        }
+        return false;
+      }
+      options.input_path = argv[arg_index++];
+    } else if (arg == "--dump-dir") {
+      if (arg_index >= argc) {
+        if (out_error != nullptr) {
+          *out_error = "Missing path for --dump-dir";
+        }
+        return false;
+      }
+      options.dump_dir = argv[arg_index++];
+    } else if (arg == "--warmup") {
+      if (arg_index >= argc) {
+        if (out_error != nullptr) {
+          *out_error = "Missing count for --warmup";
+        }
+        return false;
+      }
+      options.warmup_iters = std::stoi(argv[arg_index++]);
+    } else if (arg == "--profile-iters") {
+      if (arg_index >= argc) {
+        if (out_error != nullptr) {
+          *out_error = "Missing count for --profile-iters";
+        }
+        return false;
+      }
+      options.profile_iters = std::stoi(argv[arg_index++]);
     } else if (arg == "--dump-decoded") {
       options.dump_decoded = true;
     } else if (arg == "--dump-internal") {
@@ -94,16 +133,86 @@ bool ParseCliOptions(int argc, char** argv, CliOptions* out_options, std::string
     } else if (arg == "--help" || arg == "-h") {
       PrintUsage(argv[0]);
       std::exit(0);
-    } else {
+    } else if (arg.rfind("--", 0) == 0) {
       if (out_error != nullptr) {
         *out_error = "Unknown argument: " + arg;
+      }
+      return false;
+    } else {
+      if (out_error != nullptr) {
+        *out_error = "Unexpected positional argument: " + arg;
       }
       return false;
     }
   }
 
+  if (options.model_dir.empty()) {
+    if (out_error != nullptr) {
+      *out_error = "--model-dir is required";
+    }
+    return false;
+  }
+  if (options.input_path.empty()) {
+    if (out_error != nullptr) {
+      *out_error = "--input is required";
+    }
+    return false;
+  }
+  if (options.dump_dir.empty()) {
+    if (out_error != nullptr) {
+      *out_error = "--dump-dir is required";
+    }
+    return false;
+  }
+  if (options.warmup_iters < 0 || options.profile_iters <= 0) {
+    if (out_error != nullptr) {
+      *out_error = "--warmup must be >= 0 and --profile-iters must be > 0";
+    }
+    return false;
+  }
+
   *out_options = options;
   return true;
+}
+
+double Percentile(std::vector<double> values, double ratio) {
+  if (values.empty()) {
+    return 0.0;
+  }
+  std::sort(values.begin(), values.end());
+  const double rank = ratio * static_cast<double>(values.size() - 1);
+  const size_t low = static_cast<size_t>(rank);
+  const size_t high = std::min(low + 1, values.size() - 1);
+  const double alpha = rank - static_cast<double>(low);
+  return values[low] * (1.0 - alpha) + values[high] * alpha;
+}
+
+TimingStats ComputeStats(const std::vector<double>& values) {
+  TimingStats stats;
+  if (values.empty()) {
+    return stats;
+  }
+  const auto [min_it, max_it] = std::minmax_element(values.begin(), values.end());
+  stats.mean = std::accumulate(values.begin(), values.end(), 0.0) / values.size();
+  stats.min = *min_it;
+  stats.max = *max_it;
+  stats.p50 = Percentile(values, 0.50);
+  stats.p90 = Percentile(values, 0.90);
+  return stats;
+}
+
+void PrintInferProfile(const std::vector<double>& values,
+                       int warmup_iters,
+                       int profile_iters) {
+  const TimingStats stats = ComputeStats(values);
+  std::cout << std::fixed << std::setprecision(3);
+  std::cout << "high_level_infer_profile: warmup=" << warmup_iters
+            << ", profile_iters=" << profile_iters << "\n";
+  std::cout << "total_infer_ms: mean=" << stats.mean
+            << ", min=" << stats.min
+            << ", max=" << stats.max
+            << ", p50=" << stats.p50
+            << ", p90=" << stats.p90 << "\n";
 }
 
 std::string JsonEscape(const std::string& value) {
@@ -680,14 +789,39 @@ InferenceStatus RunSingleInput(const CliOptions& options,
 
   const inference::PointCloudView cloud =
       MakeCloudView(points, (*runtime)->config().model.num_point_features);
-  std::vector<inference::Detection> final_detections;
-  status = (*runtime)->Infer(cloud, &final_detections);
-  if (status != INFERENCE_STATUS_OK) {
-    if (out_error != nullptr) {
-      *out_error = (*runtime)->last_error();
+
+  std::vector<inference::Detection> scratch_detections;
+  for (int iter = 0; iter < options.warmup_iters; ++iter) {
+    scratch_detections.clear();
+    status = (*runtime)->Infer(cloud, &scratch_detections);
+    if (status != INFERENCE_STATUS_OK) {
+      if (out_error != nullptr) {
+        *out_error = (*runtime)->last_error();
+      }
+      return status;
     }
-    return status;
   }
+
+  std::vector<double> infer_ms_values;
+  infer_ms_values.reserve(static_cast<size_t>(options.profile_iters));
+  std::vector<inference::Detection> final_detections;
+  for (int iter = 0; iter < options.profile_iters; ++iter) {
+    scratch_detections.clear();
+    const auto start = std::chrono::steady_clock::now();
+    status = (*runtime)->Infer(cloud, &scratch_detections);
+    const auto end = std::chrono::steady_clock::now();
+    if (status != INFERENCE_STATUS_OK) {
+      if (out_error != nullptr) {
+        *out_error = (*runtime)->last_error();
+      }
+      return status;
+    }
+    const double elapsed_ms =
+        std::chrono::duration<double, std::milli>(end - start).count();
+    infer_ms_values.push_back(elapsed_ms);
+    final_detections = scratch_detections;
+  }
+  PrintInferProfile(infer_ms_values, options.warmup_iters, options.profile_iters);
 
   status = SaveDetectionArrays(dump_dir, "final", final_detections, out_error);
   if (status != INFERENCE_STATUS_OK) {

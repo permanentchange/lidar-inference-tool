@@ -1,370 +1,290 @@
 cmake_minimum_required(VERSION 3.0.2)
-project(lidar-inference-tool 
+
+project(lidar-inference-tool
   VERSION 1.7.1
   DESCRIPTION "TensorRT lidar-inference-tool library"
   LANGUAGES CXX
 )
 
-option(BUILD_TESTING "Build regression tests" OFF)
-include(CTest)
+option(BUILD_EXAMPLES "Build examples" ON)
+option(BUILD_TESTING "Build tests" OFF)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-option(BUILD_STUB_IF_NO_TENSORRT "Allow stub build when TensorRT is unavailable" OFF)
-option(BUILD_EXAMPLES "Build example executables" ON)
-set(TENSORRT_ROOT "" CACHE PATH "TensorRT installation root")
-set(YAML_CPP_ROOT "" CACHE PATH "System yaml-cpp installation root")
-
-function(require_no_conda_path name value)
-  if(NOT "${value}" STREQUAL "")
-    string(TOLOWER "${value}" _value_lower)
-    if(_value_lower MATCHES "miniconda|anaconda|miniforge|mambaforge|/conda")
-      message(FATAL_ERROR
-        "${name} contains a Conda-managed path: ${value}\n"
-        "Clear the CMake cache and configure with system dependencies only.")
-    endif()
-  endif()
-endfunction()
-
-foreach(_cache_var
-    CMAKE_C_FLAGS
-    CMAKE_CXX_FLAGS
-    CMAKE_EXE_LINKER_FLAGS
-    CMAKE_SHARED_LINKER_FLAGS)
-  require_no_conda_path(${_cache_var} "${${_cache_var}}")
-endforeach()
-
-foreach(_env_var
-    CMAKE_PREFIX_PATH
-    CPATH
-    C_INCLUDE_PATH
-    CPLUS_INCLUDE_PATH
-    LIBRARY_PATH
-    CPPFLAGS
-    CFLAGS
-    CXXFLAGS
-    LDFLAGS)
-  if(DEFINED ENV{${_env_var}})
-    require_no_conda_path("ENV{${_env_var}}" "$ENV{${_env_var}}")
-  endif()
-endforeach()
-
-find_package(CUDA)
-
-if((NOT DEFINED CMAKE_CUDA_COMPILER OR "${CMAKE_CUDA_COMPILER}" STREQUAL "") AND EXISTS "/usr/local/cuda/bin/nvcc")
-  set(CMAKE_CUDA_COMPILER "/usr/local/cuda/bin/nvcc" CACHE FILEPATH "CUDA compiler" FORCE)
-endif()
-
-set(YAML_CPP_SEARCH_PREFIXES
-  /usr
-  /usr/local)
-if(NOT "${YAML_CPP_ROOT}" STREQUAL "")
-  list(INSERT YAML_CPP_SEARCH_PREFIXES 0 "${YAML_CPP_ROOT}")
-endif()
-if(DEFINED ENV{YAML_CPP_ROOT} AND NOT "$ENV{YAML_CPP_ROOT}" STREQUAL "")
-  list(INSERT YAML_CPP_SEARCH_PREFIXES 0 "$ENV{YAML_CPP_ROOT}")
-endif()
-list(REMOVE_DUPLICATES YAML_CPP_SEARCH_PREFIXES)
-
-set(YAML_CPP_LIBRARY_SUFFIXES
-  lib
-  lib64)
-if(CMAKE_LIBRARY_ARCHITECTURE)
-  list(APPEND YAML_CPP_LIBRARY_SUFFIXES "lib/${CMAKE_LIBRARY_ARCHITECTURE}")
-endif()
-
-find_path(YAML_CPP_INCLUDE_DIR yaml-cpp/yaml.h
-  PATHS ${YAML_CPP_SEARCH_PREFIXES}
-  PATH_SUFFIXES include
-  NO_DEFAULT_PATH)
-find_library(YAML_CPP_LIBRARY yaml-cpp
-  PATHS ${YAML_CPP_SEARCH_PREFIXES}
-  PATH_SUFFIXES ${YAML_CPP_LIBRARY_SUFFIXES}
-  NO_DEFAULT_PATH)
-
-set(TENSORRT_SEARCH_ROOTS
-  /usr
-  /usr/local
-  /opt)
-if(NOT "${TENSORRT_ROOT}" STREQUAL "")
-  list(INSERT TENSORRT_SEARCH_ROOTS 0 "${TENSORRT_ROOT}")
-endif()
-if(DEFINED ENV{TENSORRT_ROOT} AND NOT "$ENV{TENSORRT_ROOT}" STREQUAL "")
-  list(INSERT TENSORRT_SEARCH_ROOTS 0 "$ENV{TENSORRT_ROOT}")
-endif()
-if(DEFINED ENV{TensorRT_ROOT} AND NOT "$ENV{TensorRT_ROOT}" STREQUAL "")
-  list(INSERT TENSORRT_SEARCH_ROOTS 0 "$ENV{TensorRT_ROOT}")
-endif()
-
-find_program(TRTEXEC_BIN trtexec
-  PATHS ${TENSORRT_SEARCH_ROOTS}
-  PATH_SUFFIXES
-    bin
-    targets/x86_64-linux-gnu/bin
-  NO_DEFAULT_PATH)
-if(TRTEXEC_BIN)
-  get_filename_component(_trtexec_dir "${TRTEXEC_BIN}" DIRECTORY)
-  get_filename_component(_trtexec_parent "${_trtexec_dir}/.." ABSOLUTE)
-  get_filename_component(_trtexec_grandparent "${_trtexec_dir}/../.." ABSOLUTE)
-  get_filename_component(_trtexec_greatgrandparent "${_trtexec_dir}/../../.." ABSOLUTE)
-  list(APPEND TENSORRT_SEARCH_ROOTS
-    "${_trtexec_parent}"
-    "${_trtexec_grandparent}"
-    "${_trtexec_greatgrandparent}")
-endif()
-list(REMOVE_DUPLICATES TENSORRT_SEARCH_ROOTS)
-
-set(TENSORRT_LIBRARY_SUFFIXES
-  lib
-  lib64
-  targets/x86_64-linux-gnu/lib)
-if(CMAKE_LIBRARY_ARCHITECTURE)
-  list(APPEND TENSORRT_LIBRARY_SUFFIXES "lib/${CMAKE_LIBRARY_ARCHITECTURE}")
-endif()
-if(CMAKE_SYSTEM_PROCESSOR)
-  list(APPEND TENSORRT_LIBRARY_SUFFIXES "targets/${CMAKE_SYSTEM_PROCESSOR}-linux-gnu/lib")
-endif()
-
-set(TENSORRT_INCLUDE_SUFFIXES
-  include
-  targets/x86_64-linux-gnu/include)
-if(CMAKE_LIBRARY_ARCHITECTURE)
-  list(APPEND TENSORRT_INCLUDE_SUFFIXES "include/${CMAKE_LIBRARY_ARCHITECTURE}")
-endif()
-if(CMAKE_SYSTEM_PROCESSOR)
-  list(APPEND TENSORRT_INCLUDE_SUFFIXES "targets/${CMAKE_SYSTEM_PROCESSOR}-linux-gnu/include")
-endif()
-
-find_path(TENSORRT_INCLUDE_DIR NvInfer.h
-  PATHS ${TENSORRT_SEARCH_ROOTS}
-  PATH_SUFFIXES ${TENSORRT_INCLUDE_SUFFIXES}
-  NO_DEFAULT_PATH)
-find_library(NVINFER_LIB nvinfer
-  PATHS ${TENSORRT_SEARCH_ROOTS}
-  PATH_SUFFIXES ${TENSORRT_LIBRARY_SUFFIXES}
-  NO_DEFAULT_PATH)
-find_library(NVINFER_PLUGIN_LIB nvinfer_plugin
-  PATHS ${TENSORRT_SEARCH_ROOTS}
-  PATH_SUFFIXES ${TENSORRT_LIBRARY_SUFFIXES}
-  NO_DEFAULT_PATH)
-
 include(GNUInstallDirs)
-set(INFERENCE_PUBLIC_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
-set(INFERENCE_PRIVATE_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src")
-set(INFERENCE_PUBLIC_INCLUDE_DIR_INSTALL "include")
 
-set(MISSING_GPU_DEPS)
-if(NOT CUDA_FOUND)
-  list(APPEND MISSING_GPU_DEPS "CUDA Toolkit / nvcc")
-endif()
-if(NOT TENSORRT_INCLUDE_DIR)
-  list(APPEND MISSING_GPU_DEPS "TensorRT headers (NvInfer.h)")
-endif()
-if(NOT NVINFER_LIB)
-  list(APPEND MISSING_GPU_DEPS "TensorRT library: nvinfer")
-endif()
-if(NOT NVINFER_PLUGIN_LIB)
-  list(APPEND MISSING_GPU_DEPS "TensorRT library: nvinfer_plugin")
-endif()
-
-if(MISSING_GPU_DEPS)
-  string(REPLACE ";" "\n  - " MISSING_GPU_DEPS_TEXT "${MISSING_GPU_DEPS}")
-  set(MISSING_GPU_DEPS_TEXT "  - ${MISSING_GPU_DEPS_TEXT}")
-  if(BUILD_STUB_IF_NO_TENSORRT)
-    message(WARNING
-      "Building inference stub because required GPU inference dependencies were not found:\n"
-      "${MISSING_GPU_DEPS_TEXT}")
-    add_library(inference SHARED
-      src/inference_stub.cpp
-      src/inference_cpp_stub.cpp
-    )
-    target_include_directories(inference
-      PUBLIC
-        $<BUILD_INTERFACE:${INFERENCE_PUBLIC_INCLUDE_DIR}>
-        $<INSTALL_INTERFACE:${INFERENCE_PUBLIC_INCLUDE_DIR_INSTALL}>
-    )
-    if(BUILD_EXAMPLES)
-      message(STATUS
-        "Skipping example executables because the project is building the stub library. "
-        "Configure a full CUDA + TensorRT build to enable examples.")
-    endif()
-  else()
-    message(FATAL_ERROR
-      "Full build requires CUDA and TensorRT. Missing dependencies:\n"
-      "${MISSING_GPU_DEPS_TEXT}\n"
-      "Set TENSORRT_ROOT to your TensorRT installation root, or configure with "
-      "-DBUILD_STUB_IF_NO_TENSORRT=ON to build the stub explicitly.")
-  endif()
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
+  set(ARCH x86_64)
+  set(DEB_ARCH amd64)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+  set(ARCH aarch64)
+  set(DEB_ARCH arm64)
 else()
-  if(NOT YAML_CPP_INCLUDE_DIR OR NOT YAML_CPP_LIBRARY)
-    message(FATAL_ERROR
-      "yaml-cpp was not found in system paths. Install libyaml-cpp-dev or set YAML_CPP_ROOT.")
-  endif()
-
-  add_subdirectory(src/pillar_postprocess)
-  add_subdirectory(third_party/iou3d_nms)
-  add_subdirectory(third_party/voxelize)
-
-  add_library(inference SHARED
-    src/inference_api.cpp
-    src/inference_cpp.cpp
-    src/pillar_runtime.cpp
-    src/trt_engine.cpp
-  )
-  target_include_directories(inference
-    PUBLIC
-      $<BUILD_INTERFACE:${INFERENCE_PUBLIC_INCLUDE_DIR}>
-      $<INSTALL_INTERFACE:${INFERENCE_PUBLIC_INCLUDE_DIR_INSTALL}>
-    PRIVATE
-      ${INFERENCE_PRIVATE_INCLUDE_DIR}
-      ${TENSORRT_INCLUDE_DIR}
-      ${CUDA_INCLUDE_DIRS}
-      ${YAML_CPP_INCLUDE_DIR}
-  )
-  target_link_libraries(inference
-    PRIVATE
-      pillar_postprocess
-      iou3d_nms
-      voxelization
-      ${CUDA_LIBRARIES}
-      ${NVINFER_LIB}
-      ${NVINFER_PLUGIN_LIB}
-      ${YAML_CPP_LIBRARY}
-  )
-
-  add_executable(perf_debug_tool
-    tools/perf_debug_tool.cpp
-    src/inference_api.cpp
-    src/inference_cpp.cpp
-    src/pillar_runtime.cpp
-    src/trt_engine.cpp
-    src/pillar_debug_utils.cpp
-  )
-  target_include_directories(perf_debug_tool
-    PRIVATE
-      $<BUILD_INTERFACE:${INFERENCE_PUBLIC_INCLUDE_DIR}>
-      $<INSTALL_INTERFACE:${INFERENCE_PUBLIC_INCLUDE_DIR_INSTALL}>
-      ${INFERENCE_PRIVATE_INCLUDE_DIR}
-      ${TENSORRT_INCLUDE_DIR}
-      ${CUDA_INCLUDE_DIRS}
-      ${YAML_CPP_INCLUDE_DIR}
-  )
-  target_link_libraries(perf_debug_tool
-    PRIVATE
-      pillar_postprocess
-      ${CUDA_LIBRARIES}
-      ${NVINFER_LIB}
-      ${NVINFER_PLUGIN_LIB}
-      iou3d_nms
-      voxelization
-      ${YAML_CPP_LIBRARY}
-  )
-
-  add_executable(infer_debug_tool
-    tools/infer_debug_tool.cpp
-    src/pillar_debug_utils.cpp
-  )
-  target_include_directories(infer_debug_tool
-    PRIVATE
-      $<BUILD_INTERFACE:${INFERENCE_PUBLIC_INCLUDE_DIR}>
-      $<INSTALL_INTERFACE:${INFERENCE_PUBLIC_INCLUDE_DIR_INSTALL}>
-      ${INFERENCE_PRIVATE_INCLUDE_DIR}
-      ${TENSORRT_INCLUDE_DIR}
-      ${CUDA_INCLUDE_DIRS}
-      ${YAML_CPP_INCLUDE_DIR}
-  )
-  target_link_libraries(infer_debug_tool
-    PRIVATE
-      inference
-  )
-
-  if(BUILD_EXAMPLES)
-    add_subdirectory(examples)
-  endif()
-
-  if(BUILD_TESTING)
-    add_executable(self_car_nms_test
-      tests/self_car_nms_test.cpp
-      third_party/iou3d_nms/iou3d_cpu.cpp
-      third_party/iou3d_nms/iou3d_nms_api.cpp
-    )
-    target_include_directories(self_car_nms_test
-      PRIVATE
-        ${INFERENCE_PUBLIC_INCLUDE_DIR}
-        ${INFERENCE_PRIVATE_INCLUDE_DIR}
-        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/iou3d_nms/include
-    )
-    target_link_libraries(self_car_nms_test
-      PRIVATE
-        inference
-    )
-    add_test(NAME self_car_nms_test COMMAND self_car_nms_test)
-    add_test(
-      NAME package_arch_test
-      COMMAND bash
-        ${CMAKE_CURRENT_SOURCE_DIR}/tests/package_arch_test.sh
-        ${CMAKE_BINARY_DIR}
-        ${CMAKE_SYSTEM_PROCESSOR}
-    )
-  endif()
+  message(FATAL_ERROR "Unsupported architecture: ${CMAKE_SYSTEM_PROCESSOR}")
 endif()
 
-# ===================== CPack (DEB) Packaging =====================
-set(install_targets
-  inference
+find_package(CUDA REQUIRED)
+find_package(Protobuf REQUIRED)
+
+find_path(TENSORRT_INCLUDE_DIR NvInfer.h)
+find_library(NVINFER_LIB nvinfer)
+find_library(NVINFER_PLUGIN_LIB nvinfer_plugin)
+
+if(NOT TENSORRT_INCLUDE_DIR OR NOT NVINFER_LIB OR NOT NVINFER_PLUGIN_LIB)
+  message(FATAL_ERROR
+    "TensorRT not found. Set TENSORRT_INCLUDE_DIR, NVINFER_LIB and "
+    "NVINFER_PLUGIN_LIB for non-standard installations.")
+endif()
+
+find_path(YAML_CPP_INCLUDE_DIR yaml-cpp/yaml.h)
+find_library(YAML_CPP_LIBRARY yaml-cpp)
+
+if(NOT YAML_CPP_INCLUDE_DIR OR NOT YAML_CPP_LIBRARY)
+  message(FATAL_ERROR "yaml-cpp not found.")
+endif()
+
+message(STATUS "ARCH           : ${ARCH}")
+message(STATUS "CUDA           : ${CUDA_VERSION_STRING}")
+message(STATUS "TensorRT       : ${NVINFER_LIB}")
+message(STATUS "TensorRT include: ${TENSORRT_INCLUDE_DIR}")
+message(STATUS "Protobuf       : ${Protobuf_LIBRARIES}")
+message(STATUS "yaml-cpp       : ${YAML_CPP_LIBRARY}")
+
+set(INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
+set(SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src")
+
+set(SPCONV_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libspconv")
+set(SPCONV_INCLUDE_DIR "${SPCONV_ROOT}/include")
+set(SPCONV_PARSER_DIR "${SPCONV_ROOT}/parser")
+set(SPCONV_LIBRARY_DIR "${SPCONV_ROOT}/lib/${ARCH}")
+set(SPCONV_LIBRARY "${SPCONV_LIBRARY_DIR}/libspconv.so")
+
+foreach(path
+  "${SPCONV_INCLUDE_DIR}/spconv/engine.hpp"
+  "${SPCONV_LIBRARY}"
+  "${SPCONV_PARSER_DIR}/onnx-parser.cpp"
+  "${SPCONV_PARSER_DIR}/onnx/onnx-ml.proto"
+  "${SPCONV_PARSER_DIR}/onnx/onnx-operators-ml.proto"
+)
+  if(NOT EXISTS "${path}")
+    message(FATAL_ERROR "Missing dependency: ${path}")
+  endif()
+endforeach()
+
+message(STATUS "libspconv      : ${SPCONV_LIBRARY}")
+
+set(PROTO_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(PROTO_SOURCES
+  ${PROTO_GEN_DIR}/onnx/onnx-ml.pb.cc
+  ${PROTO_GEN_DIR}/onnx/onnx-operators-ml.pb.cc
+)
+set(PROTO_HEADERS
+  ${PROTO_GEN_DIR}/onnx/onnx-ml.pb.h
+  ${PROTO_GEN_DIR}/onnx/onnx-operators-ml.pb.h
 )
 
-set(DIST_TOOLS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/scripts/dist)
+add_custom_command(
+  OUTPUT ${PROTO_SOURCES} ${PROTO_HEADERS}
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${PROTO_GEN_DIR}/onnx"
+  COMMAND ${Protobuf_PROTOC_EXECUTABLE}
+    --proto_path=${SPCONV_PARSER_DIR}
+    --cpp_out=${PROTO_GEN_DIR}
+    ${SPCONV_PARSER_DIR}/onnx/onnx-ml.proto
+    ${SPCONV_PARSER_DIR}/onnx/onnx-operators-ml.proto
+  DEPENDS
+    ${SPCONV_PARSER_DIR}/onnx/onnx-ml.proto
+    ${SPCONV_PARSER_DIR}/onnx/onnx-operators-ml.proto
+  VERBATIM
+)
 
-# ===================== 安装规则 =====================
-install(TARGETS ${install_targets}
+add_library(spconv_onnx_proto STATIC ${PROTO_SOURCES})
+target_include_directories(spconv_onnx_proto PUBLIC
+  ${PROTO_GEN_DIR}
+  ${Protobuf_INCLUDE_DIRS}
+)
+target_link_libraries(spconv_onnx_proto PUBLIC ${Protobuf_LIBRARIES})
+set_target_properties(spconv_onnx_proto PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+add_subdirectory(src/pillar_postprocess)
+add_subdirectory(third_party/iou3d_nms)
+add_subdirectory(third_party/voxelize)
+
+set(INFERENCE_SOURCES
+  src/inference_api.cpp
+  src/inference_cpp.cpp
+  src/pillar_runtime.cpp
+  src/trt_engine.cpp
+  ${SPCONV_PARSER_DIR}/onnx-parser.cpp
+)
+
+set(INFERENCE_INCLUDES
+  ${SRC_DIR}
+  ${TENSORRT_INCLUDE_DIR}
+  ${CUDA_INCLUDE_DIRS}
+  ${YAML_CPP_INCLUDE_DIR}
+  ${SPCONV_INCLUDE_DIR}
+  ${PROTO_GEN_DIR}
+  ${SPCONV_PARSER_DIR}
+  ${Protobuf_INCLUDE_DIRS}
+)
+
+set(INFERENCE_LIBS
+  pillar_postprocess
+  iou3d_nms
+  voxelization
+  ${CUDA_LIBRARIES}
+  ${NVINFER_LIB}
+  ${NVINFER_PLUGIN_LIB}
+  ${YAML_CPP_LIBRARY}
+  ${SPCONV_LIBRARY}
+  spconv_onnx_proto
+)
+
+add_library(inference SHARED ${INFERENCE_SOURCES})
+
+target_include_directories(inference
+  PUBLIC
+    $<BUILD_INTERFACE:${INCLUDE_DIR}>
+    $<INSTALL_INTERFACE:include>
+  PRIVATE
+    ${INFERENCE_INCLUDES}
+)
+
+target_link_libraries(inference PRIVATE ${INFERENCE_LIBS})
+
+set_target_properties(inference PROPERTIES
+  BUILD_RPATH "${SPCONV_LIBRARY_DIR}"
+  INSTALL_RPATH "$ORIGIN"
+)
+
+add_executable(perf_debug_tool
+  tools/perf_debug_tool.cpp
+  src/pillar_debug_utils.cpp
+  ${INFERENCE_SOURCES}
+)
+
+target_include_directories(perf_debug_tool PRIVATE
+  ${INCLUDE_DIR}
+  ${INFERENCE_INCLUDES}
+)
+
+target_link_libraries(perf_debug_tool PRIVATE ${INFERENCE_LIBS})
+
+set_target_properties(perf_debug_tool PROPERTIES
+  BUILD_RPATH "${SPCONV_LIBRARY_DIR}"
+  INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR};$ORIGIN"
+)
+
+add_executable(infer_debug_tool
+  tools/infer_debug_tool.cpp
+  src/pillar_debug_utils.cpp
+)
+
+target_include_directories(infer_debug_tool PRIVATE
+  ${INCLUDE_DIR}
+  ${INFERENCE_INCLUDES}
+)
+
+target_link_libraries(infer_debug_tool PRIVATE inference)
+
+if(BUILD_EXAMPLES)
+  add_subdirectory(examples)
+endif()
+
+if(BUILD_TESTING)
+  enable_testing()
+
+  add_executable(self_car_nms_test
+    tests/self_car_nms_test.cpp
+    third_party/iou3d_nms/iou3d_cpu.cpp
+    third_party/iou3d_nms/iou3d_nms_api.cpp
+  )
+  target_include_directories(self_car_nms_test PRIVATE
+    ${INCLUDE_DIR}
+    ${SRC_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/iou3d_nms/include
+  )
+  target_link_libraries(self_car_nms_test PRIVATE inference)
+  add_test(NAME self_car_nms_test COMMAND self_car_nms_test)
+
+  add_executable(config_and_input_loader_test
+    tests/config_and_input_loader_test.cpp
+    src/pillar_debug_utils.cpp
+  )
+  target_include_directories(config_and_input_loader_test PRIVATE
+    ${INCLUDE_DIR}
+    ${SRC_DIR}
+  )
+  target_link_libraries(config_and_input_loader_test PRIVATE inference)
+  add_test(NAME config_and_input_loader_test COMMAND config_and_input_loader_test)
+
+  add_test(NAME infer_debug_cli_test
+    COMMAND bash
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/infer_debug_cli_test.sh
+      $<TARGET_FILE:infer_debug_tool>
+  )
+
+  add_test(NAME minimal_cpp_api_cli_test
+    COMMAND bash
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/minimal_cpp_api_cli_test.sh
+      $<TARGET_FILE:minimal_cpp_api_example>
+  )
+
+  add_test(NAME centerpoint_voxel_head2engine_deps_test
+    COMMAND bash
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/centerpoint_voxel_head2engine_deps_test.sh
+      ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+
+  add_test(NAME package_arch_test
+    COMMAND bash
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/package_arch_test.sh
+      ${CMAKE_BINARY_DIR}
+      ${CMAKE_SYSTEM_PROCESSOR}
+  )
+endif()
+
+install(TARGETS inference
   EXPORT lidarInferenceTargets
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-# 头文件
-install(DIRECTORY ${INFERENCE_PUBLIC_INCLUDE_DIR}/
+install(TARGETS perf_debug_tool infer_debug_tool
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+install(DIRECTORY "${INCLUDE_DIR}/"
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/${PROJECT_NAME}"
 )
 
-# 其他
-if(TARGET perf_debug_tool)
-  install(TARGETS perf_debug_tool
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-  )
-endif()
+get_filename_component(SPCONV_LIBRARY_REAL "${SPCONV_LIBRARY}" REALPATH)
 
-if(TARGET infer_debug_tool)
-  install(TARGETS infer_debug_tool
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-  )
-endif()
+install(FILES "${SPCONV_LIBRARY_REAL}"
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  RENAME libspconv.so
+)
 
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
-  install(PROGRAMS
-    ${DIST_TOOLS_DIR}/lidar_model_downloader
+if(ARCH STREQUAL "aarch64")
+  install(PROGRAMS scripts/dist/lidar_model_downloader
     DESTINATION ${CMAKE_INSTALL_BINDIR}
   )
 endif()
 
-# ===================== CMake package 支持 =====================
 include(CMakePackageConfigHelpers)
 
-set(INSTALL_CONFIGDIR ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME})
+set(INSTALL_CONFIGDIR "${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}")
 
-# 导出 targets
 install(EXPORT lidarInferenceTargets
   FILE ${PROJECT_NAME}Targets.cmake
   NAMESPACE ${PROJECT_NAME}::
   DESTINATION ${INSTALL_CONFIGDIR}
 )
 
-# 生成 Config.cmake
 configure_package_config_file(
-  ${CMAKE_CURRENT_SOURCE_DIR}/cmake/${PROJECT_NAME}Config.cmake.in
+  cmake/${PROJECT_NAME}Config.cmake.in
   ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}Config.cmake
   INSTALL_DESTINATION ${INSTALL_CONFIGDIR}
 )
@@ -375,37 +295,22 @@ write_basic_package_version_file(
   COMPATIBILITY SameMajorVersion
 )
 
-# 安装 Config.cmake
 install(FILES
   ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}Config.cmake
   ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake
   DESTINATION ${INSTALL_CONFIGDIR}
 )
 
-# ===================== CPack =====================
+set(CPACK_GENERATOR DEB)
 set(CPACK_PACKAGE_NAME ${PROJECT_NAME})
 set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY ${PROJECT_DESCRIPTION})
-set(CPACK_PACKAGE_CONTACT "zkzc <zkzc@todo.com>")
-
-# 生成 DEB
-set(CPACK_GENERATOR "DEB")
+set(CPACK_PACKAGE_CONTACT "zkzc zkzc@todo.com")
 set(CPACK_PACKAGING_INSTALL_PREFIX "/usr/local")
 
-# Debian 相关字段
-set(CPACK_DEBIAN_PACKAGE_MAINTAINER "zkzc <zkzc@todo.com>")
+set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE ${DEB_ARCH})
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "zkzc zkzc@todo.com")
 set(CPACK_DEBIAN_PACKAGE_DEPENDS "libc6 (>= 2.31)")
-
-# 自动解析依赖（推荐开启）
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
-
-# 系统架构，同义映射
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
-  set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "arm64")
-elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
-  set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
-else()
-  set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "${CMAKE_SYSTEM_PROCESSOR}")
-endif()
 
 include(CPack)

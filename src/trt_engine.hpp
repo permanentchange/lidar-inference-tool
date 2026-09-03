@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace inference_internal {
 
@@ -53,6 +54,52 @@ class TrtExecutor {
   struct Impl;
 
   EngineContract contract_{};
+  std::unique_ptr<Impl> impl_;
+};
+
+struct CenterPointHeadContract {
+  int task_count = 0;
+  int bbox_channels = 0;
+  int cls_channels = 0;
+  int dir_channels = 0;
+  int height = 0;
+  int width = 0;
+  int num_bindings = 0;
+  int input_index = -1;
+  std::vector<int> reg_indices;
+  std::vector<int> height_indices;
+  std::vector<int> dim_indices;
+  std::vector<int> rot_indices;
+  std::vector<int> vel_indices;
+  std::vector<int> hm_indices;
+};
+
+class CenterPointHeadTrtExecutor {
+ public:
+  CenterPointHeadTrtExecutor();
+  ~CenterPointHeadTrtExecutor();
+
+  CenterPointHeadTrtExecutor(const CenterPointHeadTrtExecutor&) = delete;
+  CenterPointHeadTrtExecutor& operator=(const CenterPointHeadTrtExecutor&) = delete;
+
+  InferenceStatus Load(const RuntimeConfig& config,
+                       const ResolvedHeadLayout& layout,
+                       const std::string& engine_path,
+                       std::string* out_error);
+  InferenceStatus Enqueue(void* scn_features,
+                          const std::vector<int64_t>& scn_features_shape,
+                          float* d_bbox_pred,
+                          float* d_cls_score,
+                          float* d_dir_cls_pred,
+                          cudaStream_t stream,
+                          std::string* out_error);
+
+  const CenterPointHeadContract& contract() const { return contract_; }
+
+ private:
+  struct Impl;
+
+  CenterPointHeadContract contract_{};
   std::unique_ptr<Impl> impl_;
 };
 

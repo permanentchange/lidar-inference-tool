@@ -61,15 +61,29 @@ std::string NormalizeNmsType(const std::string& value) {
   return normalized;
 }
 
+std::string NormalizeIdentifier(const std::string& value) {
+  std::string normalized = value;
+  std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                 [](unsigned char ch) {
+                   if (ch == '-' || ch == ' ') {
+                     return '_';
+                   }
+                   return static_cast<char>(std::tolower(ch));
+                 });
+  return normalized;
+}
+
 RuntimeConfig RuntimeConfigFromPackage(const inference::PackageConfig& package) {
   RuntimeConfig runtime;
   runtime.end2end_file = package.model.engine_path;
+  runtime.head_engine_file = package.model.engine_path;
   runtime.point_cloud_range = package.model.point_cloud_range;
   runtime.post_center_range = package.model.post_center_range;
-  runtime.pillar_size = package.model.pillar_size;
-  runtime.max_points_per_pillar = package.runtime.max_points_per_pillar;
-  runtime.min_pillars = package.runtime.min_pillars;
-  runtime.max_pillars = package.runtime.max_pillars;
+  runtime.voxel_size = package.model.voxel_size;
+  runtime.sparse_shape = package.model.sparse_shape;
+  runtime.max_points_per_voxel = package.runtime.max_points_per_voxel;
+  runtime.min_voxels = package.runtime.min_voxels;
+  runtime.max_voxels = package.runtime.max_voxels;
   runtime.max_points = package.runtime.max_points;
   runtime.frame_num = package.runtime.frame_num;
   runtime.num_point_features = package.model.num_point_features;
@@ -84,6 +98,15 @@ RuntimeConfig RuntimeConfigFromPackage(const inference::PackageConfig& package) 
   runtime.task_num_classes = package.model.task_num_classes;
   runtime.task_label_ids = package.model.task_label_ids;
   runtime.label_count = static_cast<int>(package.model.label_names.size());
+  const std::string backend = NormalizeIdentifier(package.model.runtime_backend);
+  if (backend == "centerpoint_voxel" || backend == "voxel" ||
+      backend == "cuda_centerpoint") {
+    runtime.runtime_backend = RuntimeBackend::kCenterPointVoxel;
+    runtime.scn_onnx_file = package.model.scn_onnx_path;
+    runtime.head_engine_file =
+        package.model.head_engine_path.empty() ? package.model.engine_path
+                                               : package.model.head_engine_path;
+  }
   return runtime;
 }
 
@@ -406,10 +429,76 @@ InferenceStatus ValidateFloatField(const std::string& path,
   return INFERENCE_STATUS_OK;
 }
 
+InferenceStatus ValidateNumericScalarField(const std::string& path,
+                                           const PcdHeader& header,
+                                           const std::string& field_name,
+                                           std::string* out_error) {
+  const PcdFieldSpec* field = FindPcdField(header, field_name);
+  if (field == nullptr) {
+    return INFERENCE_STATUS_OK;
+  }
+  const bool supported_type = field->type == 'F' || field->type == 'U' || field->type == 'I';
+  const bool supported_size =
+      field->size == 1 || field->size == 2 || field->size == 4 || field->size == 8;
+  if (!supported_type || !supported_size || field->count != 1) {
+    std::ostringstream oss;
+    oss << "Unsupported PCD: optional field '" << field_name
+        << "' must be a numeric scalar, got TYPE=" << field->type
+        << ", SIZE=" << field->size << ", COUNT=" << field->count << ". "
+        << PcdHeaderSummary(path, header);
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+  }
+  if (field->type == 'F' && field->size != 4 && field->size != 8) {
+    std::ostringstream oss;
+    oss << "Unsupported PCD: float optional field '" << field_name
+        << "' must use SIZE 4 or 8. " << PcdHeaderSummary(path, header);
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+  }
+  return INFERENCE_STATUS_OK;
+}
+
 float ReadFloat32At(const std::vector<char>& buffer, size_t offset) {
   float value = 0.0f;
   std::memcpy(&value, buffer.data() + offset, sizeof(value));
   return value;
+}
+
+template <typename T>
+float ReadAsFloat(const std::vector<char>& buffer, size_t offset) {
+  T value{};
+  std::memcpy(&value, buffer.data() + offset, sizeof(value));
+  return static_cast<float>(value);
+}
+
+float ReadNumericScalarAt(const std::vector<char>& buffer, const PcdFieldSpec& field) {
+  if (field.type == 'F') {
+    if (field.size == 8) {
+      return ReadAsFloat<double>(buffer, field.byte_offset);
+    }
+    return ReadFloat32At(buffer, field.byte_offset);
+  }
+  if (field.type == 'U') {
+    if (field.size == 1) {
+      return ReadAsFloat<uint8_t>(buffer, field.byte_offset);
+    }
+    if (field.size == 2) {
+      return ReadAsFloat<uint16_t>(buffer, field.byte_offset);
+    }
+    if (field.size == 4) {
+      return ReadAsFloat<uint32_t>(buffer, field.byte_offset);
+    }
+    return ReadAsFloat<uint64_t>(buffer, field.byte_offset);
+  }
+  if (field.size == 1) {
+    return ReadAsFloat<int8_t>(buffer, field.byte_offset);
+  }
+  if (field.size == 2) {
+    return ReadAsFloat<int16_t>(buffer, field.byte_offset);
+  }
+  if (field.size == 4) {
+    return ReadAsFloat<int32_t>(buffer, field.byte_offset);
+  }
+  return ReadAsFloat<int64_t>(buffer, field.byte_offset);
 }
 
 InferenceStatus LoadPcdPointCloudFile(const std::string& path,
@@ -436,11 +525,14 @@ InferenceStatus LoadPcdPointCloudFile(const std::string& path,
     }
   }
   const PcdFieldSpec* intensity = FindPcdField(header, "intensity");
-  if (intensity != nullptr) {
-    status = ValidateFloatField(path, header, "intensity", out_error);
-    if (status != INFERENCE_STATUS_OK) {
-      return status;
-    }
+  status = ValidateNumericScalarField(path, header, "intensity", out_error);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
+  const PcdFieldSpec* has_intensity = FindPcdField(header, "has_intensity");
+  status = ValidateNumericScalarField(path, header, "has_intensity", out_error);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
   }
 
   if (header.data_format != "ascii" && header.data_format != "binary") {
@@ -488,6 +580,16 @@ InferenceStatus LoadPcdPointCloudFile(const std::string& path,
             << ": intensity must be a float32 value. " << PcdHeaderSummary(path, header);
         return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
       }
+      if (has_intensity != nullptr && num_point_features >= 5 &&
+          !ParseFloatStrict(tokens[has_intensity->scalar_offset], &dst[4])) {
+        std::ostringstream oss;
+        oss << "Failed to parse ascii PCD row " << loaded
+            << ": has_intensity must be a numeric value. " << PcdHeaderSummary(path, header);
+        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+      }
+      if (has_intensity == nullptr && intensity != nullptr && num_point_features >= 5) {
+        dst[4] = 1.0f;
+      }
       ++loaded;
     }
     if (loaded != point_count) {
@@ -511,7 +613,13 @@ InferenceStatus LoadPcdPointCloudFile(const std::string& path,
       dst[1] = ReadFloat32At(point_buffer, y->byte_offset);
       dst[2] = ReadFloat32At(point_buffer, z->byte_offset);
       if (intensity != nullptr && num_point_features >= 4) {
-        dst[3] = ReadFloat32At(point_buffer, intensity->byte_offset);
+        dst[3] = ReadNumericScalarAt(point_buffer, *intensity);
+      }
+      if (has_intensity != nullptr && num_point_features >= 5) {
+        dst[4] = ReadNumericScalarAt(point_buffer, *has_intensity);
+      }
+      if (has_intensity == nullptr && intensity != nullptr && num_point_features >= 5) {
+        dst[4] = 1.0f;
       }
     }
   }
@@ -612,11 +720,6 @@ InferenceStatus LoadFloatBinFile(const std::string& path,
   out_points->assign(point_count * static_cast<size_t>(num_point_features), 0.0f);
   size_t copy_features =
       std::min(static_cast<size_t>(source_features), static_cast<size_t>(num_point_features));
-  // Match InferTools PointCloudLoader(use_timestamp=False): 5D bin input is treated as XYZI
-  // and the trailing feature is zero-padded instead of forwarded verbatim.
-  if (source_features >= 5 && num_point_features >= 5) {
-    copy_features = 4;
-  }
   for (size_t i = 0; i < point_count; ++i) {
     std::copy_n(raw_points.data() + i * static_cast<size_t>(source_features), copy_features,
                 out_points->data() + i * static_cast<size_t>(num_point_features));
@@ -721,11 +824,19 @@ InferenceStatus SaveInternalAuxiliaryArtifacts(const DebugArtifacts& debug,
   const std::filesystem::path dump_dir(config.dump_dir);
   std::filesystem::create_directories(dump_dir);
 
+  const size_t stored_voxel_count =
+      debug.pillar_inputs.voxels.empty()
+          ? 0UL
+          : static_cast<size_t>(debug.pillar_inputs.num_pillars);
+  const size_t stored_coor_count =
+      debug.pillar_inputs.coors.empty()
+          ? 0UL
+          : static_cast<size_t>(debug.pillar_inputs.num_pillars);
+
   InferenceStatus status = WriteNpy<float>(
       dump_dir / "pillar_voxels.npy", debug.pillar_inputs.voxels.data(),
       debug.pillar_inputs.voxels.size(),
-      {static_cast<size_t>(debug.pillar_inputs.num_pillars),
-       static_cast<size_t>(config.runtime.max_points_per_pillar),
+      {stored_voxel_count, static_cast<size_t>(config.runtime.max_points_per_voxel),
        static_cast<size_t>(config.runtime.num_point_features)},
       out_error);
   if (status != INFERENCE_STATUS_OK) {
@@ -741,7 +852,7 @@ InferenceStatus SaveInternalAuxiliaryArtifacts(const DebugArtifacts& debug,
   status = WriteNpy<int32_t>(dump_dir / "pillar_coors.npy",
                              debug.pillar_inputs.coors.data(),
                              debug.pillar_inputs.coors.size(),
-                             {static_cast<size_t>(debug.pillar_inputs.num_pillars), 4},
+                             {stored_coor_count, 4},
                              out_error);
   if (status != INFERENCE_STATUS_OK) {
     return status;

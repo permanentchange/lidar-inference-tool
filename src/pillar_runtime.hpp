@@ -10,14 +10,23 @@
 
 namespace inference_internal {
 
+enum class RuntimeBackend {
+  kPillarEnd2End = 0,
+  kCenterPointVoxel = 1,
+};
+
 struct RuntimeConfig {
   std::string end2end_file;
+  std::string scn_onnx_file;
+  std::string head_engine_file;
   std::array<float, 6> point_cloud_range{};
   std::array<float, 6> post_center_range{};
-  std::array<float, 3> pillar_size{};
-  int max_points_per_pillar = 20;
-  int min_pillars = 100;
-  int max_pillars = 50000;
+  std::array<float, 3> voxel_size{};
+  std::vector<int> sparse_shape;
+  RuntimeBackend runtime_backend = RuntimeBackend::kPillarEnd2End;
+  int max_points_per_voxel = 20;
+  int min_voxels = 100;
+  int max_voxels = 50000;
   int max_points = 300000;
   int frame_num = 1;
   int num_point_features = 5;

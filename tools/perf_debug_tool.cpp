@@ -179,6 +179,19 @@ void AppendStatJson(std::ostringstream* oss, const std::string& name, const Timi
   *oss << "\n";
 }
 
+bool IsCenterPointVoxelBackend(const inference_internal::ToolConfig& config) {
+  return config.runtime.runtime_backend ==
+         inference_internal::RuntimeBackend::kCenterPointVoxel;
+}
+
+const char* PillarOrVoxelCountName(const inference_internal::ToolConfig& config) {
+  return IsCenterPointVoxelBackend(config) ? "voxel_count" : "pillar_count";
+}
+
+const char* PillarOrVoxelStageName(const inference_internal::ToolConfig& config) {
+  return IsCenterPointVoxelBackend(config) ? "voxelize" : "pillarize";
+}
+
 std::string JsonEscape(const std::string& value) {
   std::ostringstream oss;
   for (const char ch : value) {
@@ -233,6 +246,8 @@ bool WriteTimingsJson(const inference_internal::ToolConfig& config,
   }
 
   std::ostringstream json;
+  const char* count_name = PillarOrVoxelCountName(config);
+  const char* voxelize_stage_name = PillarOrVoxelStageName(config);
   json << "{\n";
   json << "  \"config\": {\n";
   json << "    \"warmup_iters\": " << config.warmup_iters << ",\n";
@@ -242,10 +257,10 @@ bool WriteTimingsJson(const inference_internal::ToolConfig& config,
   json << "  \"debug_run\": {\n";
   json << "    \"pcd_load_ms\": " << pcd_load_ms << ",\n";
   json << "    \"input_points\": " << input_points << ",\n";
-  json << "    \"pillar_count\": " << pillar_count << ",\n";
+  json << "    \"" << count_name << "\": " << pillar_count << ",\n";
   json << "    \"decoded_candidates\": " << decoded_candidates << ",\n";
   json << "    \"timings_ms\": {\n";
-  json << "      \"pillarize\": " << single_run.pillarize_ms << ",\n";
+  json << "      \"" << voxelize_stage_name << "\": " << single_run.pillarize_ms << ",\n";
   json << "      \"h2d_prepare\": " << single_run.h2d_prepare_ms << ",\n";
   json << "      \"trt_forward\": " << single_run.trt_forward_ms << ",\n";
   json << "      \"d2h_collect\": " << single_run.d2h_collect_ms << ",\n";
@@ -257,7 +272,7 @@ bool WriteTimingsJson(const inference_internal::ToolConfig& config,
   json << "  \"profile_summary_ms\": {\n";
   AppendStatJson(&json, "pcd_load", ComputeStats(std::vector<double>{pcd_load_ms}), true);
   AppendStatJson(&json, "input_pack", ComputeStats(input_pack_values), true);
-  AppendStatJson(&json, "pillarize", ComputeStats(pillarize_values), true);
+  AppendStatJson(&json, voxelize_stage_name, ComputeStats(pillarize_values), true);
   AppendStatJson(&json, "h2d_prepare", ComputeStats(h2d_values), true);
   AppendStatJson(&json, "trt_forward", ComputeStats(trt_values), true);
   AppendStatJson(&json, "d2h_collect", ComputeStats(d2h_values), true);
@@ -300,7 +315,7 @@ bool WriteMetadataJson(const inference_internal::ToolConfig& config,
   output << "    \"truncated\": " << (point_cloud_info.truncated ? "true" : "false") << "\n";
   output << "  },\n";
   output << "  \"runtime\": {\n";
-  output << "    \"pillar_count\": " << pillar_count << ",\n";
+  output << "    \"" << PillarOrVoxelCountName(config) << "\": " << pillar_count << ",\n";
   output << "    \"decoded_candidates\": " << decoded_candidates << "\n";
   output << "  }\n";
   output << "}\n";
@@ -323,16 +338,19 @@ void ResetResponseCounts(InferenceResponse* response) {
   response->freespace_count = 0;
 }
 
-void PrintSingleRunSummary(double pcd_load_ms,
+void PrintSingleRunSummary(const inference_internal::ToolConfig& config,
+                           double pcd_load_ms,
                            int input_points,
                            const inference_internal::DebugArtifacts& debug) {
   std::cout << "Performance debug run complete.\n";
   std::cout << "pcd_load: " << pcd_load_ms << " ms\n";
   std::cout << "input_points: " << input_points << "\n";
-  std::cout << "pillar_count: " << debug.pillar_inputs.num_pillars << "\n";
+  std::cout << PillarOrVoxelCountName(config) << ": "
+            << debug.pillar_inputs.num_pillars << "\n";
   std::cout << "decoded_candidates: " << debug.decoded_candidates.scores.size() << "\n";
   std::cout << "Single-run timings:\n";
-  std::cout << "  pillarize=" << debug.timings.pillarize_ms << " ms\n";
+  std::cout << "  " << PillarOrVoxelStageName(config) << "="
+            << debug.timings.pillarize_ms << " ms\n";
   std::cout << "  h2d_prepare=" << debug.timings.h2d_prepare_ms << " ms\n";
   std::cout << "  trt_forward=" << debug.timings.trt_forward_ms << " ms\n";
   std::cout << "  d2h_collect=" << debug.timings.d2h_collect_ms << " ms\n";
@@ -441,7 +459,7 @@ int main(int argc, char** argv) {
   }
   debug.timings = debug_timing;
 
-  PrintSingleRunSummary(pcd_load_ms, request.point_count, debug);
+  PrintSingleRunSummary(config, pcd_load_ms, request.point_count, debug);
 
   for (int i = 0; i < config.warmup_iters; ++i) {
     ResetResponseCounts(&response);
@@ -494,7 +512,7 @@ int main(int argc, char** argv) {
             << config.warmup_iters << " warmup):\n";
   PrintStats("pcd_load", std::vector<double>{pcd_load_ms});
   PrintStats("input_pack", input_pack_values);
-  PrintStats("pillarize", pillarize_values);
+  PrintStats(PillarOrVoxelStageName(config), pillarize_values);
   PrintStats("h2d_prepare", h2d_values);
   PrintStats("trt_forward", trt_values);
   PrintStats("d2h_collect", d2h_values);

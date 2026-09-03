@@ -20,6 +20,8 @@
 #include <cuda_runtime_api.h>
 
 #include "iou3d_nms_api.h"
+#include "onnx-parser.hpp"
+#include "spconv/engine.hpp"
 #include "voxelization.hpp"
 
 namespace inference_internal {
@@ -467,7 +469,7 @@ InferenceStatus BuildPillars(const RuntimeConfig& config,
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                     "out_tensors is null");
   }
-  if (num_pillars < 0 || num_pillars > config.max_pillars) {
+  if (num_pillars < 0 || num_pillars > config.max_voxels) {
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                     "Invalid pillar count for debug tensors");
   }
@@ -483,7 +485,7 @@ InferenceStatus BuildPillars(const RuntimeConfig& config,
                     "Device pillar tensors are null for a non-empty debug capture");
   }
 
-  const int voxel_stride = config.max_points_per_pillar * config.num_point_features;
+  const int voxel_stride = config.max_points_per_voxel * config.num_point_features;
   out_tensors->num_pillars = num_pillars;
   out_tensors->voxels.resize(static_cast<size_t>(num_pillars) * voxel_stride);
   out_tensors->num_points.resize(num_pillars);
@@ -611,10 +613,10 @@ InferenceStatus DecodeLegacyOutputs(const RuntimeConfig& config,
       const float yaw = DecodeYaw(layout, bbox, dir, hw, entry.index);
 
       const float center_x =
-          (static_cast<float>(x_idx) + reg_x) * config.out_size_factor * config.pillar_size[0] +
+          (static_cast<float>(x_idx) + reg_x) * config.out_size_factor * config.voxel_size[0] +
           config.point_cloud_range[0];
       const float center_y =
-          (static_cast<float>(y_idx) + reg_y) * config.out_size_factor * config.pillar_size[1] +
+          (static_cast<float>(y_idx) + reg_y) * config.out_size_factor * config.voxel_size[1] +
           config.point_cloud_range[1];
       const float center_z = height_value - dim_z * 0.5f;
       if (!std::isfinite(center_x) || !std::isfinite(center_y) || !std::isfinite(center_z) ||
@@ -738,10 +740,10 @@ InferenceStatus DecodeCenterPointOutputs(const RuntimeConfig& config,
       const float yaw = DecodeYaw(layout, bbox, dir, hw, entry.spatial_index);
 
       const float center_x =
-          (static_cast<float>(x_idx) + reg_x) * config.out_size_factor * config.pillar_size[0] +
+          (static_cast<float>(x_idx) + reg_x) * config.out_size_factor * config.voxel_size[0] +
           config.point_cloud_range[0];
       const float center_y =
-          (static_cast<float>(y_idx) + reg_y) * config.out_size_factor * config.pillar_size[1] +
+          (static_cast<float>(y_idx) + reg_y) * config.out_size_factor * config.voxel_size[1] +
           config.point_cloud_range[1];
       const float center_z = height_value;
       if (!std::isfinite(center_x) || !std::isfinite(center_y) || !std::isfinite(center_z) ||
@@ -938,7 +940,7 @@ InferenceStatus ParseRuntimeConfig(const InferenceConfig& config,
                     "end2end_file is empty");
   }
   if (!IsFiniteArray(config.point_cloud_range, 6) || !IsFiniteArray(config.post_center_range, 6) ||
-      !IsFiniteArray(config.pillar_size, 3)) {
+      !IsFiniteArray(config.voxel_size, 3)) {
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                     "Config contains non-finite numeric values");
   }
@@ -954,9 +956,9 @@ InferenceStatus ParseRuntimeConfig(const InferenceConfig& config,
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                     "post_center_range is invalid");
   }
-  if (config.pillar_size[0] <= 0.0f || config.pillar_size[1] <= 0.0f ||
-      config.pillar_size[2] <= 0.0f || config.max_points_per_pillar <= 0 ||
-      config.min_pillars <= 0 || config.max_pillars < config.min_pillars ||
+  if (config.voxel_size[0] <= 0.0f || config.voxel_size[1] <= 0.0f ||
+      config.voxel_size[2] <= 0.0f || config.max_points_per_voxel <= 0 ||
+      config.min_voxels <= 0 || config.max_voxels < config.min_voxels ||
       config.max_points <= 0 || config.num_point_features < 3 || config.bbox_max_num <= 0 ||
       config.out_size_factor <= 0) {
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
@@ -968,10 +970,10 @@ InferenceStatus ParseRuntimeConfig(const InferenceConfig& config,
             out_config->point_cloud_range.begin());
   std::copy(config.post_center_range, config.post_center_range + 6,
             out_config->post_center_range.begin());
-  std::copy(config.pillar_size, config.pillar_size + 3, out_config->pillar_size.begin());
-  out_config->max_points_per_pillar = config.max_points_per_pillar;
-  out_config->min_pillars = config.min_pillars;
-  out_config->max_pillars = config.max_pillars;
+  std::copy(config.voxel_size, config.voxel_size + 3, out_config->voxel_size.begin());
+  out_config->max_points_per_voxel = config.max_points_per_voxel;
+  out_config->min_voxels = config.min_voxels;
+  out_config->max_voxels = config.max_voxels;
   out_config->max_points = config.max_points;
   out_config->frame_num = std::max(config.frame_num, 1);
   out_config->num_point_features = config.num_point_features;
@@ -1203,6 +1205,8 @@ InferenceOutputSpec MakeOutputSpec(int task_count, int bbox_max_num) {
 struct PillarRuntime::Impl {
   ResolvedHeadLayout layout;
   TrtExecutor trt;
+  CenterPointHeadTrtExecutor voxel_head_trt;
+  std::shared_ptr<spconv::Engine> scn_engine;
   std::unique_ptr<GpuDecodedCandidates> gpu_decoder;
   std::shared_ptr<Voxelization> voxelizer;
   cudaStream_t stream = nullptr;
@@ -1222,6 +1226,7 @@ struct PillarRuntime::Impl {
   size_t h_dir_cls_pred_count = 0;
 
   ~Impl() {
+    scn_engine.reset();
     FreePinnedHostBuffer(&h_dir_cls_pred);
     FreePinnedHostBuffer(&h_cls_score);
     FreePinnedHostBuffer(&h_bbox_pred);
@@ -1260,13 +1265,52 @@ InferenceStatus PillarRuntime::Initialize() {
   if (status != INFERENCE_STATUS_OK) {
     return status;
   }
-  status = impl_->trt.Load(config_, impl_->layout, config_.end2end_file,
-                           &last_error_);
-  if (status != INFERENCE_STATUS_OK) {
-    return status;
+  int task_count = 0;
+  int bbox_channels = 0;
+  int cls_channels = 0;
+  int dir_channels = 0;
+  int output_height = 0;
+  int output_width = 0;
+  if (config_.runtime_backend == RuntimeBackend::kCenterPointVoxel) {
+    if (config_.scn_onnx_file.empty() || config_.head_engine_file.empty() ||
+        config_.sparse_shape.size() != 3) {
+      return SetError(&last_error_, INFERENCE_STATUS_INVALID_ARGUMENT,
+                      "centerpoint_voxel requires scn_onnx_file, head_engine_file and sparse_shape");
+    }
+    impl_->scn_engine = spconv::load_engine_from_onnx(
+        config_.scn_onnx_file, spconv::Precision::Float16);
+    if (!impl_->scn_engine) {
+      return SetError(&last_error_, INFERENCE_STATUS_BACKEND_ERROR,
+                      "Failed to load CenterPoint voxel SCN ONNX: " + config_.scn_onnx_file);
+    }
+    status = impl_->voxel_head_trt.Load(config_, impl_->layout, config_.head_engine_file,
+                                        &last_error_);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    const CenterPointHeadContract& contract = impl_->voxel_head_trt.contract();
+    task_count = contract.task_count;
+    bbox_channels = contract.bbox_channels;
+    cls_channels = contract.cls_channels;
+    dir_channels = contract.dir_channels;
+    output_height = contract.height;
+    output_width = contract.width;
+    output_spec_ = MakeOutputSpec(contract.task_count, config_.bbox_max_num);
+  } else {
+    status = impl_->trt.Load(config_, impl_->layout, config_.end2end_file,
+                             &last_error_);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    const EngineContract& contract = impl_->trt.contract();
+    task_count = contract.task_count;
+    bbox_channels = contract.bbox_channels;
+    cls_channels = contract.cls_channels;
+    dir_channels = contract.dir_channels;
+    output_height = contract.height;
+    output_width = contract.width;
+    output_spec_ = MakeOutputSpec(contract.task_count, config_.bbox_max_num);
   }
-  const EngineContract& contract = impl_->trt.contract();
-  output_spec_ = MakeOutputSpec(contract.task_count, config_.bbox_max_num);
 
   status = CheckCuda(cudaStreamCreate(&impl_->stream), "cudaStreamCreate", &last_error_);
   if (status != INFERENCE_STATUS_OK) {
@@ -1290,14 +1334,14 @@ InferenceStatus PillarRuntime::Initialize() {
   voxelization_param.max_range = nvtype::Float3(config_.point_cloud_range[3],
                                                 config_.point_cloud_range[4],
                                                 config_.point_cloud_range[5]);
-  voxelization_param.voxel_size = nvtype::Float3(config_.pillar_size[0],
-                                                 config_.pillar_size[1],
-                                                 config_.pillar_size[2]);
+  voxelization_param.voxel_size = nvtype::Float3(config_.voxel_size[0],
+                                                 config_.voxel_size[1],
+                                                 config_.voxel_size[2]);
   voxelization_param.grid_size = VoxelizationParameter::compute_grid_size(
       voxelization_param.max_range, voxelization_param.min_range, voxelization_param.voxel_size);
   voxelization_param.num_feature = config_.num_point_features;
-  voxelization_param.max_voxels = config_.max_pillars;
-  voxelization_param.max_points_per_voxel = config_.max_points_per_pillar;
+  voxelization_param.max_voxels = config_.max_voxels;
+  voxelization_param.max_points_per_voxel = config_.max_points_per_voxel;
   voxelization_param.max_points = config_.max_points;
   impl_->voxelizer = create_voxelization(voxelization_param);
   if (!impl_->voxelizer) {
@@ -1307,15 +1351,15 @@ InferenceStatus PillarRuntime::Initialize() {
 
   const size_t max_points_size = static_cast<size_t>(config_.max_points) *
                                  static_cast<size_t>(config_.num_point_features);
-  const size_t bbox_size = static_cast<size_t>(contract.bbox_channels) *
-                           static_cast<size_t>(contract.height) *
-                           static_cast<size_t>(contract.width);
-  const size_t cls_size = static_cast<size_t>(contract.cls_channels) *
-                          static_cast<size_t>(contract.height) *
-                          static_cast<size_t>(contract.width);
-  const size_t dir_size = static_cast<size_t>(contract.dir_channels) *
-                          static_cast<size_t>(contract.height) *
-                          static_cast<size_t>(contract.width);
+  const size_t bbox_size = static_cast<size_t>(bbox_channels) *
+                           static_cast<size_t>(output_height) *
+                           static_cast<size_t>(output_width);
+  const size_t cls_size = static_cast<size_t>(cls_channels) *
+                          static_cast<size_t>(output_height) *
+                          static_cast<size_t>(output_width);
+  const size_t dir_size = static_cast<size_t>(dir_channels) *
+                          static_cast<size_t>(output_height) *
+                          static_cast<size_t>(output_width);
 
   status = CheckCuda(cudaMalloc(reinterpret_cast<void**>(&impl_->d_points),
                                 max_points_size * sizeof(float)),
@@ -1366,9 +1410,9 @@ InferenceStatus PillarRuntime::Initialize() {
   }
   impl_->gpu_decoder = std::make_unique<GpuDecodedCandidates>();
   status = impl_->gpu_decoder->Initialize(
-      config_, impl_->layout, contract.task_count, contract.bbox_channels,
-      contract.cls_channels, contract.dir_channels, contract.height,
-      contract.width, &last_error_);
+      config_, impl_->layout, task_count, bbox_channels,
+      cls_channels, dir_channels, output_height,
+      output_width, &last_error_);
   if (status != INFERENCE_STATUS_OK) {
     return status;
   }
@@ -1441,74 +1485,163 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
     }
   }
 
-  status = MeasureGpuStageBegin(impl_->profile_start, impl_->stream, enable_gpu_timing,
-                                &last_error_);
-  if (status != INFERENCE_STATUS_OK) {
-    return status;
-  }
-  impl_->voxelizer->forward_pillars(impl_->d_points, bounded_point_count,
-                                    CoordinateOrder::ZYX, impl_->stream);
+  int raw_task_count = 0;
+  int raw_bbox_channels = 0;
+  int raw_cls_channels = 0;
+  int raw_dir_channels = 0;
+  int raw_height = 0;
+  int raw_width = 0;
+  bool head_outputs_ready = false;
 
-  float* d_voxels = nullptr;
-  unsigned int* d_num_points = nullptr;
-  unsigned int* d_coors = nullptr;
-  const int actual_num_pillars =
-      static_cast<int>(impl_->voxelizer->get_pillar_output(&d_voxels, &d_num_points, &d_coors));
-  status = MeasureGpuStageEnd(impl_->profile_start, impl_->profile_end, impl_->stream,
-                              enable_gpu_timing, &local_timings.pillarize_ms, &last_error_);
-  if (status != INFERENCE_STATUS_OK) {
-    return status;
-  }
-  const EngineContract& contract = impl_->trt.contract();
-  const int padded_num_pillars =
-      std::min(contract.max_runtime_pillars,
-               std::max(actual_num_pillars, contract.min_runtime_pillars));
-
-  if (debug != nullptr) {
-    status = SyncCudaStream(impl_->stream, "cudaStreamSynchronize(debug_pillar_capture)",
-                            &last_error_);
+  if (config_.runtime_backend == RuntimeBackend::kCenterPointVoxel) {
+    status = MeasureGpuStageBegin(impl_->profile_start, impl_->stream, enable_gpu_timing,
+                                  &last_error_);
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
-    PillarInputTensors pillar_inputs;
-    status = BuildPillars(config_, actual_num_pillars, d_voxels, d_num_points, d_coors,
-                          &pillar_inputs, &last_error_);
+    impl_->voxelizer->forward(impl_->d_points, bounded_point_count,
+                              CoordinateOrder::ZYX, impl_->stream);
+
+    nvtype::half* d_voxel_features = nullptr;
+    unsigned int* d_voxel_indices = nullptr;
+    const int actual_num_voxels =
+        static_cast<int>(impl_->voxelizer->get_output(&d_voxel_features, &d_voxel_indices));
+    status = MeasureGpuStageEnd(impl_->profile_start, impl_->profile_end, impl_->stream,
+                                enable_gpu_timing, &local_timings.pillarize_ms, &last_error_);
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
-    debug->pillar_inputs = std::move(pillar_inputs);
-  }
+    if (debug != nullptr) {
+      debug->pillar_inputs = PillarInputTensors{};
+      debug->pillar_inputs.num_pillars = actual_num_voxels;
+    }
 
-  status = impl_->trt.ConfigureShapes(config_, padded_num_pillars, &last_error_);
-  if (status != INFERENCE_STATUS_OK) {
-    return status;
-  }
+    if (actual_num_voxels > 0) {
+      status = MeasureGpuStageBegin(impl_->profile_start, impl_->stream, enable_gpu_timing,
+                                    &last_error_);
+      if (status != INFERENCE_STATUS_OK) {
+        return status;
+      }
+      spconv::SparseDTensor* scn_input = impl_->scn_engine->input(0);
+      if (scn_input == nullptr) {
+        return SetError(&last_error_, INFERENCE_STATUS_BACKEND_ERROR,
+                        "CenterPoint voxel SCN engine has no input tensor");
+      }
+      scn_input->features().reference(
+          d_voxel_features, {actual_num_voxels, config_.num_point_features},
+          spconv::DataType::Float16, true);
+      scn_input->indices().reference(
+          d_voxel_indices, {actual_num_voxels, 4}, spconv::DataType::Int32, true);
+      scn_input->set_grid_size(config_.sparse_shape);
+      impl_->scn_engine->forward(impl_->stream);
+      spconv::SparseDTensor* scn_output = impl_->scn_engine->output(0);
+      if (scn_output == nullptr || scn_output->features().empty()) {
+        return SetError(&last_error_, INFERENCE_STATUS_BACKEND_ERROR,
+                        "CenterPoint voxel SCN forward returned empty output");
+      }
+      spconv::Tensor& scn_features = scn_output->features();
+      status = impl_->voxel_head_trt.Enqueue(scn_features.ptr(),
+                                             scn_features.shape,
+                                             impl_->d_bbox_pred,
+                                             impl_->d_cls_score,
+                                             impl_->d_dir_cls_pred,
+                                             impl_->stream, &last_error_);
+      if (status != INFERENCE_STATUS_OK) {
+        return status;
+      }
+      status = MeasureGpuStageEnd(impl_->profile_start, impl_->profile_end, impl_->stream,
+                                  enable_gpu_timing, &local_timings.trt_forward_ms,
+                                  &last_error_);
+      if (status != INFERENCE_STATUS_OK) {
+        return status;
+      }
+      const CenterPointHeadContract& contract = impl_->voxel_head_trt.contract();
+      raw_task_count = contract.task_count;
+      raw_bbox_channels = contract.bbox_channels;
+      raw_cls_channels = contract.cls_channels;
+      raw_dir_channels = contract.dir_channels;
+      raw_height = contract.height;
+      raw_width = contract.width;
+      head_outputs_ready = true;
+    }
+  } else {
+    status = MeasureGpuStageBegin(impl_->profile_start, impl_->stream, enable_gpu_timing,
+                                  &last_error_);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    impl_->voxelizer->forward_pillars(impl_->d_points, bounded_point_count,
+                                      CoordinateOrder::ZYX, impl_->stream);
 
-  if (contract.num_bindings <= 0) {
-    return SetError(&last_error_, INFERENCE_STATUS_BACKEND_ERROR,
-                    "TensorRT engine reports no bindings");
-  }
-  std::vector<void*> bindings(static_cast<size_t>(contract.num_bindings), nullptr);
-  bindings[static_cast<size_t>(contract.voxels_index)] = d_voxels;
-  bindings[static_cast<size_t>(contract.num_points_index)] = d_num_points;
-  bindings[static_cast<size_t>(contract.coors_index)] = d_coors;
-  bindings[static_cast<size_t>(contract.bbox_pred_index)] = impl_->d_bbox_pred;
-  bindings[static_cast<size_t>(contract.cls_score_index)] = impl_->d_cls_score;
-  bindings[static_cast<size_t>(contract.dir_cls_pred_index)] = impl_->d_dir_cls_pred;
+    float* d_voxels = nullptr;
+    unsigned int* d_num_points = nullptr;
+    unsigned int* d_coors = nullptr;
+    const int actual_num_pillars =
+        static_cast<int>(impl_->voxelizer->get_pillar_output(&d_voxels, &d_num_points, &d_coors));
+    status = MeasureGpuStageEnd(impl_->profile_start, impl_->profile_end, impl_->stream,
+                                enable_gpu_timing, &local_timings.pillarize_ms, &last_error_);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    const EngineContract& contract = impl_->trt.contract();
+    const int padded_num_pillars =
+        std::min(contract.max_runtime_pillars,
+                 std::max(actual_num_pillars, contract.min_runtime_pillars));
 
-  status = MeasureGpuStageBegin(impl_->profile_start, impl_->stream, enable_gpu_timing,
-                                &last_error_);
-  if (status != INFERENCE_STATUS_OK) {
-    return status;
-  }
-  status = impl_->trt.Enqueue(bindings.data(), impl_->stream, &last_error_);
-  if (status != INFERENCE_STATUS_OK) {
-    return status;
-  }
-  status = MeasureGpuStageEnd(impl_->profile_start, impl_->profile_end, impl_->stream,
-                              enable_gpu_timing, &local_timings.trt_forward_ms, &last_error_);
-  if (status != INFERENCE_STATUS_OK) {
-    return status;
+    if (debug != nullptr) {
+      status = SyncCudaStream(impl_->stream, "cudaStreamSynchronize(debug_pillar_capture)",
+                              &last_error_);
+      if (status != INFERENCE_STATUS_OK) {
+        return status;
+      }
+      PillarInputTensors pillar_inputs;
+      status = BuildPillars(config_, actual_num_pillars, d_voxels, d_num_points, d_coors,
+                            &pillar_inputs, &last_error_);
+      if (status != INFERENCE_STATUS_OK) {
+        return status;
+      }
+      debug->pillar_inputs = std::move(pillar_inputs);
+    }
+
+    status = impl_->trt.ConfigureShapes(config_, padded_num_pillars, &last_error_);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+
+    if (contract.num_bindings <= 0) {
+      return SetError(&last_error_, INFERENCE_STATUS_BACKEND_ERROR,
+                      "TensorRT engine reports no bindings");
+    }
+    std::vector<void*> bindings(static_cast<size_t>(contract.num_bindings), nullptr);
+    bindings[static_cast<size_t>(contract.voxels_index)] = d_voxels;
+    bindings[static_cast<size_t>(contract.num_points_index)] = d_num_points;
+    bindings[static_cast<size_t>(contract.coors_index)] = d_coors;
+    bindings[static_cast<size_t>(contract.bbox_pred_index)] = impl_->d_bbox_pred;
+    bindings[static_cast<size_t>(contract.cls_score_index)] = impl_->d_cls_score;
+    bindings[static_cast<size_t>(contract.dir_cls_pred_index)] = impl_->d_dir_cls_pred;
+
+    status = MeasureGpuStageBegin(impl_->profile_start, impl_->stream, enable_gpu_timing,
+                                  &last_error_);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    status = impl_->trt.Enqueue(bindings.data(), impl_->stream, &last_error_);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    status = MeasureGpuStageEnd(impl_->profile_start, impl_->profile_end, impl_->stream,
+                                enable_gpu_timing, &local_timings.trt_forward_ms, &last_error_);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+
+    raw_task_count = contract.task_count;
+    raw_bbox_channels = contract.bbox_channels;
+    raw_cls_channels = contract.cls_channels;
+    raw_dir_channels = contract.dir_channels;
+    raw_height = contract.height;
+    raw_width = contract.width;
+    head_outputs_ready = true;
   }
 
   CandidateDetections candidates;
@@ -1517,7 +1650,13 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
   auto start = std::chrono::steady_clock::now();
   auto end = start;
 
-  if (debug == nullptr && impl_->gpu_decoder != nullptr) {
+  if (!head_outputs_ready) {
+    if (debug != nullptr) {
+      debug->raw_outputs = RawHeadOutputs{};
+      debug->decoded_candidates = CandidateDetections{};
+      debug->final_nms_outputs = CandidateDetections{};
+    }
+  } else if (debug == nullptr && impl_->gpu_decoder != nullptr) {
     status = MeasureGpuStageBegin(impl_->profile_start, impl_->stream, enable_gpu_timing,
                                   &last_error_);
     if (status != INFERENCE_STATUS_OK) {
@@ -1590,12 +1729,12 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
     raw_outputs.bbox_pred = impl_->h_bbox_pred;
     raw_outputs.cls_score = impl_->h_cls_score;
     raw_outputs.dir_cls_pred = impl_->h_dir_cls_pred;
-    raw_outputs.bbox_channels = contract.bbox_channels;
-    raw_outputs.cls_channels = contract.cls_channels;
-    raw_outputs.dir_channels = contract.dir_channels;
-    raw_outputs.height = contract.height;
-    raw_outputs.width = contract.width;
-    raw_outputs.task_count = contract.task_count;
+    raw_outputs.bbox_channels = raw_bbox_channels;
+    raw_outputs.cls_channels = raw_cls_channels;
+    raw_outputs.dir_channels = raw_dir_channels;
+    raw_outputs.height = raw_height;
+    raw_outputs.width = raw_width;
+    raw_outputs.task_count = raw_task_count;
     if (debug != nullptr) {
       debug->raw_outputs.bbox_pred.assign(impl_->h_bbox_pred,
                                           impl_->h_bbox_pred + impl_->h_bbox_pred_count);

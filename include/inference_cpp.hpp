@@ -29,9 +29,13 @@ enum class YawEncoding {
 
 struct ModelConfig {
   std::string engine_path;
+  std::string runtime_backend = "pillar_end2end";
+  std::string scn_onnx_path;
+  std::string head_engine_path;
   std::array<float, 6> point_cloud_range{{-25.6f, -25.6f, -5.0f, 25.6f, 25.6f, 3.0f}};
   std::array<float, 6> post_center_range{{-35.6f, -35.6f, -10.0f, 35.6f, 35.6f, 10.0f}};
-  std::array<float, 3> pillar_size{{0.1f, 0.1f, 8.0f}};
+  std::array<float, 3> voxel_size{{0.1f, 0.1f, 8.0f}};
+  std::vector<int> sparse_shape;
   int num_point_features = 5;
   int out_size_factor = 4;
   DecodeMode decode_mode = DecodeMode::kLegacy;
@@ -45,9 +49,9 @@ struct ModelConfig {
 };
 
 struct RuntimeConfig {
-  int max_points_per_pillar = 20;
-  int min_pillars = 100;
-  int max_pillars = 50000;
+  int max_points_per_voxel = 20;
+  int min_voxels = 100;
+  int max_voxels = 50000;
   int max_points = 300000;
   int frame_num = 1;
   int bbox_max_num = 500;

@@ -2,6 +2,7 @@
 
 #include <array>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <vector>
@@ -244,7 +245,7 @@ InferenceStatus ValidateInputProfiles(const RuntimeConfig& config,
   int coors_max = 0;
 
   InferenceStatus status =
-      ValidateInputProfile(engine, kVoxelsName, 3, {0, config.max_points_per_pillar, config.num_point_features},
+      ValidateInputProfile(engine, kVoxelsName, 3, {0, config.max_points_per_voxel, config.num_point_features},
                            &voxels_min, &voxels_opt, &voxels_max, out_error);
   if (status != INFERENCE_STATUS_OK) {
     return status;
@@ -273,11 +274,11 @@ InferenceStatus ValidateInputProfiles(const RuntimeConfig& config,
   contract->min_profile_pillars = voxels_min;
   contract->opt_profile_pillars = voxels_opt;
   contract->max_profile_pillars = voxels_max;
-  contract->min_runtime_pillars = std::max(config.min_pillars, contract->min_profile_pillars);
-  contract->max_runtime_pillars = std::min(config.max_pillars, contract->max_profile_pillars);
+  contract->min_runtime_pillars = std::max(config.min_voxels, contract->min_profile_pillars);
+  contract->max_runtime_pillars = std::min(config.max_voxels, contract->max_profile_pillars);
   if (contract->min_runtime_pillars > contract->max_runtime_pillars) {
     std::ostringstream oss;
-    oss << "Runtime pillar range [" << config.min_pillars << ", " << config.max_pillars
+    oss << "Runtime voxel range [" << config.min_voxels << ", " << config.max_voxels
         << "] does not overlap TensorRT optimization profile ["
         << contract->min_profile_pillars << ", " << contract->max_profile_pillars << "]";
     return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
@@ -384,6 +385,190 @@ InferenceStatus BuildContract(const RuntimeConfig& config,
   return INFERENCE_STATUS_OK;
 }
 
+int FindBindingIndex(nvinfer1::ICudaEngine& engine, const std::string& name) {
+  return engine.getBindingIndex(name.c_str());
+}
+
+int FindFirstInputBinding(nvinfer1::ICudaEngine& engine) {
+  const int binding_count = engine.getNbBindings();
+  for (int i = 0; i < binding_count; ++i) {
+    if (engine.bindingIsInput(i)) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+InferenceStatus ValidateHeadOutput(nvinfer1::ICudaEngine& engine,
+                                   int binding_index,
+                                   const std::string& tensor_name,
+                                   int expected_channels,
+                                   int* inout_height,
+                                   int* inout_width,
+                                   std::string* out_error) {
+  if (binding_index < 0) {
+    return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
+                    "Missing CenterPoint voxel head output: " + tensor_name);
+  }
+  if (engine.bindingIsInput(binding_index)) {
+    return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
+                    "CenterPoint voxel head binding is an input, expected output: " + tensor_name);
+  }
+  if (engine.getBindingDataType(binding_index) != nvinfer1::DataType::kFLOAT) {
+    return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
+                    "CenterPoint voxel head outputs must be float32 for runtime decode: " +
+                        tensor_name);
+  }
+  const nvinfer1::Dims dims = engine.getBindingDimensions(binding_index);
+  if (dims.nbDims != 4 || dims.d[0] != 1 || dims.d[1] != expected_channels ||
+      dims.d[2] <= 0 || dims.d[3] <= 0) {
+    std::ostringstream oss;
+    oss << "CenterPoint voxel head output " << tensor_name << " shape is "
+        << DimsToString(dims) << ", expected 1x" << expected_channels << "xHxW";
+    return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
+  }
+  if (*inout_height == 0 && *inout_width == 0) {
+    *inout_height = dims.d[2];
+    *inout_width = dims.d[3];
+  } else if (*inout_height != dims.d[2] || *inout_width != dims.d[3]) {
+    std::ostringstream oss;
+    oss << "CenterPoint voxel head output " << tensor_name << " spatial shape is "
+        << dims.d[2] << "x" << dims.d[3] << ", expected " << *inout_height
+        << "x" << *inout_width;
+    return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
+  }
+  return INFERENCE_STATUS_OK;
+}
+
+int FindCanonicalOrMmdetOutput(nvinfer1::ICudaEngine& engine,
+                               const std::string& canonical_name,
+                               int task_id,
+                               int mmdet_slot) {
+  const int canonical = FindBindingIndex(engine, canonical_name);
+  if (canonical >= 0) {
+    return canonical;
+  }
+  return FindBindingIndex(engine, "out" + std::to_string(task_id * 6 + mmdet_slot));
+}
+
+InferenceStatus BuildCenterPointHeadContract(const RuntimeConfig& config,
+                                             const ResolvedHeadLayout& layout,
+                                             nvinfer1::ICudaEngine& engine,
+                                             CenterPointHeadContract* out_contract,
+                                             std::string* out_error) {
+  if (out_contract == nullptr) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "out_contract is null");
+  }
+  if (layout.yaw_encoding != inference::YawEncoding::kSinCos) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "centerpoint_voxel runtime currently requires model.yaw_encoding=sin_cos");
+  }
+  if (!layout.has_velocity || layout.bbox_channels_per_task != 8 ||
+      layout.dir_channels_per_task != 2) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "centerpoint_voxel runtime expects reg/height/dim/rot/vel/hm head layout");
+  }
+
+  CenterPointHeadContract contract{};
+  contract.task_count = layout.task_count;
+  contract.bbox_channels = layout.task_count * layout.bbox_channels_per_task;
+  contract.cls_channels = layout.cls_channels_total;
+  contract.dir_channels = layout.task_count * layout.dir_channels_per_task;
+  contract.num_bindings = engine.getNbBindings();
+  contract.input_index = FindBindingIndex(engine, "input");
+  if (contract.input_index < 0) {
+    contract.input_index = FindFirstInputBinding(engine);
+  }
+  if (contract.input_index < 0 || !engine.bindingIsInput(contract.input_index)) {
+    return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
+                    "CenterPoint voxel head engine must expose one input binding");
+  }
+  const nvinfer1::DataType input_type = engine.getBindingDataType(contract.input_index);
+  if (input_type != nvinfer1::DataType::kHALF) {
+    return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
+                    "CenterPoint voxel head input must be float16 to consume libspconv output");
+  }
+
+  contract.reg_indices.resize(static_cast<size_t>(layout.task_count), -1);
+  contract.height_indices.resize(static_cast<size_t>(layout.task_count), -1);
+  contract.dim_indices.resize(static_cast<size_t>(layout.task_count), -1);
+  contract.rot_indices.resize(static_cast<size_t>(layout.task_count), -1);
+  contract.vel_indices.resize(static_cast<size_t>(layout.task_count), -1);
+  contract.hm_indices.resize(static_cast<size_t>(layout.task_count), -1);
+
+  int height = 0;
+  int width = 0;
+  for (int task_id = 0; task_id < layout.task_count; ++task_id) {
+    const int task_classes = layout.task_num_classes[static_cast<size_t>(task_id)];
+    const std::string suffix = "_" + std::to_string(task_id);
+    const size_t index = static_cast<size_t>(task_id);
+    contract.reg_indices[index] =
+        FindCanonicalOrMmdetOutput(engine, "reg" + suffix, task_id, 4);
+    contract.height_indices[index] =
+        FindCanonicalOrMmdetOutput(engine, "height" + suffix, task_id, 2);
+    contract.dim_indices[index] =
+        FindCanonicalOrMmdetOutput(engine, "dim" + suffix, task_id, 0);
+    contract.rot_indices[index] =
+        FindCanonicalOrMmdetOutput(engine, "rot" + suffix, task_id, 1);
+    contract.vel_indices[index] =
+        FindCanonicalOrMmdetOutput(engine, "vel" + suffix, task_id, 5);
+    contract.hm_indices[index] =
+        FindCanonicalOrMmdetOutput(engine, "hm" + suffix, task_id, 3);
+
+    InferenceStatus status =
+        ValidateHeadOutput(engine, contract.reg_indices[index], "reg" + suffix, 2,
+                           &height, &width, out_error);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    status = ValidateHeadOutput(engine, contract.height_indices[index], "height" + suffix, 1,
+                                &height, &width, out_error);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    status = ValidateHeadOutput(engine, contract.dim_indices[index], "dim" + suffix, 3,
+                                &height, &width, out_error);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    status = ValidateHeadOutput(engine, contract.rot_indices[index], "rot" + suffix, 2,
+                                &height, &width, out_error);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    status = ValidateHeadOutput(engine, contract.vel_indices[index], "vel" + suffix, 2,
+                                &height, &width, out_error);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+    status = ValidateHeadOutput(engine, contract.hm_indices[index], "hm" + suffix,
+                                task_classes, &height, &width, out_error);
+    if (status != INFERENCE_STATUS_OK) {
+      return status;
+    }
+  }
+
+  const int expected_height =
+      static_cast<int>((config.point_cloud_range[4] - config.point_cloud_range[1]) /
+                       (config.voxel_size[1] * config.out_size_factor) + 0.5f);
+  const int expected_width =
+      static_cast<int>((config.point_cloud_range[3] - config.point_cloud_range[0]) /
+                       (config.voxel_size[0] * config.out_size_factor) + 0.5f);
+  if (height != expected_height || width != expected_width) {
+    std::ostringstream oss;
+    oss << "CenterPoint voxel head spatial shape is " << height << "x" << width
+        << ", expected " << expected_height << "x" << expected_width
+        << " from point_cloud_range/voxel_size/out_size_factor";
+    return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
+  }
+
+  contract.height = height;
+  contract.width = width;
+  *out_contract = std::move(contract);
+  return INFERENCE_STATUS_OK;
+}
+
 }  // namespace
 
 struct TrtExecutor::Impl {
@@ -468,7 +653,7 @@ InferenceStatus TrtExecutor::ConfigureShapes(const RuntimeConfig& config,
   nvinfer1::Dims voxels_dims;
   voxels_dims.nbDims = 3;
   voxels_dims.d[0] = num_pillars;
-  voxels_dims.d[1] = config.max_points_per_pillar;
+  voxels_dims.d[1] = config.max_points_per_voxel;
   voxels_dims.d[2] = config.num_point_features;
 
   nvinfer1::Dims num_points_dims;
@@ -535,6 +720,191 @@ InferenceStatus TrtExecutor::Enqueue(void** bindings,
     return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
                     "TensorRT enqueueV2 failed");
 #endif
+  }
+  return INFERENCE_STATUS_OK;
+}
+
+struct CenterPointHeadTrtExecutor::Impl {
+  TrtLogger logger;
+  std::unique_ptr<nvinfer1::IRuntime, RuntimeDeleter> runtime;
+  std::unique_ptr<nvinfer1::ICudaEngine, EngineDeleter> engine;
+  std::unique_ptr<nvinfer1::IExecutionContext, ContextDeleter> context;
+};
+
+CenterPointHeadTrtExecutor::CenterPointHeadTrtExecutor() = default;
+CenterPointHeadTrtExecutor::~CenterPointHeadTrtExecutor() = default;
+
+InferenceStatus CenterPointHeadTrtExecutor::Load(const RuntimeConfig& config,
+                                                 const ResolvedHeadLayout& layout,
+                                                 const std::string& engine_path,
+                                                 std::string* out_error) {
+  contract_ = CenterPointHeadContract{};
+
+  std::ifstream input(engine_path, std::ios::binary);
+  if (!input.is_open()) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "Failed to open CenterPoint voxel head engine: " + engine_path);
+  }
+  input.seekg(0, std::ios::end);
+  const std::streamsize size = input.tellg();
+  input.seekg(0, std::ios::beg);
+  if (size <= 0) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "CenterPoint voxel head engine file is empty: " + engine_path);
+  }
+  std::vector<char> data(static_cast<size_t>(size));
+  if (!input.read(data.data(), size)) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "Failed to read CenterPoint voxel head engine: " + engine_path);
+  }
+
+  impl_ = std::make_unique<Impl>();
+  impl_->runtime.reset(nvinfer1::createInferRuntime(impl_->logger));
+  if (!impl_->runtime) {
+    return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
+                    "Failed to create TensorRT runtime for CenterPoint voxel head");
+  }
+  impl_->engine.reset(impl_->runtime->deserializeCudaEngine(data.data(), data.size()));
+  if (!impl_->engine) {
+    return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
+                    "Failed to deserialize CenterPoint voxel head engine: " +
+                        impl_->logger.last_error());
+  }
+  impl_->context.reset(impl_->engine->createExecutionContext());
+  if (!impl_->context) {
+    return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
+                    "Failed to create TensorRT context for CenterPoint voxel head");
+  }
+
+  return BuildCenterPointHeadContract(config, layout, *impl_->engine, &contract_, out_error);
+}
+
+InferenceStatus CenterPointHeadTrtExecutor::Enqueue(void* scn_features,
+                                                    const std::vector<int64_t>& scn_features_shape,
+                                                    float* d_bbox_pred,
+                                                    float* d_cls_score,
+                                                    float* d_dir_cls_pred,
+                                                    cudaStream_t stream,
+                                                    std::string* out_error) {
+  if (!impl_ || !impl_->context) {
+    return SetError(out_error, INFERENCE_STATUS_NOT_READY,
+                    "CenterPoint voxel head executor is not initialized");
+  }
+  if (scn_features == nullptr || d_bbox_pred == nullptr || d_cls_score == nullptr ||
+      d_dir_cls_pred == nullptr) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "CenterPoint voxel head input/output buffers must not be null");
+  }
+  if (scn_features_shape.empty() ||
+      scn_features_shape.size() > static_cast<size_t>(nvinfer1::Dims::MAX_DIMS)) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "CenterPoint voxel head input shape must be non-empty and fit TensorRT dims");
+  }
+
+  nvinfer1::Dims input_dims = impl_->engine->getBindingDimensions(contract_.input_index);
+  bool has_dynamic_input_dim = false;
+  for (int i = 0; i < input_dims.nbDims; ++i) {
+    if (input_dims.d[i] < 0) {
+      has_dynamic_input_dim = true;
+      break;
+    }
+  }
+
+  if (has_dynamic_input_dim) {
+    nvinfer1::Dims runtime_dims{};
+    runtime_dims.nbDims = static_cast<int>(scn_features_shape.size());
+    for (int i = 0; i < runtime_dims.nbDims; ++i) {
+      if (scn_features_shape[static_cast<size_t>(i)] <= 0 ||
+          scn_features_shape[static_cast<size_t>(i)] >
+              static_cast<int64_t>(std::numeric_limits<int>::max())) {
+        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                        "CenterPoint voxel head input shape contains invalid dimension");
+      }
+      runtime_dims.d[i] = static_cast<int>(scn_features_shape[static_cast<size_t>(i)]);
+    }
+    const char* input_name = impl_->engine->getBindingName(contract_.input_index);
+    if (!SetContextInputShape(impl_->context.get(), contract_.input_index, input_name,
+                              runtime_dims) ||
+        !AreAllInputDimensionsSpecified(impl_->context.get())) {
+      std::ostringstream oss;
+      oss << "Failed to set CenterPoint voxel head input shape to "
+          << DimsToString(runtime_dims);
+      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
+    }
+  } else if (input_dims.nbDims == static_cast<int>(scn_features_shape.size())) {
+    for (int i = 0; i < input_dims.nbDims; ++i) {
+      if (input_dims.d[i] != static_cast<int>(scn_features_shape[static_cast<size_t>(i)])) {
+        std::ostringstream oss;
+        oss << "CenterPoint voxel head static input shape is " << DimsToString(input_dims)
+            << ", but libspconv output shape is ";
+        for (size_t j = 0; j < scn_features_shape.size(); ++j) {
+          if (j > 0) {
+            oss << 'x';
+          }
+          oss << scn_features_shape[j];
+        }
+        return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
+      }
+    }
+  }
+
+  const int hw = contract_.height * contract_.width;
+  constexpr int kRegOffset = 0;
+  constexpr int kHeightOffset = 2;
+  constexpr int kDimOffset = 3;
+  constexpr int kVelOffset = 6;
+  constexpr int kBboxChannelsPerTask = 8;
+  constexpr int kDirChannelsPerTask = 2;
+
+  std::vector<void*> bindings(static_cast<size_t>(contract_.num_bindings), nullptr);
+  bindings[static_cast<size_t>(contract_.input_index)] = scn_features;
+  int class_offset = 0;
+  for (int task_id = 0; task_id < contract_.task_count; ++task_id) {
+    const size_t index = static_cast<size_t>(task_id);
+    float* bbox_base =
+        d_bbox_pred + static_cast<size_t>(task_id) * kBboxChannelsPerTask * hw;
+    float* dir_base =
+        d_dir_cls_pred + static_cast<size_t>(task_id) * kDirChannelsPerTask * hw;
+    bindings[static_cast<size_t>(contract_.reg_indices[index])] =
+        bbox_base + kRegOffset * hw;
+    bindings[static_cast<size_t>(contract_.height_indices[index])] =
+        bbox_base + kHeightOffset * hw;
+    bindings[static_cast<size_t>(contract_.dim_indices[index])] =
+        bbox_base + kDimOffset * hw;
+    bindings[static_cast<size_t>(contract_.rot_indices[index])] = dir_base;
+    bindings[static_cast<size_t>(contract_.vel_indices[index])] =
+        bbox_base + kVelOffset * hw;
+    bindings[static_cast<size_t>(contract_.hm_indices[index])] =
+        d_cls_score + static_cast<size_t>(class_offset) * hw;
+
+    const nvinfer1::Dims hm_dims =
+        impl_->engine->getBindingDimensions(contract_.hm_indices[index]);
+    class_offset += hm_dims.d[1];
+  }
+
+#if INFERENCE_USE_TRT_TENSOR_API
+  for (int binding_index = 0; binding_index < contract_.num_bindings; ++binding_index) {
+    if (bindings[static_cast<size_t>(binding_index)] == nullptr) {
+      continue;
+    }
+    const char* tensor_name = impl_->engine->getBindingName(binding_index);
+    if (!SetContextTensorAddress(impl_->context.get(), tensor_name,
+                                 bindings[static_cast<size_t>(binding_index)])) {
+      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
+                      "Failed to bind CenterPoint voxel head tensor address: " +
+                          std::string(tensor_name == nullptr ? "<null>" : tensor_name));
+    }
+  }
+#endif
+
+  if (!EnqueueContext(impl_->context.get(), bindings.data(), stream)) {
+    const std::string logger_error = impl_->logger.last_error();
+    if (!logger_error.empty()) {
+      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
+                      "CenterPoint voxel head TensorRT enqueue failed: " + logger_error);
+    }
+    return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
+                    "CenterPoint voxel head TensorRT enqueue failed");
   }
   return INFERENCE_STATUS_OK;
 }

@@ -1,0 +1,87 @@
+{
+  "config": {
+    "warmup_iters": 10,
+    "profile_iters": 100,
+    "pcd_path": "demo/data/test.bin"
+  },
+  "debug_run": {
+    "pcd_load_ms": 9.82335,
+    "input_points": 129172,
+    "voxel_count": 37010,
+    "decoded_candidates": 61,
+    "timings_ms": {
+      "voxelize": 0.154816,
+      "h2d_prepare": 0.21888,
+      "trt_forward": 4.65203,
+      "d2h_collect": 0.06368,
+      "decode": 4.95852,
+      "output_pack": 0.000378,
+      "total_forward": 10.9007
+    }
+  },
+  "profile_summary_ms": {
+    "pcd_load": {
+      "mean": 9.82335,
+      "min": 9.82335,
+      "max": 9.82335,
+      "p50": 9.82335,
+      "p90": 9.82335
+    },
+    "input_pack": {
+      "mean": 2.508e-05,
+      "min": 2e-05,
+      "max": 9.1e-05,
+      "p50": 2.2e-05,
+      "p90": 3.62e-05
+    },
+    "voxelize": {
+      "mean": 0.0961677,
+      "min": 0.0912,
+      "max": 0.104736,
+      "p50": 0.09576,
+      "p90": 0.100995
+    },
+    "h2d_prepare": {
+      "mean": 0.213433,
+      "min": 0.212864,
+      "max": 0.218112,
+      "p50": 0.21336,
+      "p90": 0.213696
+    },
+    "trt_forward": {
+      "mean": 2.20697,
+      "min": 2.13094,
+      "max": 2.35008,
+      "p50": 2.15347,
+      "p90": 2.33153
+    },
+    "d2h_collect": {
+      "mean": 0.0204576,
+      "min": 0.01936,
+      "max": 0.023616,
+      "p50": 0.020384,
+      "p90": 0.0211232
+    },
+    "decode": {
+      "mean": 0.264267,
+      "min": 0.256,
+      "max": 0.282624,
+      "p50": 0.258048,
+      "p90": 0.27648
+    },
+    "output_pack": {
+      "mean": 0.00013016,
+      "min": 6.7e-05,
+      "max": 0.000186,
+      "p50": 0.000128,
+      "p90": 0.0001622
+    },
+    "total_forward": {
+      "mean": 3.16806,
+      "min": 3.07804,
+      "max": 3.33735,
+      "p50": 3.1042,
+      "p90": 3.31494
+    }
+  }
+}

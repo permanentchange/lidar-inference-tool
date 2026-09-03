@@ -23,16 +23,17 @@ The example executable is written to:
 
 ## Run
 
-Use the repository demo model package:
+Run the executable built under `build/`; `examples/minimal_cpp_api/` is the source directory, not an executable:
 
 ```bash
-./build/minimal_cpp_api_example demo demo/pcd.bin
+./build/minimal_cpp_api_example demo/centerpoint_pillar demo/data/test.bin
+./build/minimal_cpp_api_example demo/centerpoint_voxel demo/data/test.bin
 ```
 
 Arguments:
 
-- `<model_dir>`: directory containing `model.yaml` and the TensorRT engine
-- `<pcd_bin_path>`: one float32 `.bin` point cloud path
+- `MODEL_DIR`: directory containing `model.yaml` and the referenced TensorRT / runtime assets
+- `POINT_CLOUD_BIN`: one float32 `.bin` point-cloud path
 
 Core API flow shown by the example:
 

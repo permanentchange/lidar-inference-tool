@@ -19,6 +19,7 @@
 *.a
 *.so
 *.so.*
+!third_party/libspconv/lib/*/libspconv.so
 *.dylib
 *.dll
 *.exe
@@ -61,3 +62,6 @@ Thumbs.db
 *.png
 *.jpg
 *.jpeg
+*.engine.reports/
+third_party/libspconv/lib/x86_64/libspconv.so
+third_party/libspconv/lib/aarch64/libspconv.so

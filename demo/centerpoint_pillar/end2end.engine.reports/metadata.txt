@@ -1,0 +1,16 @@
+ONNX input:      demo/centerpoint_pillar/end2end.onnx
+Engine output:   demo/centerpoint_pillar/end2end.engine
+Precision mode:  fp16
+Min TRT shape:   coors:10000x4,voxels:10000x20x5,num_points:10000
+Opt TRT shape:   coors:40000x4,voxels:40000x20x5,num_points:40000
+Max TRT shape:   coors:50000x4,voxels:50000x20x5,num_points:50000
+Report dir:      demo/centerpoint_pillar/end2end.engine.reports
+trtexec path:    /home/zhouxiufeng/TensorRT-8.6.1.6/targets/x86_64-linux-gnu/bin/trtexec
+Generated at:    2026-09-03T09:41:51+08:00
+
+Report flag support detected from trtexec --help:
+  --profilingVerbosity: yes
+  --dumpLayerInfo: yes
+  --exportLayerInfo: yes
+  --dumpProfile: yes
+  --exportProfile: yes

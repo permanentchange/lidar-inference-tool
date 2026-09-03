@@ -4,7 +4,7 @@
 
 /**
  * @file inference.h
- * @brief Internal C compatibility API for loading one TensorRT end-to-end pillar engine and running inference.
+ * @brief Internal C compatibility API for loading one TensorRT end-to-end voxel engine and running inference.
  *
  * This header is kept for internal compatibility. External integrations should prefer
  * `include/inference_cpp.hpp`.
@@ -17,7 +17,7 @@
  *    ::inference_forward() for decoded pre-NMS candidates.
  * 5. Read output counts from ::InferenceResponse and then call ::inference_destroy().
  *
- * The current runtime targets PointPillars / CenterPoint-style engines with fixed tensor names and
+ * The current runtime targets voxelized PointPillars / CenterPoint-style engines with fixed tensor names and
  * decoded boxes laid out as [x, y, z, dx, dy, dz, yaw], where x/y/z denote the box geometric
  * center.
  */
@@ -66,14 +66,14 @@ typedef struct InferenceConfig {
   float point_cloud_range[6];
   /** Post-decode spatial filter range applied to predicted box centers. */
   float post_center_range[6];
-  /** Pillar size in meters, laid out as [x_size, y_size, z_size]. All values must be positive. */
-  float pillar_size[3];
-  /** Maximum number of points stored per pillar. Must be positive. */
-  int max_points_per_pillar;
-  /** Minimum pillar count presented to the engine profile. Must be positive. */
-  int min_pillars;
-  /** Maximum pillar count presented to the engine profile. Must be >= ::min_pillars. */
-  int max_pillars;
+  /** Voxel size in meters, laid out as [x_size, y_size, z_size]. All values must be positive. */
+  float voxel_size[3];
+  /** Maximum number of points stored per voxel. Must be positive. */
+  int max_points_per_voxel;
+  /** Minimum voxel count presented to the engine profile. Must be positive. */
+  int min_voxels;
+  /** Maximum voxel count presented to the engine profile. Must be >= ::min_voxels. */
+  int max_voxels;
   /** Maximum number of input points consumed from each request. Extra points are ignored. */
   int max_points;
   /** Sequence length hint kept for API compatibility. Values smaller than 1 are clamped to 1. */
