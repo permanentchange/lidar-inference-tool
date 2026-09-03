@@ -20,6 +20,8 @@
 *.so
 *.so.*
 !third_party/libspconv/lib/*/libspconv.so
+third_party/libspconv/lib/x86_64/libspconv.so
+third_party/libspconv/lib/aarch64/libspconv.so
 *.dylib
 *.dll
 *.exe
@@ -50,18 +52,21 @@ Thumbs.db
 *.log
 
 # output data
-/outputs 
+outputs 
+demo/*outputs 
 # big files
 *.onnx
+!demo/centerpoint_pillar/*onnx
+!demo/centerpoint_voxel/*onnx
 *.engine
 *.trt
 *.pt
 *.pth
 *.bin
+!demo/data/*bin
 *.pcd
+!demo/data/*pcd
 *.png
 *.jpg
 *.jpeg
 *.engine.reports/
-third_party/libspconv/lib/x86_64/libspconv.so
-third_party/libspconv/lib/aarch64/libspconv.so
