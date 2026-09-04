@@ -58,7 +58,7 @@ postprocess:
   # Global-label order. Values match train.py deploy_label_score_thresh.
   # precision >= 0.8
   # recall >= 0.7 recall >=0.6
-  label_score_thresh: [0.35, 0.35, 0.4, 0.4, 0.3, 0.4, 0.5, 0.4, 0.4]
+  label_score_thresh: [0.52, 0.63, 0.55, 0.60, 0.50, 0.10, 0.43, 0.40, 0.60]
   # Global-label order, same indexing as label_score_thresh.
   
   nms_type: iou_min_bev
