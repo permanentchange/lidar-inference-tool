@@ -35,10 +35,10 @@ if grep -Fq -- "<model_dir> <input_path>" <<<"$help_output"; then
 fi
 
 run_expect_failure "Unexpected positional argument: demo/centerpoint_pillar" \
-  demo/centerpoint_pillar demo/data/test.bin
+  demo/centerpoint_pillar demo/data/test1.bin
 run_expect_failure "--model-dir is required" \
-  --input demo/data/test.bin --dump-dir /tmp/infer_debug_cli_test
+  --input demo/data/test1.bin --dump-dir /tmp/infer_debug_cli_test
 run_expect_failure "--input is required" \
   --model-dir demo/centerpoint_pillar --dump-dir /tmp/infer_debug_cli_test
 run_expect_failure "--dump-dir is required" \
-  --model-dir demo/centerpoint_pillar --input demo/data/test.bin
+  --model-dir demo/centerpoint_pillar --input demo/data/test1.bin

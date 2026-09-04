@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.8.0
+
+- Added `model.runtime_backend: centerpoint_voxel` for CenterPoint voxel model packages while keeping the high-level C++ API entry points unchanged.
+- Added `libspconv` sparse-convolution integration, generated ONNX protobuf build support, and bundled CUDA-platform `libspconv.so` assets.
+- Reorganized demo assets into `demo/centerpoint_pillar/`, `demo/centerpoint_voxel/`, and shared point-cloud inputs under `demo/data/`.
+- Added CenterPoint voxel demo model assets, including the SCN ONNX, RPN/head ONNX, and package `model.yaml`.
+- Added `scripts/centerpoint_voxel_head2engine.sh` for building the voxel RPN/head TensorRT engine from an exported head ONNX.
+- Added regression coverage for package config loading, point-cloud input loading, debug CLI argument handling, minimal C++ API usage text, CenterPoint voxel engine-helper dependency checks, and package architecture contents.
+
 ## v1.7.1
 
 - Added optional `postprocess.self_car_box` and `postprocess.self_car_nms_thresh` filtering for `iou_bev` and `iou_min_bev` NMS.

@@ -71,7 +71,7 @@ void PrintUsage(const char* program) {
   (void)program;
   std::cerr
       << "Usage: ./build/minimal_cpp_api_example MODEL_DIR POINT_CLOUD_BIN\n"
-      << "Example: ./build/minimal_cpp_api_example demo/centerpoint_pillar demo/data/test.bin\n";
+      << "Example: ./build/minimal_cpp_api_example demo/centerpoint_pillar demo/data/test1.bin\n";
 }
 
 void PrintDetections(const std::vector<inference::Detection>& detections) {

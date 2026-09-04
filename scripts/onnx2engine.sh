@@ -89,8 +89,8 @@ PY
 usage() {
   cat <<'EOF_USAGE'
 Usage:
-  bash tools/onnx2engine.sh <onnx_path> <engine_path> [precision] [--cali-data DIR] [--report-dir DIR]
-  bash tools/onnx2engine.sh <onnx_path> <engine_path> <min_points> <opt_points> <max_points> [precision] [--cali-data DIR] [--report-dir DIR]
+  bash scripts/onnx2engine.sh <onnx_path> <engine_path> [precision] [--cali-data DIR] [--report-dir DIR]
+  bash scripts/onnx2engine.sh <onnx_path> <engine_path> <min_points> <opt_points> <max_points> [precision] [--cali-data DIR] [--report-dir DIR]
 
 Arguments:
   <onnx_path>     Input ONNX model path.
@@ -116,28 +116,28 @@ Arguments:
 
 Supported calling forms:
   1. ONNX + engine only:
-       bash tools/onnx2engine.sh model.onnx model.engine
+       bash scripts/onnx2engine.sh model.onnx model.engine
 
   2. ONNX + engine + precision:
-       bash tools/onnx2engine.sh model.onnx model.engine fp32
-       bash tools/onnx2engine.sh model.onnx model.engine fp16
-       bash tools/onnx2engine.sh model.onnx model.engine int8
-       bash tools/onnx2engine.sh model.onnx model.engine fp16int8
-       bash tools/onnx2engine.sh model.onnx model.engine fp16in8
-       bash tools/onnx2engine.sh model.onnx model.engine best
+       bash scripts/onnx2engine.sh model.onnx model.engine fp32
+       bash scripts/onnx2engine.sh model.onnx model.engine fp16
+       bash scripts/onnx2engine.sh model.onnx model.engine int8
+       bash scripts/onnx2engine.sh model.onnx model.engine fp16int8
+       bash scripts/onnx2engine.sh model.onnx model.engine fp16in8
+       bash scripts/onnx2engine.sh model.onnx model.engine best
 
   3. ONNX + engine + min/opt/max:
-       bash tools/onnx2engine.sh model.onnx model.engine 10000 30000 50000
+       bash scripts/onnx2engine.sh model.onnx model.engine 10000 30000 50000
 
   4. ONNX + engine + min/opt/max + precision:
-       bash tools/onnx2engine.sh model.onnx model.engine 10000 30000 50000 fp16
-       bash tools/onnx2engine.sh model.onnx model.engine 10000 30000 50000 fp16int8
-       bash tools/onnx2engine.sh model.onnx model.engine 10000 30000 50000 best
+       bash scripts/onnx2engine.sh model.onnx model.engine 10000 30000 50000 fp16
+       bash scripts/onnx2engine.sh model.onnx model.engine 10000 30000 50000 fp16int8
+       bash scripts/onnx2engine.sh model.onnx model.engine 10000 30000 50000 best
 
   5. PTQ build with calibration data:
-       bash tools/onnx2engine.sh model.onnx model.engine best --cali-data cali_data
-       bash tools/onnx2engine.sh model.onnx model.engine fp16int8 --cali-data cali_data
-       bash tools/onnx2engine.sh model.onnx model.engine 10000 30000 50000 int8 --cali-data cali_data
+       bash scripts/onnx2engine.sh model.onnx model.engine best --cali-data cali_data
+       bash scripts/onnx2engine.sh model.onnx model.engine fp16int8 --cali-data cali_data
+       bash scripts/onnx2engine.sh model.onnx model.engine 10000 30000 50000 int8 --cali-data cali_data
 
 This helper assumes the exported ONNX/TensorRT contract used by this repository:
   - voxels:     <N>x20x5
@@ -145,16 +145,16 @@ This helper assumes the exported ONNX/TensorRT contract used by this repository:
   - coors:      <N>x4
 
 Examples:
-  bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end.engine
-  bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end_fp32.engine fp32
-  bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end_fp16.engine fp16
-  bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end_int8.engine int8
-  bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end_fp16int8.engine fp16int8 --cali-data demo/cali_data
-  bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end_best.engine best
-  bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end.engine 10000 30000 50000
-  bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end.engine 10000 30000 50000 fp16
-  bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end.engine 10000 30000 50000 best
-  bash tools/onnx2engine.sh demo/end2end.onnx demo/end2end.engine best --cali-data demo/cali_data
+  bash scripts/onnx2engine.sh demo/centerpoint_pillar/end2end.onnx demo/centerpoint_pillar/end2end.engine
+  bash scripts/onnx2engine.sh demo/centerpoint_pillar/end2end.onnx demo/centerpoint_pillar/end2end_fp32.engine fp32
+  bash scripts/onnx2engine.sh demo/centerpoint_pillar/end2end.onnx demo/centerpoint_pillar/end2end_fp16.engine fp16
+  bash scripts/onnx2engine.sh demo/centerpoint_pillar/end2end.onnx demo/centerpoint_pillar/end2end_int8.engine int8
+  bash scripts/onnx2engine.sh demo/centerpoint_pillar/end2end.onnx demo/centerpoint_pillar/end2end_fp16int8.engine fp16int8 --cali-data demo/cali_data
+  bash scripts/onnx2engine.sh demo/centerpoint_pillar/end2end.onnx demo/centerpoint_pillar/end2end_best.engine best
+  bash scripts/onnx2engine.sh demo/centerpoint_pillar/end2end.onnx demo/centerpoint_pillar/end2end.engine 10000 30000 50000
+  bash scripts/onnx2engine.sh demo/centerpoint_pillar/end2end.onnx demo/centerpoint_pillar/end2end.engine 10000 30000 50000 fp16
+  bash scripts/onnx2engine.sh demo/centerpoint_pillar/end2end.onnx demo/centerpoint_pillar/end2end.engine 10000 30000 50000 best
+  bash scripts/onnx2engine.sh demo/centerpoint_pillar/end2end.onnx demo/centerpoint_pillar/end2end.engine best --cali-data demo/cali_data
 
 Behavior:
   1. If <engine_path> does not exist, build the TensorRT engine.

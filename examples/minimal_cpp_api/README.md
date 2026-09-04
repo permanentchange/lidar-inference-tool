@@ -26,9 +26,11 @@ The example executable is written to:
 Run the executable built under `build/`; `examples/minimal_cpp_api/` is the source directory, not an executable:
 
 ```bash
-./build/minimal_cpp_api_example demo/centerpoint_pillar demo/data/test.bin
-./build/minimal_cpp_api_example demo/centerpoint_voxel demo/data/test.bin
+./build/minimal_cpp_api_example demo/centerpoint_pillar demo/data/test1.bin
+./build/minimal_cpp_api_example demo/centerpoint_voxel demo/data/test1.bin
 ```
+
+The voxel example requires `demo/centerpoint_voxel/rpn_centerhead.engine`; build it from `demo/centerpoint_voxel/rpn_centerhead.onnx` with `scripts/centerpoint_voxel_head2engine.sh` before running the example.
 
 Arguments:
 

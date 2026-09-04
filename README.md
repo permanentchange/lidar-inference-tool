@@ -8,20 +8,12 @@
 - `lidar_model_downloader`: an ARM64 package command-line helper for fetching model assets after package installation
 - `minimal_cpp_api_example`: a model-package-driven executable under `examples/` that shows the recommended C++ integration path
 
-## v1.7.1
+## v1.8.0
 
-- Added optional self-car-box filtering for `iou_bev` and `iou_min_bev` NMS without adding an NMS pass or consuming configured NMS capacities.
-- Fixed CUDA compilation of the C++17 public API on ARM CUDA 11.4 / CMake 3.16 by passing `-std=c++17` directly to `nvcc`.
-- Fixed amd64 DEB packaging by excluding the ARM64-only `lidar_model_downloader`; ARM64 packages retain the downloader.
-
-## v1.7.0
-
-- Added directory batch mode to `infer_debug_tool` for top-level `.pcd` / `.bin` sequences.
-- Added per-frame dump directories plus `sequence_manifest.json` and `sequence_detections.jsonl` outputs for downstream tracking workflows.
-- Documented selectable postprocess NMS modes, including `iou_min_bev`.
-- Updated the demo postprocess defaults with lower per-label score thresholds and one shared NMS label group.
-- Removed the model uploader script and packaged uploader binary from the repository.
-- Updated the repository-side `lidar_model_downloader.py` to download MinIO prefixes by default and support single-object downloads with `--is-file`.
+- Added `centerpoint_voxel` model-package support through the same high-level C++ API used by pillar packages.
+- Added bundled `libspconv` sparse-convolution integration for voxel sparse encoder / SCN execution.
+- Reorganized demo assets into pillar, voxel, and shared point-cloud input directories.
+- Added `scripts/centerpoint_voxel_head2engine.sh` for building the voxel RPN/head TensorRT engine.
 
 See [CHANGELOG.md](./CHANGELOG.md) for version history.
 
@@ -46,14 +38,10 @@ This README intentionally uses repository-relative paths and placeholders such a
 - `scripts/centerpoint_voxel_head2engine.sh`: helper script for CenterPoint voxel RPN/head TensorRT engines
 - `tools/visualize_infer_debug.py`: BEV and interactive 3D visualization for dumped infer-debug artifacts
 - `examples/minimal_cpp_api/`: minimal executable example for the public C++ wrapper API
-- `demo/model.yaml`: example model package config for the public C++ wrapper
-- `demo/centerpoint_voxel/model.yaml`: example CenterPoint voxel model package config
-- `demo/end2end.onnx`: example end-to-end pillar ONNX model
-- `demo/end2end.engine`: example end-to-end pillar TensorRT engine
-- `demo/test.bin`: example float32 point-cloud binary
-- `demo/test.pcd`: example PCD point cloud
+- `demo/centerpoint_pillar/`: example end-to-end pillar model package assets
 - `demo/centerpoint_voxel/`: example CenterPoint voxel model package assets
-- `third_party/libspconv/`: optional CenterPoint voxel sparse-convolution runtime copied from CUDA-CenterPoint
+- `demo/data/`: shared example point-cloud inputs
+- `third_party/libspconv/`: CenterPoint voxel sparse-convolution runtime copied from CUDA-CenterPoint
 - `third_party/voxelize/`: vendored CUDA voxelization module
 - `third_party/iou3d_nms/`: low-level IoU / NMS module used by the runtime and debug tools
 - `tests/`: optional regression tests built with `-DBUILD_TESTING=ON`
@@ -127,7 +115,7 @@ Point-cloud loading supports 3D, 4D, and 5D float `.bin` files and PCD files wit
 - TensorRT headers and libraries
 - `yaml-cpp` development package
 - Protobuf headers, libraries, and a matching `protoc`
-- for `centerpoint_voxel` packages at runtime: compatible `libspconv.so` and its runtime dependencies
+- architecture- and CUDA-compatible `third_party/libspconv/lib/<arch>/libspconv.so`
 
 Install common development dependencies on Ubuntu:
 
@@ -137,12 +125,11 @@ sudo apt-get install -y libyaml-cpp-dev protobuf-compiler libprotobuf-dev
 
 Notes:
 
-- the full build requires CUDA and TensorRT at configure time
-- the full build also requires the vendored `third_party/libspconv` headers, parser proto files, and an architecture-matching `libspconv.so`
-- CMake rejects Conda-managed include and library paths on purpose; use system dependencies or explicit non-Conda roots
-- TensorRT auto-detection is limited to standard system prefixes such as `/usr`, `/usr/local`, and `/opt`
-- the build no longer scans personal directories such as `$HOME/TensorRT*` or `$HOME/workspace/TensorRT*`
-- if TensorRT or `yaml-cpp` is installed in a nonstandard location, pass `-DTENSORRT_ROOT=...` and / or `-DYAML_CPP_ROOT=...`
+- the full build requires CUDA, TensorRT, Protobuf, `yaml-cpp`, and the bundled `libspconv` assets at configure time
+- the full build also requires the vendored `third_party/libspconv` headers and parser proto files
+- CMake uses `find_path` / `find_library` for TensorRT and `yaml-cpp`
+- if TensorRT is installed in a nonstandard location, pass `-DTENSORRT_INCLUDE_DIR=...`, `-DNVINFER_LIB=...`, and `-DNVINFER_PLUGIN_LIB=...`
+- `rebuild.sh` selects `third_party/libspconv/lib/<arch>_cuda<cuda>/libspconv.so` from the active `nvcc` version and refreshes `third_party/libspconv/lib/<arch>/libspconv.so`
 - the selected Protobuf headers/libraries and `protoc` must report the same version
 
 ### Python utilities
@@ -178,19 +165,13 @@ cmake -S . -B build -DBUILD_EXAMPLES=OFF
 cmake --build build -j$(nproc)
 ```
 
-If TensorRT is not detected automatically from standard system prefixes:
-
-```bash
-cmake -S . -B build -DTENSORRT_ROOT=/path/to/TensorRT
-cmake --build build -j$(nproc)
-```
-
-If `yaml-cpp` is outside standard system prefixes:
+If TensorRT is not detected automatically, pass the exact include and library paths:
 
 ```bash
 cmake -S . -B build \
-  -DTENSORRT_ROOT=/path/to/TensorRT \
-  -DYAML_CPP_ROOT=/path/to/yaml-cpp
+  -DTENSORRT_INCLUDE_DIR=/path/to/TensorRT/include \
+  -DNVINFER_LIB=/path/to/TensorRT/lib/libnvinfer.so \
+  -DNVINFER_PLUGIN_LIB=/path/to/TensorRT/lib/libnvinfer_plugin.so
 cmake --build build -j$(nproc)
 ```
 
@@ -198,7 +179,10 @@ If the CMake cache is stale, was copied from another environment, or still point
 
 ```bash
 rm -rf build
-cmake -S . -B build -DTENSORRT_ROOT=/path/to/TensorRT
+cmake -S . -B build \
+  -DTENSORRT_INCLUDE_DIR=/path/to/TensorRT/include \
+  -DNVINFER_LIB=/path/to/TensorRT/lib/libnvinfer.so \
+  -DNVINFER_PLUGIN_LIB=/path/to/TensorRT/lib/libnvinfer_plugin.so
 cmake --build build -j$(nproc)
 ```
 
@@ -233,44 +217,32 @@ The generated `.deb` installs its runtime commands under `/usr/local/bin`, inclu
 
 The downloader command in ARM64 DEB packages comes from the prebuilt binary under `scripts/dist/`. The Python source file `scripts/lidar_model_downloader.py` remains the repository-side source utility.
 
-Installed CMake package files include a version file, so downstream projects can require this release with `find_package(lidar-inference-tool 1.7.1 CONFIG REQUIRED)`.
+Installed CMake package files include a version file, so downstream projects can require this release with `find_package(lidar-inference-tool 1.8.0 CONFIG REQUIRED)`.
 
 The package build now runs from `build/`, so CPack temporary files stay under `build/_CPack_Packages/` instead of the repository root.
 
 ### Platform notes
 
-On some ARM64 / `aarch64` Linux systems, TensorRT headers are installed under a multiarch include directory such as `/usr/include/aarch64-linux-gnu` instead of the generic `/usr/include`. The CMake configuration in this repository now checks the active multiarch include suffix automatically, so a standard system TensorRT installation is detected without extra flags.
-
-If you configure from a non-interactive shell where `PATH` is minimal or empty, make sure CMake can still resolve `nvcc`. The repository now falls back to `/usr/local/cuda/bin/nvcc` when it exists, but an explicit override also works:
+If you configure from a non-interactive shell where `PATH` is minimal or empty, pass the CUDA compiler explicitly:
 
 ```bash
 cmake -S . -B build -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc
 cmake --build build -j$(nproc)
 ```
 
-### Stub build
-
-If CUDA or TensorRT is unavailable but you still want the shared library to build, enable the stub explicitly:
-
-```bash
-cmake -S . -B build -DBUILD_STUB_IF_NO_TENSORRT=ON
-cmake --build build -j$(nproc)
-```
-
-Stub behavior:
-
-- only `build/libinference.so` is produced
-- exported API calls return `INFERENCE_STATUS_NOT_SUPPORTED`
-- `inference_last_error()` reports that the library was built without CUDA or TensorRT support
-- example executables are skipped even if `BUILD_EXAMPLES=ON`
-
 ## Quick Start
 
-Run the recommended API result debug sessions:
+Run the recommended pillar API result debug session:
 
 ```bash
-./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test.bin --dump-dir demo/centerpoint_pillar_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
-./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test.bin --dump-dir demo/centerpoint_voxel_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.bin --dump-dir demo/centerpoint_pillar_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+```
+
+For the voxel demo, first build the TensorRT head engine referenced by `demo/centerpoint_voxel/model.yaml`, then run the same debug flow:
+
+```bash
+bash scripts/centerpoint_voxel_head2engine.sh demo/centerpoint_voxel/rpn_centerhead.onnx demo/centerpoint_voxel/rpn_centerhead.engine
+./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test1.bin --dump-dir demo/centerpoint_voxel_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
 ```
 
 The demo assets used by the public C++ API and debug tools are:
@@ -279,9 +251,12 @@ The demo assets used by the public C++ API and debug tools are:
 - `demo/centerpoint_pillar/end2end.engine`
 - `demo/centerpoint_voxel/model.yaml`
 - `demo/centerpoint_voxel/centerpoint.scn.onnx`
-- `demo/centerpoint_voxel/rpn_centerhead.engine`
-- `demo/data/test.bin`
-- `demo/data/test.pcd`
+- `demo/centerpoint_voxel/rpn_centerhead.onnx`
+- `demo/centerpoint_voxel/rpn_centerhead.engine` after running `scripts/centerpoint_voxel_head2engine.sh`
+- `demo/data/test1.bin`
+- `demo/data/test1.pcd`
+- `demo/data/test2.pcd`
+- `demo/data/test3.pcd`
 
 Typical `perf_debug_tool` console output includes:
 
@@ -322,9 +297,9 @@ The public C++ wrapper expects a model directory containing:
 - `runtime`: voxel and point capacity limits plus decode threshold
 - `postprocess`: NMS type, thresholds, and per-label filtering values
 
-The current demo `model.yaml` includes:
+Across the current pillar and voxel demo configs, `model.yaml` includes:
 
-- `model.engine_path`
+- `model.engine_path` for `pillar_end2end` packages
 - `model.runtime_backend` for CenterPoint voxel packages
 - `model.scn_onnx_path` for CenterPoint voxel packages
 - `model.head_engine_path` for CenterPoint voxel packages
@@ -391,7 +366,7 @@ The recommended public C++ example flow is unchanged in this release:
 - run final detections with `runtime->Infer(...)`
 - use `runtime->InferDecoded(...)` only when pre-NMS debug candidates are needed
 
-The wrapper resolves relative `model.engine_path` values against the location of `model.yaml`.
+The wrapper resolves relative model asset paths, including `model.engine_path`, `model.scn_onnx_path`, and `model.head_engine_path`, against the location of `model.yaml`.
 Optional override YAML files use the same schema and are applied with this precedence:
 
 - explicit code edits to the loaded `PackageConfig`
@@ -417,9 +392,11 @@ Supported options:
 Recommended examples:
 
 ```bash
-./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test.bin --dump-dir demo/centerpoint_pillar_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
-./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test.bin --dump-dir demo/centerpoint_voxel_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.bin --dump-dir demo/centerpoint_pillar_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test1.bin --dump-dir demo/centerpoint_voxel_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
 ```
+
+The voxel example requires `demo/centerpoint_voxel/rpn_centerhead.engine`; build it from `demo/centerpoint_voxel/rpn_centerhead.onnx` with `scripts/centerpoint_voxel_head2engine.sh` before running inference.
 
 Behavior:
 
@@ -513,7 +490,7 @@ python3 tools/visualize_infer_debug.py demo/centerpoint_pillar demo/centerpoint_
 For the common single-sample flow:
 
 ```bash
-./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test.bin --dump-dir demo/centerpoint_pillar_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.bin --dump-dir demo/centerpoint_pillar_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
 python3 tools/visualize_infer_debug.py demo/centerpoint_pillar demo/centerpoint_pillar_outputs --zmin -0.2 --zmax 3
 ```
 
@@ -533,7 +510,8 @@ Typical outputs in the dump directory:
 For a more detailed run with decoded candidates and internal debug heatmap:
 
 ```bash
-./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test.bin --dump-dir demo/centerpoint_voxel_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+bash scripts/centerpoint_voxel_head2engine.sh demo/centerpoint_voxel/rpn_centerhead.onnx demo/centerpoint_voxel/rpn_centerhead.engine
+./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test1.bin --dump-dir demo/centerpoint_voxel_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
 python3 tools/visualize_infer_debug.py demo/centerpoint_voxel demo/centerpoint_voxel_outputs --zmin -0.2 --zmax 3
 ```
 
