@@ -1,3 +1,5 @@
+version: v7.0
+file_list: ['centerpoint.scn.onnx', 'rpn_centerhead.engine', 'model.yaml']
 model:
   runtime_backend: centerpoint_voxel
   scn_onnx_path: centerpoint.scn.onnx

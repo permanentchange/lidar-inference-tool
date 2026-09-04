@@ -1,3 +1,5 @@
+version: v6.1
+file_list: ['end2end.engine', 'model.yaml']
 model:
   engine_path: end2end.engine
   decode_mode: centerpoint_mmdeploy
