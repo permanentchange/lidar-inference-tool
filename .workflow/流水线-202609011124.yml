@@ -18,7 +18,7 @@ stages:
 
       work_dir="$(pwd)/.build-work"
       source_dir="$work_dir/lidar-inference-tool"
-      tag="${REPO_REF:-${CI_COMMIT_REF_NAME:-${CI_COMMIT_REF_NAME_1:-}}}"
+      tag="${REPO_REF:-${CI_COMMIT_REF_NAME:-${CI_COMMIT_REF_NAME_1:-master}}}"
 
       if [ -z "$tag" ]; then
         tag="$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
