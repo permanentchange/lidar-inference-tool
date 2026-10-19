@@ -265,6 +265,49 @@ postprocess:
   assert(error.find("postprocess.circle_nms_min_radius") != std::string::npos);
 }
 
+void TestBinFeatureInferenceRejectsAmbiguousLayout() {
+  const std::filesystem::path dir = MakeTempDir() / "ambiguous_bin";
+  std::filesystem::create_directories(dir);
+  const std::filesystem::path bin_path = dir / "points.bin";
+  WriteFloatBinFile(bin_path, {1.0f, 2.0f, 3.0f, 4.0f, 5.0f,
+                               6.0f, 7.0f, 8.0f, 9.0f, 10.0f,
+                               11.0f, 12.0f, 13.0f, 14.0f, 15.0f,
+                               16.0f, 17.0f, 18.0f, 19.0f, 20.0f});
+
+  std::vector<float> points;
+  std::string error;
+  const InferenceStatus status =
+      inference_internal::LoadPcdFile(bin_path.string(), 5, 10, &points, &error);
+  assert(status == INFERENCE_STATUS_INVALID_ARGUMENT);
+  assert(error.find("Ambiguous") != std::string::npos);
+}
+
+void TestFourFeatureBinPadsRuntimeFeature() {
+  const std::filesystem::path dir = MakeTempDir() / "four_feature_bin";
+  std::filesystem::create_directories(dir);
+  const std::filesystem::path bin_path = dir / "points.bin";
+  WriteFloatBinFile(bin_path, {1.0f, 2.0f, 3.0f, 4.0f,
+                               5.0f, 6.0f, 7.0f, 8.0f,
+                               9.0f, 10.0f, 11.0f, 12.0f,
+                               13.0f, 14.0f, 15.0f, 16.0f,
+                               17.0f, 18.0f, 19.0f, 20.0f});
+
+  std::vector<float> points;
+  std::string error;
+  inference_internal::PointCloudLoadInfo info;
+  const InferenceStatus status =
+      inference_internal::LoadPcdFile(bin_path.string(), 5, 10, &points, &error, &info, 4);
+  assert(status == INFERENCE_STATUS_OK);
+  assert(points.size() == 25);
+  assert(info.fields.size() == 4);
+  for (size_t point = 0; point < 5; ++point) {
+    for (size_t feature = 0; feature < 4; ++feature) {
+      assert(points[point * 5 + feature] == static_cast<float>(point * 4 + feature + 1));
+    }
+    assert(points[point * 5 + 4] == 0.0f);
+  }
+}
+
 void TestFiveFeatureBinPreservesHasIntensityChannel() {
   const std::filesystem::path dir = MakeTempDir() / "bin";
   std::filesystem::create_directories(dir);
@@ -276,7 +319,7 @@ void TestFiveFeatureBinPreservesHasIntensityChannel() {
   std::string error;
   inference_internal::PointCloudLoadInfo info;
   const InferenceStatus status =
-      inference_internal::LoadPcdFile(bin_path.string(), 5, 10, &points, &error, &info);
+      inference_internal::LoadPcdFile(bin_path.string(), 5, 10, &points, &error, &info, 5);
   assert(status == INFERENCE_STATUS_OK);
   assert(points.size() == 10);
   assert(points[3] == 4.0f);
@@ -314,6 +357,17 @@ DATA ascii
   assert(points[4] == 1.0f);
   assert(points[8] == 20.0f);
   assert(points[9] == 1.0f);
+
+  // The raw .bin feature-count override is ignored for PCD: the header remains authoritative.
+  error.clear();
+  const InferenceStatus with_bin_override_status =
+      inference_internal::LoadPcdFile(pcd_path.string(), 5, 10, &points, &error, &info, 4);
+  assert(with_bin_override_status == INFERENCE_STATUS_OK);
+  assert(points.size() == 10);
+  assert(points[3] == 10.0f);
+  assert(points[4] == 1.0f);
+  assert(points[8] == 20.0f);
+  assert(points[9] == 1.0f);
 }
 
 }  // namespace
@@ -328,6 +382,8 @@ int main() {
   TestRejectsInvalidVoxelSize();
   TestRejectsShortLabelScoreThresholds();
   TestRejectsShortCircleNmsRadii();
+  TestBinFeatureInferenceRejectsAmbiguousLayout();
+  TestFourFeatureBinPadsRuntimeFeature();
   TestFiveFeatureBinPreservesHasIntensityChannel();
   TestAsciiPcdPreservesUintIntensityAndHasIntensity();
   return 0;

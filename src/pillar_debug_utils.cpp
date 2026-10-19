@@ -663,6 +663,7 @@ InferenceStatus PopulateFloatBinInfo(const std::string& path,
 
 InferenceStatus LoadFloatBinFile(const std::string& path,
                                  int num_point_features,
+                                 int source_num_point_features,
                                  int max_points,
                                  std::vector<float>* out_points,
                                  std::string* out_error,
@@ -684,24 +685,52 @@ InferenceStatus LoadFloatBinFile(const std::string& path,
   }
 
   const size_t total_floats = static_cast<size_t>(file_size) / sizeof(float);
-  int source_features = 0;
-  if (num_point_features > 0 && total_floats % static_cast<size_t>(num_point_features) == 0) {
-    source_features = num_point_features;
+  int source_features = source_num_point_features;
+  if (source_features != 0) {
+    if (source_features < 3 || source_features > 5) {
+      if (out_error != nullptr) {
+        *out_error = "source_num_point_features must be one of 3, 4, or 5 for float32 .bin input";
+      }
+      return INFERENCE_STATUS_INVALID_ARGUMENT;
+    }
+    if (total_floats % static_cast<size_t>(source_features) != 0) {
+      if (out_error != nullptr) {
+        *out_error = "Float32 .bin element count is not divisible by the configured source feature count: " +
+                     path;
+      }
+      return INFERENCE_STATUS_INVALID_ARGUMENT;
+    }
   } else {
-    constexpr std::array<int, 3> kCommonFeatureCounts = {5, 4, 3};
-    for (const int candidate : kCommonFeatureCounts) {
+    std::vector<int> compatible_features;
+    for (const int candidate : {3, 4, 5}) {
       if (total_floats % static_cast<size_t>(candidate) == 0) {
-        source_features = candidate;
-        break;
+        compatible_features.push_back(candidate);
       }
     }
-  }
-
-  if (source_features <= 0) {
-    if (out_error != nullptr) {
-      *out_error = "Failed to infer feature count for float32 point cloud: " + path;
+    if (compatible_features.size() > 1) {
+      if (out_error != nullptr) {
+        std::ostringstream oss;
+        oss << "Ambiguous float32 .bin feature layout for " << path
+            << "; compatible source feature counts are ";
+        for (size_t i = 0; i < compatible_features.size(); ++i) {
+          if (i > 0) {
+            oss << ", ";
+          }
+          oss << compatible_features[i];
+        }
+        oss << ". Specify --source-num-point-features (3, 4, or 5).";
+        *out_error = oss.str();
+      }
+      return INFERENCE_STATUS_INVALID_ARGUMENT;
     }
-    return INFERENCE_STATUS_INVALID_ARGUMENT;
+    if (compatible_features.empty()) {
+      if (out_error != nullptr) {
+        *out_error = "Cannot infer float32 .bin feature layout; specify --source-num-point-features (3, 4, or 5): " +
+                     path;
+      }
+      return INFERENCE_STATUS_INVALID_ARGUMENT;
+    }
+    source_features = compatible_features.front();
   }
 
   input.seekg(0, std::ios::beg);
@@ -780,7 +809,8 @@ InferenceStatus LoadPcdFile(const std::string& path,
                             int max_points,
                             std::vector<float>* out_points,
                             std::string* out_error,
-                            PointCloudLoadInfo* out_info) {
+                            PointCloudLoadInfo* out_info,
+                            int source_num_point_features) {
   if (out_points == nullptr) {
     return INFERENCE_STATUS_INVALID_ARGUMENT;
   }
@@ -793,8 +823,11 @@ InferenceStatus LoadPcdFile(const std::string& path,
 
   const std::filesystem::path input_path(path);
   if (ToLower(input_path.extension().string()) == ".bin") {
-    return LoadFloatBinFile(path, num_point_features, max_points, out_points, out_error, out_info);
+    return LoadFloatBinFile(path, num_point_features, source_num_point_features,
+                            max_points, out_points, out_error, out_info);
   }
+  // PCD field layout is defined by its header; the raw .bin feature override
+  // must not affect ASCII or binary PCD loading.
   return LoadPcdPointCloudFile(path, num_point_features, max_points, out_points, out_error, out_info);
 }
 

@@ -23,6 +23,7 @@ struct CliOptions {
   std::string input_path;
   std::string dump_dir;
   std::string override_config_path;
+  int source_num_point_features = 0;
   bool dump_decoded = false;
   bool dump_internal = false;
   int warmup_iters = 0;
@@ -65,8 +66,8 @@ void PrintUsage(const char* program) {
   std::cerr
       << "Usage: " << program
       << " --model-dir MODEL_DIR --input INPUT_PATH --dump-dir DUMP_DIR"
-      << " [--override-config PATH] [--dump-decoded] [--dump-internal]"
-      << " [--warmup N] [--profile-iters N]\n";
+      << " [--source-num-point-features N] [--override-config PATH]"
+      << " [--dump-decoded] [--dump-internal] [--warmup N] [--profile-iters N]\n";
 }
 
 bool ParseCliOptions(int argc, char** argv, CliOptions* out_options, std::string* out_error) {
@@ -78,7 +79,31 @@ bool ParseCliOptions(int argc, char** argv, CliOptions* out_options, std::string
   CliOptions options;
   for (int arg_index = 1; arg_index < argc;) {
     const std::string arg = argv[arg_index++];
-    if (arg == "--override-config") {
+    if (arg == "--source-num-point-features") {
+      if (arg_index >= argc) {
+        if (out_error != nullptr) {
+          *out_error = "Missing count for --source-num-point-features";
+        }
+        return false;
+      }
+      const std::string value = argv[arg_index++];
+      try {
+        size_t parsed = 0;
+        const int count = std::stoi(value, &parsed);
+        if (parsed != value.size() || count < 3 || count > 5) {
+          if (out_error != nullptr) {
+            *out_error = "--source-num-point-features must be one of 3, 4, or 5";
+          }
+          return false;
+        }
+        options.source_num_point_features = count;
+      } catch (...) {
+        if (out_error != nullptr) {
+          *out_error = "--source-num-point-features must be one of 3, 4, or 5";
+        }
+        return false;
+      }
+    } else if (arg == "--override-config") {
       if (arg_index >= argc) {
         if (out_error != nullptr) {
           *out_error = "Missing path for --override-config";
@@ -768,7 +793,8 @@ InferenceStatus RunSingleInput(const CliOptions& options,
   inference_internal::PointCloudLoadInfo point_cloud_info;
   status = inference_internal::LoadPcdFile(
       input_path.string(), (*runtime)->config().model.num_point_features,
-      (*runtime)->config().runtime.max_points, &points, out_error, &point_cloud_info);
+      (*runtime)->config().runtime.max_points, &points, out_error, &point_cloud_info,
+      options.source_num_point_features);
   if (status != INFERENCE_STATUS_OK) {
     return status;
   }

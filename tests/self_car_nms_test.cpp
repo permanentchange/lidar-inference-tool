@@ -310,6 +310,41 @@ bool TestSelfCarAppliesToGroupedNms() {
   return RunNms(candidates, postprocess, &result) && CHECK(result.scores.empty());
 }
 
+bool TestCenterPointAppliesPerLabelThresholdsWithoutNmsGroups() {
+  inference_internal::CandidateDetections candidates;
+  AddCandidate(&candidates, 0.4f, 0,
+               {{10.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f}});
+  AddCandidate(&candidates, 0.4f, 1,
+               {{20.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f}});
+
+  inference_internal::PostprocessConfig postprocess;
+  postprocess.nms_type = INFERENCE_NMS_IOU_BEV;
+  postprocess.nms_thresh = 0.99f;
+  postprocess.nms_pre_maxsize = 10;
+  postprocess.nms_post_maxsize = 10;
+  postprocess.final_score_threshold = 0.0f;
+  postprocess.label_score_thresh = {0.5f, 0.3f};
+
+  inference_internal::RuntimeConfig runtime;
+  runtime.decode_mode = inference::DecodeMode::kCenterPoint;
+  runtime.task_num_classes = {2};
+  runtime.task_label_ids = {{0, 1}};
+  runtime.label_count = 2;
+
+  inference_internal::CandidateDetections result;
+  std::string error;
+  const InferenceStatus status = inference_internal::RunPostprocessNms(
+      candidates, postprocess, runtime, &result, &error);
+  if (!CHECK(status == INFERENCE_STATUS_OK)) {
+    std::cerr << error << "\n";
+    return false;
+  }
+  return CHECK(result.scores.size() == 1U) &&
+         CHECK(result.labels.size() == 1U) &&
+         CHECK(result.labels[0] == 1) &&
+         CHECK(std::fabs(result.scores[0] - 0.4f) < 1.0e-6f);
+}
+
 bool TestSelfCarAppliesToCenterPointTaskNms() {
   inference_internal::CandidateDetections candidates;
   AddCandidate(&candidates, 0.9f, 0,
@@ -388,6 +423,9 @@ int main() {
     return 1;
   }
   if (!TestSelfCarAppliesToGroupedNms()) {
+    return 1;
+  }
+  if (!TestCenterPointAppliesPerLabelThresholdsWithoutNmsGroups()) {
     return 1;
   }
   if (!TestSelfCarAppliesToCenterPointTaskNms()) {
