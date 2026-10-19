@@ -235,14 +235,14 @@ cmake --build build -j$(nproc)
 Run the recommended pillar API result debug session:
 
 ```bash
-./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.bin --dump-dir demo/centerpoint_pillar_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.bin --source-num-point-features 5 --dump-dir demo/centerpoint_pillar_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
 ```
 
 For the voxel demo, first build the TensorRT head engine referenced by `demo/centerpoint_voxel/model.yaml`, then run the same debug flow:
 
 ```bash
 bash scripts/centerpoint_voxel_head2engine.sh demo/centerpoint_voxel/rpn_centerhead.onnx demo/centerpoint_voxel/rpn_centerhead.engine
-./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test1.bin --dump-dir demo/centerpoint_voxel_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test1.bin --source-num-point-features 5 --dump-dir demo/centerpoint_voxel_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
 ```
 
 The demo assets used by the public C++ API and debug tools are:
@@ -378,11 +378,12 @@ Optional override YAML files use the same schema and are applied with this prece
 `infer_debug_tool` follows the same model-directory entry style as the public C++ wrapper and treats `runtime->Infer(...)` as the authoritative final result:
 
 ```bash
-./build/infer_debug_tool --model-dir MODEL_DIR --input INPUT_PATH --dump-dir DUMP_DIR [--override-config PATH] [--dump-decoded] [--dump-internal] [--warmup N] [--profile-iters N]
+./build/infer_debug_tool --model-dir MODEL_DIR --input INPUT_PATH --dump-dir DUMP_DIR [--source-num-point-features N] [--override-config PATH] [--dump-decoded] [--dump-internal] [--warmup N] [--profile-iters N]
 ```
 
 Supported options:
 
+- `--source-num-point-features N`: source feature count for float32 `.bin` files; specify `3`, `4`, or `5` when the layout is known
 - `--override-config PATH`
 - `--warmup N`
 - `--profile-iters N`
@@ -392,8 +393,8 @@ Supported options:
 Recommended examples:
 
 ```bash
-./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.bin --dump-dir demo/centerpoint_pillar_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
-./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test1.bin --dump-dir demo/centerpoint_voxel_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.bin --source-num-point-features 5 --dump-dir demo/centerpoint_pillar_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test1.bin --source-num-point-features 5 --dump-dir demo/centerpoint_voxel_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
 ```
 
 The voxel example requires `demo/centerpoint_voxel/rpn_centerhead.engine`; build it from `demo/centerpoint_voxel/rpn_centerhead.onnx` with `scripts/centerpoint_voxel_head2engine.sh` before running inference.
@@ -415,7 +416,7 @@ Behavior:
 `perf_debug_tool` uses the internal runtime path to profile one sample:
 
 ```bash
-./build/perf_debug_tool <model_dir> <pcd_path> [dump_dir] [--warmup N] [--profile N] [--override-config PATH]
+./build/perf_debug_tool <model_dir> <pcd_path> [dump_dir] [--warmup N] [--profile N] [--source-num-point-features N] [--override-config PATH]
 ```
 
 It writes timing/profile data only and does not write detection result artifacts.
@@ -490,7 +491,7 @@ python3 tools/visualize_infer_debug.py demo/centerpoint_pillar demo/centerpoint_
 For the common single-sample flow:
 
 ```bash
-./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.bin --dump-dir demo/centerpoint_pillar_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.bin --source-num-point-features 5 --dump-dir demo/centerpoint_pillar_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
 python3 tools/visualize_infer_debug.py demo/centerpoint_pillar demo/centerpoint_pillar_outputs --zmin -0.2 --zmax 3
 ```
 
@@ -511,7 +512,7 @@ For a more detailed run with decoded candidates and internal debug heatmap:
 
 ```bash
 bash scripts/centerpoint_voxel_head2engine.sh demo/centerpoint_voxel/rpn_centerhead.onnx demo/centerpoint_voxel/rpn_centerhead.engine
-./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test1.bin --dump-dir demo/centerpoint_voxel_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test1.bin --source-num-point-features 5 --dump-dir demo/centerpoint_voxel_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
 python3 tools/visualize_infer_debug.py demo/centerpoint_voxel demo/centerpoint_voxel_outputs --zmin -0.2 --zmax 3
 ```
 
@@ -522,16 +523,13 @@ The default 3D HTML view shows only the final high-level API result. Add `--show
 
 ### `.bin`
 
-The loader accepts `float32` point clouds and tries to infer the source feature count from the file size.
+The debug tools accept float32 `.bin` files with 3, 4, or 5 features per point. Use `--source-num-point-features 3|4|5` to declare the source layout explicitly; the option is supported by both `infer_debug_tool` and `perf_debug_tool`.
 
-Current behavior:
+If the option is omitted, the loader accepts a layout only when exactly one of the 3-, 4-, or 5-feature layouts divides the file's float count. Ambiguous files are rejected with an error asking for an explicit source feature count instead of guessing from file size.
 
-- if the file length matches `runtime.num_point_features`, that feature count is used directly
-- otherwise the loader falls back to common layouts in this order: `5`, `4`, `3`
-- data is copied into a buffer shaped by `runtime.num_point_features`
-- if both the source file and the runtime are 5-feature layouts, only the first 4 features are copied and the 5th feature is zero-padded
+The loader copies the first `min(source features, model.num_point_features)` values for each point and zero-pads any remaining model input channels. Extra source channels are truncated. For example, a 4-feature source loaded into a 5-feature model becomes `[f0, f1, f2, f3, 0]`; a 5-feature source loaded into a 5-feature model preserves all five channels.
 
-That last rule matches the behavior documented in the loader comment: 5D input is treated as `XYZI` plus a zero-filled trailing feature instead of passing the 5th input channel through unchanged.
+The public C++ API does not infer file layouts: callers must provide `PointCloudView` data already packed according to `model.num_point_features`.
 
 ### `.pcd`
 

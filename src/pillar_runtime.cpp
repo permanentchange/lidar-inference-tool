@@ -1063,8 +1063,8 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
   const int label_count = runtime_config.label_count > 0 ? runtime_config.label_count : kLabelCount;
   const bool uses_label_score_thresholds =
       !config.nms_label_groups.empty() ||
-      (runtime_config.decode_mode != inference::DecodeMode::kCenterPoint &&
-       config.nms_type != INFERENCE_NMS_CIRCLE);
+      runtime_config.decode_mode == inference::DecodeMode::kCenterPoint ||
+      config.nms_type != INFERENCE_NMS_CIRCLE;
   if (uses_label_score_thresholds && !config.label_score_thresh.empty() &&
       config.label_score_thresh.size() < static_cast<size_t>(label_count)) {
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
@@ -1133,6 +1133,7 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
       per_task.boxes.reserve(candidates.boxes.size());
       const std::vector<int>& task_labels = GlobalLabelsForTask(layout, task_index);
       CollectByLabelSet(candidates, task_labels, runtime_config.label_count, &per_task);
+      FilterByLabelScoreThreshold(&per_task, config.label_score_thresh);
       if (config.nms_type == INFERENCE_NMS_CIRCLE) {
         const float radius = task_index < config.circle_nms_min_radius.size()
                                  ? config.circle_nms_min_radius[task_index]
