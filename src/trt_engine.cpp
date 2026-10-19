@@ -571,6 +571,93 @@ InferenceStatus BuildCenterPointHeadContract(const RuntimeConfig& config,
 
 }  // namespace
 
+InferenceStatus NormalizeCenterPointHeadInputShape(
+    const std::vector<int64_t>& engine_shape,
+    const std::vector<int64_t>& scn_features_shape,
+    std::vector<int64_t>* out_input_shape,
+    std::string* out_error) {
+  if (out_input_shape == nullptr) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "out_input_shape is null");
+  }
+  if (engine_shape.empty() || scn_features_shape.empty()) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "CenterPoint head input shapes must be non-empty");
+  }
+
+  const int64_t max_dimension = std::numeric_limits<int>::max();
+  const auto format_shape = [](const std::vector<int64_t>& shape) {
+    std::ostringstream oss;
+    oss << '[';
+    for (size_t i = 0; i < shape.size(); ++i) {
+      if (i > 0) {
+        oss << 'x';
+      }
+      oss << shape[i];
+    }
+    oss << ']';
+    return oss.str();
+  };
+
+  for (size_t i = 0; i < scn_features_shape.size(); ++i) {
+    if (scn_features_shape[i] <= 0 || scn_features_shape[i] > max_dimension) {
+      std::ostringstream oss;
+      oss << "libspconv output dimension " << i
+          << " must be positive and fit a TensorRT dimension";
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+    }
+  }
+  for (const int64_t dimension : engine_shape) {
+    if (dimension == 0 || dimension < -1) {
+      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
+                      "TensorRT engine exposes an invalid input dimension");
+    }
+  }
+
+  std::vector<int64_t> normalized_shape = scn_features_shape;
+  if (engine_shape.size() != scn_features_shape.size()) {
+    // CenterPoint's dense sparse-convolution output is commonly [N,C,D,H,W],
+    // while exported TensorRT heads consume [N,C*D,H,W]. Both views use the
+    // same contiguous memory; fold only C and D and do not copy the tensor.
+    if (engine_shape.size() == 4 && scn_features_shape.size() == 5) {
+      const int64_t channels = scn_features_shape[1];
+      const int64_t depth = scn_features_shape[2];
+      if (channels > max_dimension / depth) {
+        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                        "Flattened CenterPoint head channel dimension overflows TensorRT limits");
+      }
+      normalized_shape = {scn_features_shape[0], channels * depth,
+                          scn_features_shape[3], scn_features_shape[4]};
+    } else {
+      std::ostringstream oss;
+      oss << "Unsupported CenterPoint head input rank mismatch: TensorRT expects "
+          << engine_shape.size() << " dimensions " << format_shape(engine_shape)
+          << ", but libspconv output has " << scn_features_shape.size()
+          << " dimensions " << format_shape(scn_features_shape);
+      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
+    }
+  }
+
+  if (engine_shape.size() != normalized_shape.size()) {
+    return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR,
+                    "Normalized CenterPoint head input rank does not match TensorRT");
+  }
+  for (size_t i = 0; i < engine_shape.size(); ++i) {
+    if (engine_shape[i] > 0 && engine_shape[i] != normalized_shape[i]) {
+      std::ostringstream oss;
+      oss << "CenterPoint head input shape mismatch: TensorRT expects "
+          << format_shape(engine_shape) << ", but libspconv output "
+          << format_shape(scn_features_shape) << " normalizes to "
+          << format_shape(normalized_shape)
+          << " when folding the depth dimension into channels";
+      return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
+    }
+  }
+
+  *out_input_shape = std::move(normalized_shape);
+  return INFERENCE_STATUS_OK;
+}
+
 struct TrtExecutor::Impl {
   TrtLogger logger;
   std::unique_ptr<nvinfer1::IRuntime, RuntimeDeleter> runtime;
@@ -802,20 +889,20 @@ InferenceStatus CenterPointHeadTrtExecutor::Enqueue(void* scn_features,
   }
 
   nvinfer1::Dims input_dims = impl_->engine->getBindingDimensions(contract_.input_index);
-  if (input_dims.nbDims != static_cast<int>(scn_features_shape.size())) {
-    std::ostringstream oss;
-    oss << "CenterPoint voxel head input rank mismatch: engine expects "
-        << input_dims.nbDims << " dimensions " << DimsToString(input_dims)
-        << ", but libspconv output has rank " << scn_features_shape.size() << " (";
-    for (size_t i = 0; i < scn_features_shape.size(); ++i) {
-      if (i > 0) {
-        oss << 'x';
-      }
-      oss << scn_features_shape[i];
+  std::vector<int64_t> engine_shape;
+  if (input_dims.nbDims > 0) {
+    engine_shape.reserve(static_cast<size_t>(input_dims.nbDims));
+    for (int i = 0; i < input_dims.nbDims; ++i) {
+      engine_shape.push_back(input_dims.d[i]);
     }
-    oss << ')';
-    return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
   }
+  std::vector<int64_t> normalized_input_shape;
+  const InferenceStatus shape_status = NormalizeCenterPointHeadInputShape(
+      engine_shape, scn_features_shape, &normalized_input_shape, out_error);
+  if (shape_status != INFERENCE_STATUS_OK) {
+    return shape_status;
+  }
+
   bool has_dynamic_input_dim = false;
   for (int i = 0; i < input_dims.nbDims; ++i) {
     if (input_dims.d[i] < 0) {
@@ -826,15 +913,9 @@ InferenceStatus CenterPointHeadTrtExecutor::Enqueue(void* scn_features,
 
   if (has_dynamic_input_dim) {
     nvinfer1::Dims runtime_dims{};
-    runtime_dims.nbDims = static_cast<int>(scn_features_shape.size());
+    runtime_dims.nbDims = static_cast<int>(normalized_input_shape.size());
     for (int i = 0; i < runtime_dims.nbDims; ++i) {
-      if (scn_features_shape[static_cast<size_t>(i)] <= 0 ||
-          scn_features_shape[static_cast<size_t>(i)] >
-              static_cast<int64_t>(std::numeric_limits<int>::max())) {
-        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                        "CenterPoint voxel head input shape contains invalid dimension");
-      }
-      runtime_dims.d[i] = static_cast<int>(scn_features_shape[static_cast<size_t>(i)]);
+      runtime_dims.d[i] = static_cast<int>(normalized_input_shape[static_cast<size_t>(i)]);
     }
     const char* input_name = impl_->engine->getBindingName(contract_.input_index);
     if (!SetContextInputShape(impl_->context.get(), contract_.input_index, input_name,
@@ -844,21 +925,6 @@ InferenceStatus CenterPointHeadTrtExecutor::Enqueue(void* scn_features,
       oss << "Failed to set CenterPoint voxel head input shape to "
           << DimsToString(runtime_dims);
       return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
-    }
-  } else {
-    for (int i = 0; i < input_dims.nbDims; ++i) {
-      if (input_dims.d[i] != static_cast<int>(scn_features_shape[static_cast<size_t>(i)])) {
-        std::ostringstream oss;
-        oss << "CenterPoint voxel head static input shape is " << DimsToString(input_dims)
-            << ", but libspconv output shape is ";
-        for (size_t j = 0; j < scn_features_shape.size(); ++j) {
-          if (j > 0) {
-            oss << 'x';
-          }
-          oss << scn_features_shape[j];
-        }
-        return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
-      }
     }
   }
 

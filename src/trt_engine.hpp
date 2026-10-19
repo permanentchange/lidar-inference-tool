@@ -57,6 +57,14 @@ class TrtExecutor {
   std::unique_ptr<Impl> impl_;
 };
 
+// Resolves the contiguous libspconv dense output shape to the TensorRT head input
+// shape. A [N,C,D,H,W] output may be viewed as [N,C*D,H,W] without copying.
+InferenceStatus NormalizeCenterPointHeadInputShape(
+    const std::vector<int64_t>& engine_shape,
+    const std::vector<int64_t>& scn_features_shape,
+    std::vector<int64_t>* out_input_shape,
+    std::string* out_error);
+
 struct CenterPointHeadContract {
   int task_count = 0;
   int bbox_channels = 0;
