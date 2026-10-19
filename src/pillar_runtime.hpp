@@ -230,7 +230,8 @@ InferenceStatus LoadPcdFile(const std::string& path,
                             int max_points,
                             std::vector<float>* out_points,
                             std::string* out_error,
-                            PointCloudLoadInfo* out_info = nullptr);
+                            PointCloudLoadInfo* out_info = nullptr,
+                            int source_num_point_features = 0);
 InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
                                   const PostprocessConfig& config,
                                   const RuntimeConfig& runtime_config,

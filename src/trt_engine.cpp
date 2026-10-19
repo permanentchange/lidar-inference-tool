@@ -802,6 +802,20 @@ InferenceStatus CenterPointHeadTrtExecutor::Enqueue(void* scn_features,
   }
 
   nvinfer1::Dims input_dims = impl_->engine->getBindingDimensions(contract_.input_index);
+  if (input_dims.nbDims != static_cast<int>(scn_features_shape.size())) {
+    std::ostringstream oss;
+    oss << "CenterPoint voxel head input rank mismatch: engine expects "
+        << input_dims.nbDims << " dimensions " << DimsToString(input_dims)
+        << ", but libspconv output has rank " << scn_features_shape.size() << " (";
+    for (size_t i = 0; i < scn_features_shape.size(); ++i) {
+      if (i > 0) {
+        oss << 'x';
+      }
+      oss << scn_features_shape[i];
+    }
+    oss << ')';
+    return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
+  }
   bool has_dynamic_input_dim = false;
   for (int i = 0; i < input_dims.nbDims; ++i) {
     if (input_dims.d[i] < 0) {
@@ -831,7 +845,7 @@ InferenceStatus CenterPointHeadTrtExecutor::Enqueue(void* scn_features,
           << DimsToString(runtime_dims);
       return SetError(out_error, INFERENCE_STATUS_BACKEND_ERROR, oss.str());
     }
-  } else if (input_dims.nbDims == static_cast<int>(scn_features_shape.size())) {
+  } else {
     for (int i = 0; i < input_dims.nbDims; ++i) {
       if (input_dims.d[i] != static_cast<int>(scn_features_shape[static_cast<size_t>(i)])) {
         std::ostringstream oss;

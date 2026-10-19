@@ -18,6 +18,7 @@ struct CliOptions {
   std::string pcd_path;
   std::string dump_dir = "outputs/perf_debug";
   std::string override_config_path;
+  int source_num_point_features = 0;
   int warmup_iters = 10;
   int profile_iters = 50;
 };
@@ -26,7 +27,7 @@ void PrintUsage(const char* program) {
   std::cerr
       << "Usage: " << program
       << " <model_dir> <pcd_path> [dump_dir] [--warmup N] [--profile N]"
-      << " [--override-config PATH]\n";
+      << " [--source-num-point-features N] [--override-config PATH]\n";
 }
 
 bool ParseInt(const std::string& value, int* out_value) {
@@ -77,6 +78,15 @@ bool ParseCliOptions(int argc, char** argv, CliOptions* out_options, std::string
       if (arg_index >= argc || !ParseInt(argv[arg_index++], &options.profile_iters)) {
         if (out_error != nullptr) {
           *out_error = "Invalid value for --profile";
+        }
+        return false;
+      }
+    } else if (arg == "--source-num-point-features") {
+      if (arg_index >= argc ||
+          !ParseInt(argv[arg_index++], &options.source_num_point_features) ||
+          options.source_num_point_features < 3 || options.source_num_point_features > 5) {
+        if (out_error != nullptr) {
+          *out_error = "--source-num-point-features must be one of 3, 4, or 5";
         }
         return false;
       }
@@ -414,7 +424,7 @@ int main(int argc, char** argv) {
   const auto pcd_start = std::chrono::steady_clock::now();
   status = inference_internal::LoadPcdFile(config.pcd_path, config.runtime.num_point_features,
                                            config.runtime.max_points, &points, &error,
-                                           &point_cloud_info);
+                                           &point_cloud_info, options.source_num_point_features);
   const auto pcd_end = std::chrono::steady_clock::now();
   if (status != INFERENCE_STATUS_OK) {
     std::cerr << "Failed to load point cloud: " << error << "\n";

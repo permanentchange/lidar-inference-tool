@@ -408,8 +408,8 @@ InferenceStatus ValidatePostprocessConfig(const ModelConfig& model,
   }
   const bool uses_label_score_thresholds =
       !postprocess.nms_label_groups.empty() ||
-      (model.decode_mode != DecodeMode::kCenterPoint &&
-       postprocess.nms_type != INFERENCE_NMS_CIRCLE);
+      model.decode_mode == DecodeMode::kCenterPoint ||
+      postprocess.nms_type != INFERENCE_NMS_CIRCLE;
   if (uses_label_score_thresholds && !postprocess.label_score_thresh.empty() &&
       postprocess.label_score_thresh.size() < static_cast<size_t>(label_count)) {
     std::ostringstream oss;
@@ -794,6 +794,7 @@ struct PackageConfigExtras {
   std::string scn_onnx_path;
   std::string head_engine_path;
   std::vector<int> sparse_shape;
+  bool has_label_score_thresh = false;
 };
 
 InferenceStatus ValidateExtendedPackageConfig(PackageConfig* config,
@@ -1038,6 +1039,9 @@ InferenceStatus ApplyPackageConfigNode(const YAML::Node& root,
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
+    if (postprocess["label_score_thresh"] && out_extras != nullptr) {
+      out_extras->has_label_score_thresh = true;
+    }
     status = LoadThresholdVector(postprocess["circle_nms_min_radius"],
                                  "postprocess.circle_nms_min_radius",
                                  &out_config->postprocess.circle_nms_min_radius, out_error);
@@ -1117,6 +1121,13 @@ InferenceStatus LoadPackageConfigFromPath(const std::filesystem::path& config_pa
     }
 
     NormalizeTaskLayout(&config.model);
+    if (config.model.decode_mode == DecodeMode::kCenterPoint &&
+        config.model.label_names.size() != config.postprocess.label_score_thresh.size() &&
+        !extras.has_label_score_thresh) {
+      // The built-in threshold defaults target the legacy three-class model.
+      // Do not apply only a prefix of them to a different CenterPoint label set.
+      config.postprocess.label_score_thresh.clear();
+    }
     status = ValidateExtendedPackageConfig(&config, extras, out_error);
     if (status != INFERENCE_STATUS_OK) {
       return status;
