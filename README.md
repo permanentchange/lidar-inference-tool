@@ -393,7 +393,12 @@ Supported options:
 Recommended examples:
 
 ```bash
+# Raw float32 .bin: declare its source feature layout.
 ./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.bin --source-num-point-features 5 --dump-dir demo/centerpoint_pillar_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+
+# PCD: no source feature-count option is needed; fields are read from the PCD header.
+./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.pcd --dump-dir demo/centerpoint_pcd_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+
 ./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test1.bin --source-num-point-features 5 --dump-dir demo/centerpoint_voxel_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
 ```
 

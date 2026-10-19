@@ -826,6 +826,8 @@ InferenceStatus LoadPcdFile(const std::string& path,
     return LoadFloatBinFile(path, num_point_features, source_num_point_features,
                             max_points, out_points, out_error, out_info);
   }
+  // PCD field layout is defined by its header; the raw .bin feature override
+  // must not affect ASCII or binary PCD loading.
   return LoadPcdPointCloudFile(path, num_point_features, max_points, out_points, out_error, out_info);
 }
 

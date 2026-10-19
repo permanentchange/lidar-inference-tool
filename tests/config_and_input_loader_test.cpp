@@ -357,6 +357,17 @@ DATA ascii
   assert(points[4] == 1.0f);
   assert(points[8] == 20.0f);
   assert(points[9] == 1.0f);
+
+  // The raw .bin feature-count override is ignored for PCD: the header remains authoritative.
+  error.clear();
+  const InferenceStatus with_bin_override_status =
+      inference_internal::LoadPcdFile(pcd_path.string(), 5, 10, &points, &error, &info, 4);
+  assert(with_bin_override_status == INFERENCE_STATUS_OK);
+  assert(points.size() == 10);
+  assert(points[3] == 10.0f);
+  assert(points[4] == 1.0f);
+  assert(points[8] == 20.0f);
+  assert(points[9] == 1.0f);
 }
 
 }  // namespace
