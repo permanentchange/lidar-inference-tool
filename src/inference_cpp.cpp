@@ -400,6 +400,23 @@ InferenceStatus ValidatePostprocessConfig(const ModelConfig& model,
                                           const PostprocessConfig& postprocess,
                                           std::string* out_error) {
   const int label_count = static_cast<int>(model.label_names.size());
+  if (postprocess.nms_type != INFERENCE_NMS_IOU_BEV &&
+      postprocess.nms_type != INFERENCE_NMS_IOU_MIN_BEV &&
+      postprocess.nms_type != INFERENCE_NMS_CIRCLE) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "postprocess.nms_type is invalid");
+  }
+  const bool uses_label_score_thresholds =
+      !postprocess.nms_label_groups.empty() ||
+      (model.decode_mode != DecodeMode::kCenterPoint &&
+       postprocess.nms_type != INFERENCE_NMS_CIRCLE);
+  if (uses_label_score_thresholds && !postprocess.label_score_thresh.empty() &&
+      postprocess.label_score_thresh.size() < static_cast<size_t>(label_count)) {
+    std::ostringstream oss;
+    oss << "postprocess.label_score_thresh must contain at least " << label_count
+        << " values when configured, got " << postprocess.label_score_thresh.size();
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+  }
   if (postprocess.self_car_box.has_value() !=
       postprocess.self_car_nms_thresh.has_value()) {
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
@@ -516,6 +533,13 @@ InferenceStatus ValidatePostprocessConfig(const ModelConfig& model,
         << "expected " << model.task_num_classes.size()
         << " got " << postprocess.circle_nms_min_radius.size();
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+  } else if (model.decode_mode != DecodeMode::kCenterPoint &&
+             postprocess.nms_type == INFERENCE_NMS_CIRCLE &&
+             postprocess.circle_nms_min_radius.size() < static_cast<size_t>(label_count)) {
+    std::ostringstream oss;
+    oss << "postprocess.circle_nms_min_radius must contain at least " << label_count
+        << " values in legacy mode, got " << postprocess.circle_nms_min_radius.size();
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
   }
 
   if (!postprocess.label_mapping.empty()) {
@@ -578,6 +602,109 @@ InferenceStatus ValidatePackageConfig(const PackageConfig& config, std::string* 
       return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
     }
   }
+  if (config.model.decode_mode != DecodeMode::kLegacy &&
+      config.model.decode_mode != DecodeMode::kCenterPoint) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "model.decode_mode is invalid");
+  }
+  if (config.model.yaw_encoding != YawEncoding::kSinCos &&
+      config.model.yaw_encoding != YawEncoding::kDirectionTheta) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "model.yaw_encoding is invalid");
+  }
+  if (config.model.num_point_features < 3) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "model.num_point_features must be at least 3");
+  }
+  if (config.model.out_size_factor <= 0) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "model.out_size_factor must be positive");
+  }
+  if (config.runtime.max_points_per_voxel <= 0) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "runtime.max_points_per_voxel must be positive");
+  }
+  if (config.runtime.min_voxels <= 0 ||
+      config.runtime.max_voxels < config.runtime.min_voxels) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "runtime voxel limits must satisfy 0 < min_voxels <= max_voxels");
+  }
+  if (config.runtime.max_points <= 0) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "runtime.max_points must be positive");
+  }
+  if (config.runtime.bbox_max_num <= 0) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "runtime.bbox_max_num must be positive");
+  }
+  if (!std::isfinite(config.runtime.score_threshold) ||
+      config.runtime.score_threshold < 0.0f) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "runtime.score_threshold must be finite and non-negative");
+  }
+
+  const auto validate_range = [&](const std::array<float, 6>& range,
+                                  const char* field_name) -> InferenceStatus {
+    for (size_t i = 0; i < range.size(); ++i) {
+      if (!std::isfinite(range[i])) {
+        std::ostringstream oss;
+        oss << field_name << "[" << i << "] must be finite";
+        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+      }
+    }
+    for (size_t axis = 0; axis < 3; ++axis) {
+      if (range[axis] >= range[axis + 3]) {
+        std::ostringstream oss;
+        oss << field_name << " has invalid min/max bounds for axis " << axis;
+        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+      }
+    }
+    return INFERENCE_STATUS_OK;
+  };
+  InferenceStatus status = validate_range(config.model.point_cloud_range,
+                                          "model.point_cloud_range");
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
+  status = validate_range(config.model.post_center_range, "model.post_center_range");
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
+  for (size_t i = 0; i < config.model.voxel_size.size(); ++i) {
+    if (!std::isfinite(config.model.voxel_size[i]) || config.model.voxel_size[i] <= 0.0f) {
+      std::ostringstream oss;
+      oss << "model.voxel_size[" << i << "] must be finite and positive";
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+    }
+  }
+
+  inference_internal::RuntimeBackend backend;
+  status = ParseRuntimeBackend(config.model.runtime_backend, &backend, out_error);
+  if (status != INFERENCE_STATUS_OK) {
+    return status;
+  }
+  if (backend == inference_internal::RuntimeBackend::kCenterPointVoxel) {
+    if (config.model.decode_mode != DecodeMode::kCenterPoint) {
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                      "centerpoint_voxel requires model.decode_mode=CenterPoint");
+    }
+    if (config.model.scn_onnx_path.empty()) {
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                      "model.scn_onnx_path must be configured for centerpoint_voxel");
+    }
+    if (config.model.sparse_shape.size() != 3) {
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                      "model.sparse_shape must contain 3 positive dimensions");
+    }
+    for (size_t i = 0; i < config.model.sparse_shape.size(); ++i) {
+      if (config.model.sparse_shape[i] <= 0) {
+        std::ostringstream oss;
+        oss << "model.sparse_shape[" << i << "] must be positive";
+        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
+      }
+    }
+  }
+
   if (config.model.decode_mode == DecodeMode::kCenterPoint) {
     if (config.model.task_num_classes.empty()) {
       return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
@@ -653,8 +780,7 @@ InferenceStatus ValidatePackageConfig(const PackageConfig& config, std::string* 
       return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT, oss.str());
     }
     inference_internal::ResolvedHeadLayout layout;
-    InferenceStatus status =
-        inference_internal::ResolveHeadLayout(config.model, &layout, out_error);
+    status = inference_internal::ResolveHeadLayout(config.model, &layout, out_error);
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
@@ -1124,16 +1250,16 @@ InferencePostprocessConfig ToCPostprocessConfig(const PostprocessConfig& config)
   return c_config;
 }
 
-const char* LabelNameForLabel(const PackageConfig& config,
-                              const PostprocessConfig& postprocess,
-                              int label) {
+const std::string* LabelNameForLabel(const PackageConfig& config,
+                                      const PostprocessConfig& postprocess,
+                                      int label) {
   const std::vector<std::string>& label_names =
       postprocess.mapped_label_names.empty() ? config.model.label_names
                                              : postprocess.mapped_label_names;
   if (label < 0 || label >= static_cast<int>(label_names.size())) {
     return nullptr;
   }
-  return label_names[static_cast<size_t>(label)].c_str();
+  return &label_names[static_cast<size_t>(label)];
 }
 
 bool MapDetectionLabel(const PostprocessConfig& postprocess,
@@ -1322,6 +1448,10 @@ InferenceStatus LidarInferenceRuntime::InferWithPostprocess(
   return InferInternal(cloud, &postprocess, out_detections, true);
 }
 
+const char* LidarInferenceRuntime::StoreLabelName(const std::string& label_name) {
+  return label_name_pool_.insert(label_name).first->c_str();
+}
+
 InferenceStatus LidarInferenceRuntime::InferInternal(
     const PointCloudView& cloud,
     const PostprocessConfig* postprocess,
@@ -1376,13 +1506,18 @@ InferenceStatus LidarInferenceRuntime::InferInternal(
     Detection detection;
     detection.score = cls_preds_[i];
     detection.label = mapped_label;
-    detection.label_name =
-        names_postprocess == nullptr
-            ? (detection.label >= 0 &&
-                       detection.label < static_cast<int>(config_.model.label_names.size())
-                   ? config_.model.label_names[static_cast<size_t>(detection.label)].c_str()
-                   : nullptr)
-            : LabelNameForLabel(config_, *names_postprocess, detection.label);
+    const std::string* label_name = nullptr;
+    if (names_postprocess == nullptr) {
+      if (detection.label >= 0 &&
+          detection.label < static_cast<int>(config_.model.label_names.size())) {
+        label_name = &config_.model.label_names[static_cast<size_t>(detection.label)];
+      }
+    } else {
+      label_name = LabelNameForLabel(config_, *names_postprocess, detection.label);
+    }
+    if (label_name != nullptr) {
+      detection.label_name = StoreLabelName(*label_name);
+    }
     const size_t box_offset = i * kBoxDimension;
     std::copy(box_preds_.begin() + static_cast<long>(box_offset),
               box_preds_.begin() + static_cast<long>(box_offset + kBoxDimension),

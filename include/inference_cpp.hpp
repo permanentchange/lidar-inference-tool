@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -99,7 +100,7 @@ struct Detection {
   // Box layout is [x, y, z, dx, dy, dz, yaw], where x/y/z denote the box geometric center.
   std::array<float, kBoxDimension> box{};
   int label = 0;
-  // Valid while the owning runtime remains alive.
+  // Points to a stable runtime-owned copy; valid while the owning runtime remains alive.
   const char* label_name = nullptr;
 };
 
@@ -141,6 +142,7 @@ class LidarInferenceRuntime {
  private:
   LidarInferenceRuntime() = default;
 
+  const char* StoreLabelName(const std::string& label_name);
   InferenceStatus InferInternal(const PointCloudView& cloud,
                                 const PostprocessConfig* postprocess,
                                 std::vector<Detection>* out_detections,
@@ -154,6 +156,8 @@ class LidarInferenceRuntime {
   std::vector<float> box_preds_;
   std::vector<int> label_preds_;
   std::string last_error_;
+  // Retain distinct labels so returned Detection::label_name pointers stay stable.
+  std::set<std::string> label_name_pool_;
 };
 
 }  // namespace inference
