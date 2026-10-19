@@ -1,5 +1,6 @@
 #include "inference_cpp.hpp"
 #include "pillar_runtime.hpp"
+#include "trt_engine.hpp"
 
 #include <cassert>
 #include <cstdint>
@@ -372,7 +373,59 @@ DATA ascii
 
 }  // namespace
 
+void TestCenterPointHeadShapeFlattensDepthIntoChannels() {
+  const std::vector<int64_t> engine_shape{1, 256, 40, 60};
+  const std::vector<int64_t> scn_shape{1, 128, 2, 40, 60};
+  std::vector<int64_t> normalized;
+  std::string error;
+  const InferenceStatus status =
+      inference_internal::NormalizeCenterPointHeadInputShape(
+          engine_shape, scn_shape, &normalized, &error);
+  assert(status == INFERENCE_STATUS_OK);
+  assert(normalized == engine_shape);
+}
+
+void TestCenterPointHeadShapeSupportsDynamicEngine() {
+  const std::vector<int64_t> engine_shape{1, -1, 40, 60};
+  const std::vector<int64_t> scn_shape{1, 128, 2, 40, 60};
+  std::vector<int64_t> normalized;
+  std::string error;
+  const InferenceStatus status =
+      inference_internal::NormalizeCenterPointHeadInputShape(
+          engine_shape, scn_shape, &normalized, &error);
+  assert(status == INFERENCE_STATUS_OK);
+  assert((normalized == std::vector<int64_t>{1, 256, 40, 60}));
+}
+
+void TestCenterPointHeadShapeRejectsIncompatibleDepth() {
+  const std::vector<int64_t> engine_shape{1, 256, 40, 60};
+  const std::vector<int64_t> scn_shape{1, 128, 3, 40, 60};
+  std::vector<int64_t> normalized;
+  std::string error;
+  const InferenceStatus status =
+      inference_internal::NormalizeCenterPointHeadInputShape(
+          engine_shape, scn_shape, &normalized, &error);
+  assert(status == INFERENCE_STATUS_BACKEND_ERROR);
+  assert(error.find("shape mismatch") != std::string::npos);
+}
+
+void TestCenterPointHeadShapeRejectsUnsupportedRank() {
+  const std::vector<int64_t> engine_shape{1, 256, 40, 60};
+  const std::vector<int64_t> scn_shape{1, 128, 2, 40, 60, 1};
+  std::vector<int64_t> normalized;
+  std::string error;
+  const InferenceStatus status =
+      inference_internal::NormalizeCenterPointHeadInputShape(
+          engine_shape, scn_shape, &normalized, &error);
+  assert(status == INFERENCE_STATUS_BACKEND_ERROR);
+  assert(error.find("rank mismatch") != std::string::npos);
+}
+
 int main() {
+  TestCenterPointHeadShapeFlattensDepthIntoChannels();
+  TestCenterPointHeadShapeSupportsDynamicEngine();
+  TestCenterPointHeadShapeRejectsIncompatibleDepth();
+  TestCenterPointHeadShapeRejectsUnsupportedRank();
   TestVoxelPackageConfigUsesVoxelSizeAndHeadEnginePath();
   TestVoxelPackageConfigAcceptsLegacyPillarKeysAsFallback();
   TestVoxelPackageConfigRequiresSparseShape();
