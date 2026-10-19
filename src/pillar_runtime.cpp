@@ -965,6 +965,11 @@ InferenceStatus ParseRuntimeConfig(const InferenceConfig& config,
                     "Config contains non-positive limits");
   }
 
+  if (!std::isfinite(config.score_threshold) || config.score_threshold < 0.0f) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "score_threshold must be finite and non-negative");
+  }
+
   out_config->end2end_file = config.end2end_file;
   std::copy(config.point_cloud_range, config.point_cloud_range + 6,
             out_config->point_cloud_range.begin());
@@ -1055,6 +1060,27 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                     "nms_type is invalid");
   }
+  const int label_count = runtime_config.label_count > 0 ? runtime_config.label_count : kLabelCount;
+  const bool uses_label_score_thresholds =
+      !config.nms_label_groups.empty() ||
+      (runtime_config.decode_mode != inference::DecodeMode::kCenterPoint &&
+       config.nms_type != INFERENCE_NMS_CIRCLE);
+  if (uses_label_score_thresholds && !config.label_score_thresh.empty() &&
+      config.label_score_thresh.size() < static_cast<size_t>(label_count)) {
+    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                    "label_score_thresh has fewer values than the runtime label count");
+  }
+  if (config.nms_label_groups.empty() && config.nms_type == INFERENCE_NMS_CIRCLE) {
+    if (runtime_config.decode_mode == inference::DecodeMode::kCenterPoint) {
+      if (config.circle_nms_min_radius.size() != runtime_config.task_num_classes.size()) {
+        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                        "circle_nms_min_radius must contain one value per CenterPoint task");
+      }
+    } else if (config.circle_nms_min_radius.size() < static_cast<size_t>(label_count)) {
+      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
+                      "circle_nms_min_radius has fewer values than the runtime label count");
+    }
+  }
   if (config.self_car_box.has_value() != config.self_car_nms_thresh.has_value()) {
     return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
                     "self_car_box and self_car_nms_thresh must be configured together");
@@ -1136,7 +1162,7 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
     out_result->boxes.clear();
     out_result->labels.clear();
 
-    for (int label = 0; label < kLabelCount; ++label) {
+    for (int label = 0; label < label_count; ++label) {
       CandidateDetections per_label;
       per_label.scores.reserve(candidates.scores.size());
       per_label.labels.reserve(candidates.labels.size());
@@ -1166,13 +1192,13 @@ InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
   scores.reserve(candidates.scores.size());
   boxes.reserve(candidates.boxes.size());
   labels.reserve(candidates.labels.size());
-  const int label_count = runtime_config.label_count > 0 ? runtime_config.label_count : kLabelCount;
   for (size_t i = 0; i < candidates.scores.size(); ++i) {
     const int label = candidates.labels[i];
     if (label < 0 || label >= label_count) {
       continue;
     }
-    if (candidates.scores[i] < config.label_score_thresh[static_cast<size_t>(label)]) {
+    if (!config.label_score_thresh.empty() &&
+        candidates.scores[i] < config.label_score_thresh[static_cast<size_t>(label)]) {
       continue;
     }
     scores.push_back(candidates.scores[i]);

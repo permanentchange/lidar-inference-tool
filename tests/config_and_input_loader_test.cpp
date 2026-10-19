@@ -187,6 +187,84 @@ void TestToolConfigCarriesCenterPointVoxelRuntimeExtras() {
   assert(config.runtime.sparse_shape[2] == 480);
 }
 
+void TestRejectsInvalidRuntimeLimits() {
+  const std::filesystem::path dir = MakeTempDir() / "invalid_runtime_limits";
+  std::filesystem::create_directories(dir);
+  const std::filesystem::path yaml_path = dir / "model.yaml";
+  WriteTextFile(yaml_path, R"YAML(
+model:
+  engine_path: dummy.engine
+runtime:
+  max_points: -1
+)YAML");
+
+  inference::PackageConfig config;
+  std::string error;
+  const InferenceStatus status =
+      inference::LidarInferenceRuntime::LoadPackageConfigFile(yaml_path.string(), &config, &error);
+  assert(status == INFERENCE_STATUS_INVALID_ARGUMENT);
+  assert(error.find("runtime.max_points") != std::string::npos);
+}
+
+void TestRejectsInvalidVoxelSize() {
+  const std::filesystem::path dir = MakeTempDir() / "invalid_voxel_size";
+  std::filesystem::create_directories(dir);
+  const std::filesystem::path yaml_path = dir / "model.yaml";
+  WriteTextFile(yaml_path, R"YAML(
+model:
+  engine_path: dummy.engine
+  voxel_size: [0.1, 0.0, 8.0]
+)YAML");
+
+  inference::PackageConfig config;
+  std::string error;
+  const InferenceStatus status =
+      inference::LidarInferenceRuntime::LoadPackageConfigFile(yaml_path.string(), &config, &error);
+  assert(status == INFERENCE_STATUS_INVALID_ARGUMENT);
+  assert(error.find("model.voxel_size[1]") != std::string::npos);
+}
+
+void TestRejectsShortLabelScoreThresholds() {
+  const std::filesystem::path dir = MakeTempDir() / "short_label_thresholds";
+  std::filesystem::create_directories(dir);
+  const std::filesystem::path yaml_path = dir / "model.yaml";
+  WriteTextFile(yaml_path, R"YAML(
+model:
+  engine_path: dummy.engine
+  label_names: [car, pedestrian, cyclist]
+postprocess:
+  nms_type: iou_bev
+  label_score_thresh: [0.1]
+)YAML");
+
+  inference::PackageConfig config;
+  std::string error;
+  const InferenceStatus status =
+      inference::LidarInferenceRuntime::LoadPackageConfigFile(yaml_path.string(), &config, &error);
+  assert(status == INFERENCE_STATUS_INVALID_ARGUMENT);
+  assert(error.find("postprocess.label_score_thresh") != std::string::npos);
+}
+
+void TestRejectsShortCircleNmsRadii() {
+  const std::filesystem::path dir = MakeTempDir() / "short_circle_radii";
+  std::filesystem::create_directories(dir);
+  const std::filesystem::path yaml_path = dir / "model.yaml";
+  WriteTextFile(yaml_path, R"YAML(
+model:
+  engine_path: dummy.engine
+postprocess:
+  nms_type: circle
+  circle_nms_min_radius: [1.0]
+)YAML");
+
+  inference::PackageConfig config;
+  std::string error;
+  const InferenceStatus status =
+      inference::LidarInferenceRuntime::LoadPackageConfigFile(yaml_path.string(), &config, &error);
+  assert(status == INFERENCE_STATUS_INVALID_ARGUMENT);
+  assert(error.find("postprocess.circle_nms_min_radius") != std::string::npos);
+}
+
 void TestFiveFeatureBinPreservesHasIntensityChannel() {
   const std::filesystem::path dir = MakeTempDir() / "bin";
   std::filesystem::create_directories(dir);
@@ -246,6 +324,10 @@ int main() {
   TestVoxelPackageConfigRequiresSparseShape();
   TestDemoCenterPointVoxelPackageConfigParses();
   TestToolConfigCarriesCenterPointVoxelRuntimeExtras();
+  TestRejectsInvalidRuntimeLimits();
+  TestRejectsInvalidVoxelSize();
+  TestRejectsShortLabelScoreThresholds();
+  TestRejectsShortCircleNmsRadii();
   TestFiveFeatureBinPreservesHasIntensityChannel();
   TestAsciiPcdPreservesUintIntensityAndHasIntensity();
   return 0;
