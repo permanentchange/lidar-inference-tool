@@ -3,7 +3,7 @@
 `lidar-inference-tool` is a C++17 LiDAR inference project built around TensorRT LiDAR detection models. It supports the original end-to-end pillar package path and a CenterPoint voxel package path. The repository exposes:
 
 - `libinference.so`: a shared library exposing the recommended C++ wrapper for loading one model package and running decoded or final NMS-filtered detections
-- `infer_debug_tool`: a single-sample debug executable that validates high-level C++ API inference results and writes visualization-friendly artifacts
+- `infer_debug_tool`: a single-file or batch debug executable that validates high-level C++ API inference results and writes visualization-friendly artifacts
 - `perf_debug_tool`: a profiling executable for single-sample inference performance breakdowns
 - `lidar_model_downloader`: an ARM64 package command-line helper for fetching model assets after package installation
 - `minimal_cpp_api_example`: a model-package-driven executable under `examples/` that shows the recommended C++ integration path
@@ -30,6 +30,7 @@ This README intentionally uses repository-relative paths and placeholders such a
 - `src/inference_api.cpp`: internal compatibility-layer entry points used by the wrapper
 - `src/pillar_runtime.cpp`: TensorRT loading, voxelization, inference, decode, NMS, and response packing
 - `src/pillar_debug_utils.cpp`: debug-tool config assembly, point-cloud loading, and artifact export
+- `tools/debug_cli.hpp`: shared debug CLI argument parsing, defaults, and help
 - `tools/infer_debug_tool.cpp`: high-level C++ API result debug CLI entry point
 - `tools/perf_debug_tool.cpp`: performance debug CLI entry point
 - `scripts/lidar_model_downloader.py`: source implementation of the model downloader utility
@@ -253,18 +254,36 @@ cmake --build build -j$(nproc)
 
 ## Quick Start
 
-Run the recommended pillar API result debug session:
+Run a pillar API result debug session. Decoded detections and internal tensors are dumped by default; the BIN sample requires its source feature count:
 
 ```bash
-./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.bin --dump-dir demo/centerpoint_pillar_outputs --source-num-point-features 5 --warmup 10 --profile-iters 100
+./build/infer_debug_tool \
+  --model-dir demo/centerpoint_pillar \
+  --input demo/data/test1.bin \
+  --dump-dir demo/centerpoint_pillar_outputs \
+  --source-num-point-features 5
 ```
 
-For the voxel demo, first build the TensorRT head engine referenced by `demo/centerpoint_voxel/model.yaml`, then run the same debug flow:
+For the voxel demo, build the TensorRT head engine if it is not already available, then run inference on a PCD file. PCD fields are read from the file header, so no source feature-count argument is needed:
 
 ```bash
 bash scripts/centerpoint_voxel_head2engine.sh demo/centerpoint_voxel/rpn_centerhead.onnx demo/centerpoint_voxel/rpn_centerhead.engine
-./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test1.bin --dump-dir demo/centerpoint_voxel_outputs --source-num-point-features 5 --warmup 10 --profile-iters 100
+./build/infer_debug_tool \
+  --model-dir demo/centerpoint_voxel \
+  --input demo/data/test3.pcd \
+  --dump-dir demo/centerpoint_voxel_outputs
 ```
+
+Profile the same input with the performance tool. Its defaults are 10 warmup iterations and 50 measured iterations:
+
+```bash
+./build/perf_debug_tool \
+  --model-dir demo/centerpoint_voxel \
+  --input demo/data/test3.pcd \
+  --dump-dir outputs/voxel_perf
+```
+
+Use `./build/infer_debug_tool -h` or `./build/perf_debug_tool -h` for grouped help and defaults. See [Debug CLIs](#debug-clis) for batch inference, dump controls, and timing options.
 
 The demo assets used by the public C++ API and debug tools are:
 
@@ -283,7 +302,7 @@ Typical `perf_debug_tool` console output includes:
 
 - point-cloud load time
 - input point count
-- pillar count
+- pillar or voxel count, depending on the model backend
 - decoded candidate count
 - per-stage timings for a single run
 - percentile summary over `profile_iters` runs after `warmup_iters` warmup runs
@@ -396,18 +415,27 @@ Optional override YAML files use the same schema and are applied with this prece
 
 ## Debug CLIs
 
+Both tools use named arguments, with required paths first in the help and examples:
+
+| Tool | Purpose | Supported input | Default warmup / measured iterations |
+| --- | --- | --- | --- |
+| `infer_debug_tool` | Validate high-level C++ API results and export detection/debug artifacts | One PCD/BIN file or a directory | `0` / `1` per file |
+| `perf_debug_tool` | Measure internal inference stages and export timing statistics | One PCD/BIN file | `10` / `50` |
+
 `infer_debug_tool` follows the same model-directory entry style as the public C++ wrapper and treats `runtime->Infer(...)` as the authoritative final result:
 
 ```bash
 ./build/infer_debug_tool --model-dir MODEL_DIR --input INPUT_PATH --dump-dir DUMP_DIR [--source-num-point-features N] [--override-config PATH] [--warmup N] [--profile-iters N] [--no-dump-decoded] [--no-dump-internal]
 ```
 
-Both tools require `--model-dir`, `--input`, and `--dump-dir`; arguments may appear in any order. Shared optional arguments:
+Both tools require `--model-dir`, `--input`, and `--dump-dir`; arguments may appear in any order. There is no default output directory.
 
-- `--source-num-point-features N`: source feature count for float32 `.bin` files; specify `3`, `4`, or `5` when the layout is known
-- `--override-config PATH`
-- `--warmup N`
-- `--profile-iters N`
+| Shared option | Meaning | Default |
+| --- | --- | --- |
+| `--source-num-point-features N` | Source float32 BIN features per point: `3`, `4`, or `5`; PCD uses its header | Accept a BIN layout only when unambiguous |
+| `--override-config PATH` | Apply a package-schema YAML override | No override |
+| `--warmup N` | Warmup iterations; integer `N >= 0` | infer: `0`; perf: `10` |
+| `--profile-iters N` | Measured iterations; integer `N > 0` | infer: `1`; perf: `50` |
 
 `infer_debug_tool` enables decoded detection arrays and auxiliary internal tensors by default. Use `--no-dump-decoded` and `--no-dump-internal` to disable them independently. The existing `--dump-decoded` and `--dump-internal` switches remain available to enable them explicitly; when repeated, the last switch for each dump type wins. Dump collection and file writes are outside the high-level inference timing.
 
@@ -425,6 +453,28 @@ Recommended examples:
 
 The voxel example requires `demo/centerpoint_voxel/rpn_centerhead.engine`; build it from `demo/centerpoint_voxel/rpn_centerhead.onnx` with `scripts/centerpoint_voxel_head2engine.sh` before running inference.
 
+To keep only the input and final-result artifacts, disable both optional dumps:
+
+```bash
+./build/infer_debug_tool \
+  --model-dir demo/centerpoint_voxel \
+  --input demo/data/test3.pcd \
+  --dump-dir outputs/voxel_final \
+  --no-dump-decoded --no-dump-internal
+```
+
+To process all top-level PCD/BIN files in a directory, pass the directory to `--input`:
+
+```bash
+./build/infer_debug_tool \
+  --model-dir demo/centerpoint_voxel \
+  --input demo/data \
+  --dump-dir outputs/voxel_sequence \
+  --source-num-point-features 5
+```
+
+The source feature count applies to every BIN file in the directory; PCD files continue to use their own headers. Each frame receives the same dump and timing options. Use BIN files with the same source layout when specifying one feature count for a batch.
+
 Behavior:
 
 - `--model-dir` must point to a directory containing `model.yaml`
@@ -438,6 +488,7 @@ Behavior:
 - numeric filename stems are treated as Unix nanosecond timestamps in per-frame metadata and sequence outputs
 - directory mode reuses one runtime instance and writes one subdirectory per frame under `dump_dir/frames/`
 - `--warmup` and `--profile-iters` repeat the high-level `runtime->Infer(...)` call and print total latency statistics
+- high-level latency statistics exclude model initialization, point-cloud loading, auxiliary dump inference, and file writes; enabled dumps still add to the total command runtime
 
 `perf_debug_tool` uses the internal runtime path to profile one sample:
 
@@ -451,13 +502,7 @@ Behavior:
 ./build/perf_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test1.bin --dump-dir outputs/voxel_perf --source-num-point-features 5 --warmup 10 --profile-iters 50
 ```
 
-Default values:
-
-- `infer_debug_tool` `warmup_iters`: `0`
-- `infer_debug_tool` `profile_iters`: `1`
-- both tools require an explicit `--dump-dir`; there is no default output directory
-- `perf_debug_tool` `warmup_iters`: `10`
-- `perf_debug_tool` `profile_iters`: `50`
+The performance report includes a diagnostic single run and an aggregate over `--profile-iters` runs after `--warmup` runs. Its internal stage timings have a different measurement boundary from infer's high-level API latency. Point-cloud loading is reported separately, and the diagnostic run and file writes are outside the aggregate profiling loop.
 
 ## Debug Artifacts
 
@@ -555,6 +600,8 @@ The default 3D HTML view shows only the final high-level API result. Add `--show
 
 The debug tools accept float32 `.bin` files with 3, 4, or 5 features per point. Use `--source-num-point-features 3|4|5` to declare the source layout explicitly; the option is supported by both `infer_debug_tool` and `perf_debug_tool`.
 
+These BIN files contain raw float32 values without a header describing point boundaries. The source feature count describes the stored file layout, independently of `model.num_point_features`. Use the layout specified by the data exporter: a different count may still divide the file size while grouping coordinates and features incorrectly. The repository's `demo/data/test1.bin` examples use `--source-num-point-features 5`.
+
 If the option is omitted, the loader accepts a layout only when exactly one of the 3-, 4-, or 5-feature layouts divides the file's float count. Ambiguous files are rejected with an error asking for an explicit source feature count instead of guessing from file size.
 
 The loader copies the first `min(source features, model.num_point_features)` values for each point and zero-pads any remaining model input channels. Extra source channels are truncated. For example, a 4-feature source loaded into a 5-feature model becomes `[f0, f1, f2, f3, 0]`; a 5-feature source loaded into a 5-feature model preserves all five channels.
@@ -565,11 +612,20 @@ The public C++ API does not infer file layouts: callers must provide `PointCloud
 
 Current behavior:
 
-- ASCII and binary PCD are supported
-- `x`, `y`, `z` must be float32 fields
-- optional float32 `intensity` is copied into the 4th runtime feature
-- remaining channels in the runtime input buffer are zero-padded
+- ASCII and binary PCD are supported; `binary_compressed` is not supported
+- fields and their storage types are read from `FIELDS`, `SIZE`, `TYPE`, and `COUNT`, so `--source-num-point-features` is unnecessary for PCD, including binary PCD
+- `x`, `y`, `z` must be float32 scalar fields
+- optional scalar `intensity` and `has_intensity` may use float32/float64 or signed/unsigned 8-, 16-, 32-, or 64-bit integers; values are converted to float32 and copied into the 4th and 5th runtime features when those channels exist
+- when `intensity` exists but `has_intensity` is absent, the 5th runtime feature is set to `1`; other missing channels are zero-padded
 - unsupported headers report the file path, `DATA` format, fields, and point counts
+
+For a model with five input features, common PCD layouts become:
+
+| PCD fields | Runtime point |
+| --- | --- |
+| `x y z` | `[x, y, z, 0, 0]` |
+| `x y z intensity` | `[x, y, z, intensity, 1]` |
+| `x y z intensity has_intensity` | `[x, y, z, intensity, has_intensity]` |
 
 ## Public C++ API
 
