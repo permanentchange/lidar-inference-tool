@@ -61,6 +61,6 @@ cmake --build build -j$(nproc)
 If you have a valid engine and sample data available, also run:
 
 ```bash
-./build/infer_debug_tool demo demo/pcd.bin outputs/infer_debug --dump-decoded
-./build/perf_debug_tool demo demo/pcd.bin outputs/perf_debug --warmup 10 --profile 50
+./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.bin --dump-dir outputs/infer_debug --source-num-point-features 5
+./build/perf_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.bin --dump-dir outputs/perf_debug --source-num-point-features 5 --warmup 10 --profile-iters 50
 ```

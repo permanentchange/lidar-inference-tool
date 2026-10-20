@@ -265,14 +265,25 @@ if(BUILD_TESTING)
   target_include_directories(config_and_input_loader_test PRIVATE
     ${INCLUDE_DIR}
     ${SRC_DIR}
+    ${CUDA_INCLUDE_DIRS}
   )
   target_link_libraries(config_and_input_loader_test PRIVATE inference)
   add_test(NAME config_and_input_loader_test COMMAND config_and_input_loader_test)
 
+  add_executable(debug_cli_options_test tests/debug_cli_options_test.cpp)
+  target_include_directories(debug_cli_options_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+  add_test(NAME debug_cli_options_test COMMAND debug_cli_options_test)
+
   add_test(NAME infer_debug_cli_test
     COMMAND bash
-      ${CMAKE_CURRENT_SOURCE_DIR}/tests/infer_debug_cli_test.sh
-      $<TARGET_FILE:infer_debug_tool>
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/debug_cli_test.sh
+      $<TARGET_FILE:infer_debug_tool> infer
+  )
+
+  add_test(NAME perf_debug_cli_test
+    COMMAND bash
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/debug_cli_test.sh
+      $<TARGET_FILE:perf_debug_tool> perf
   )
 
   add_test(NAME minimal_cpp_api_cli_test

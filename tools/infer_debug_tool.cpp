@@ -1,3 +1,4 @@
+#include "debug_cli.hpp"
 #include "inference_cpp.hpp"
 #include "pillar_runtime.hpp"
 
@@ -18,17 +19,8 @@
 
 namespace {
 
-struct CliOptions {
-  std::string model_dir;
-  std::string input_path;
-  std::string dump_dir;
-  std::string override_config_path;
-  int source_num_point_features = 0;
-  bool dump_decoded = false;
-  bool dump_internal = false;
-  int warmup_iters = 0;
-  int profile_iters = 1;
-};
+using inference_tools::CliOptions;
+constexpr auto kToolKind = inference_tools::ToolKind::kInfer;
 
 struct TimestampInfo {
   uint64_t timestamp_ns = 0;
@@ -61,144 +53,6 @@ struct TimingStats {
   double p50 = 0.0;
   double p90 = 0.0;
 };
-
-void PrintUsage(const char* program) {
-  std::cerr
-      << "Usage: " << program
-      << " --model-dir MODEL_DIR --input INPUT_PATH --dump-dir DUMP_DIR"
-      << " [--source-num-point-features N] [--override-config PATH]"
-      << " [--dump-decoded] [--dump-internal] [--warmup N] [--profile-iters N]\n";
-}
-
-bool ParseCliOptions(int argc, char** argv, CliOptions* out_options, std::string* out_error) {
-  if (argc == 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
-    PrintUsage(argv[0]);
-    std::exit(0);
-  }
-
-  CliOptions options;
-  for (int arg_index = 1; arg_index < argc;) {
-    const std::string arg = argv[arg_index++];
-    if (arg == "--source-num-point-features") {
-      if (arg_index >= argc) {
-        if (out_error != nullptr) {
-          *out_error = "Missing count for --source-num-point-features";
-        }
-        return false;
-      }
-      const std::string value = argv[arg_index++];
-      try {
-        size_t parsed = 0;
-        const int count = std::stoi(value, &parsed);
-        if (parsed != value.size() || count < 3 || count > 5) {
-          if (out_error != nullptr) {
-            *out_error = "--source-num-point-features must be one of 3, 4, or 5";
-          }
-          return false;
-        }
-        options.source_num_point_features = count;
-      } catch (...) {
-        if (out_error != nullptr) {
-          *out_error = "--source-num-point-features must be one of 3, 4, or 5";
-        }
-        return false;
-      }
-    } else if (arg == "--override-config") {
-      if (arg_index >= argc) {
-        if (out_error != nullptr) {
-          *out_error = "Missing path for --override-config";
-        }
-        return false;
-      }
-      options.override_config_path = argv[arg_index++];
-    } else if (arg == "--model-dir") {
-      if (arg_index >= argc) {
-        if (out_error != nullptr) {
-          *out_error = "Missing path for --model-dir";
-        }
-        return false;
-      }
-      options.model_dir = argv[arg_index++];
-    } else if (arg == "--input") {
-      if (arg_index >= argc) {
-        if (out_error != nullptr) {
-          *out_error = "Missing path for --input";
-        }
-        return false;
-      }
-      options.input_path = argv[arg_index++];
-    } else if (arg == "--dump-dir") {
-      if (arg_index >= argc) {
-        if (out_error != nullptr) {
-          *out_error = "Missing path for --dump-dir";
-        }
-        return false;
-      }
-      options.dump_dir = argv[arg_index++];
-    } else if (arg == "--warmup") {
-      if (arg_index >= argc) {
-        if (out_error != nullptr) {
-          *out_error = "Missing count for --warmup";
-        }
-        return false;
-      }
-      options.warmup_iters = std::stoi(argv[arg_index++]);
-    } else if (arg == "--profile-iters") {
-      if (arg_index >= argc) {
-        if (out_error != nullptr) {
-          *out_error = "Missing count for --profile-iters";
-        }
-        return false;
-      }
-      options.profile_iters = std::stoi(argv[arg_index++]);
-    } else if (arg == "--dump-decoded") {
-      options.dump_decoded = true;
-    } else if (arg == "--dump-internal") {
-      options.dump_internal = true;
-    } else if (arg == "--help" || arg == "-h") {
-      PrintUsage(argv[0]);
-      std::exit(0);
-    } else if (arg.rfind("--", 0) == 0) {
-      if (out_error != nullptr) {
-        *out_error = "Unknown argument: " + arg;
-      }
-      return false;
-    } else {
-      if (out_error != nullptr) {
-        *out_error = "Unexpected positional argument: " + arg;
-      }
-      return false;
-    }
-  }
-
-  if (options.model_dir.empty()) {
-    if (out_error != nullptr) {
-      *out_error = "--model-dir is required";
-    }
-    return false;
-  }
-  if (options.input_path.empty()) {
-    if (out_error != nullptr) {
-      *out_error = "--input is required";
-    }
-    return false;
-  }
-  if (options.dump_dir.empty()) {
-    if (out_error != nullptr) {
-      *out_error = "--dump-dir is required";
-    }
-    return false;
-  }
-  if (options.warmup_iters < 0 || options.profile_iters <= 0) {
-    if (out_error != nullptr) {
-      *out_error = "--warmup must be >= 0 and --profile-iters must be > 0";
-    }
-    return false;
-  }
-
-  *out_options = options;
-  return true;
-}
 
 double Percentile(std::vector<double> values, double ratio) {
   if (values.empty()) {
@@ -913,15 +767,21 @@ InferenceStatus RunSingleInput(const CliOptions& options,
 
 int main(int argc, char** argv) {
   if (argc < 2) {
-    PrintUsage(argv[0]);
+    inference_tools::PrintUsage(std::cerr, argv[0], kToolKind);
     return 1;
   }
 
   CliOptions options;
   std::string error;
-  if (!ParseCliOptions(argc, argv, &options, &error)) {
+  const auto parse_result =
+      inference_tools::ParseCliOptions(argc, argv, kToolKind, &options, &error);
+  if (parse_result == inference_tools::ParseResult::kHelp) {
+    inference_tools::PrintUsage(std::cout, argv[0], kToolKind);
+    return 0;
+  }
+  if (parse_result == inference_tools::ParseResult::kError) {
     std::cerr << error << "\n";
-    PrintUsage(argv[0]);
+    inference_tools::PrintUsage(std::cerr, argv[0], kToolKind);
     return 1;
   }
 

@@ -1,3 +1,4 @@
+#include "debug_cli.hpp"
 #include "pillar_runtime.hpp"
 
 #include <algorithm>
@@ -13,105 +14,8 @@
 
 namespace {
 
-struct CliOptions {
-  std::string model_dir;
-  std::string pcd_path;
-  std::string dump_dir = "outputs/perf_debug";
-  std::string override_config_path;
-  int source_num_point_features = 0;
-  int warmup_iters = 10;
-  int profile_iters = 50;
-};
-
-void PrintUsage(const char* program) {
-  std::cerr
-      << "Usage: " << program
-      << " <model_dir> <pcd_path> [dump_dir] [--warmup N] [--profile N]"
-      << " [--source-num-point-features N] [--override-config PATH]\n";
-}
-
-bool ParseInt(const std::string& value, int* out_value) {
-  try {
-    size_t parsed = 0;
-    const int result = std::stoi(value, &parsed);
-    if (parsed != value.size()) {
-      return false;
-    }
-    *out_value = result;
-    return true;
-  } catch (...) {
-    return false;
-  }
-}
-
-bool ParseCliOptions(int argc, char** argv, CliOptions* out_options, std::string* out_error) {
-  if (argc == 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
-    PrintUsage(argv[0]);
-    std::exit(0);
-  }
-  if (argc < 3) {
-    if (out_error != nullptr) {
-      *out_error = "model_dir and pcd_path are required";
-    }
-    return false;
-  }
-
-  CliOptions options;
-  int arg_index = 1;
-  options.model_dir = argv[arg_index++];
-  options.pcd_path = argv[arg_index++];
-
-  if (arg_index < argc && std::string(argv[arg_index]).rfind("--", 0) != 0) {
-    options.dump_dir = argv[arg_index++];
-  }
-
-  while (arg_index < argc) {
-    const std::string arg = argv[arg_index++];
-    if (arg == "--warmup") {
-      if (arg_index >= argc || !ParseInt(argv[arg_index++], &options.warmup_iters)) {
-        if (out_error != nullptr) {
-          *out_error = "Invalid value for --warmup";
-        }
-        return false;
-      }
-    } else if (arg == "--profile") {
-      if (arg_index >= argc || !ParseInt(argv[arg_index++], &options.profile_iters)) {
-        if (out_error != nullptr) {
-          *out_error = "Invalid value for --profile";
-        }
-        return false;
-      }
-    } else if (arg == "--source-num-point-features") {
-      if (arg_index >= argc ||
-          !ParseInt(argv[arg_index++], &options.source_num_point_features) ||
-          options.source_num_point_features < 3 || options.source_num_point_features > 5) {
-        if (out_error != nullptr) {
-          *out_error = "--source-num-point-features must be one of 3, 4, or 5";
-        }
-        return false;
-      }
-    } else if (arg == "--override-config") {
-      if (arg_index >= argc) {
-        if (out_error != nullptr) {
-          *out_error = "Missing path for --override-config";
-        }
-        return false;
-      }
-      options.override_config_path = argv[arg_index++];
-    } else if (arg == "--help" || arg == "-h") {
-      PrintUsage(argv[0]);
-      std::exit(0);
-    } else {
-      if (out_error != nullptr) {
-        *out_error = "Unknown argument: " + arg;
-      }
-      return false;
-    }
-  }
-
-  *out_options = options;
-  return true;
-}
+using inference_tools::CliOptions;
+constexpr auto kToolKind = inference_tools::ToolKind::kPerf;
 
 void WarnAboutConflictingLibraries() {
   const char* ld_library_path = std::getenv("LD_LIBRARY_PATH");
@@ -396,23 +300,29 @@ void PrintPointCloudLoadSummary(const inference_internal::PointCloudLoadInfo& in
 
 int main(int argc, char** argv) {
   if (argc < 2) {
-    PrintUsage(argv[0]);
+    inference_tools::PrintUsage(std::cerr, argv[0], kToolKind);
+    return 1;
+  }
+
+  CliOptions options;
+  std::string error;
+  const auto parse_result =
+      inference_tools::ParseCliOptions(argc, argv, kToolKind, &options, &error);
+  if (parse_result == inference_tools::ParseResult::kHelp) {
+    inference_tools::PrintUsage(std::cout, argv[0], kToolKind);
+    return 0;
+  }
+  if (parse_result == inference_tools::ParseResult::kError) {
+    std::cerr << error << "\n";
+    inference_tools::PrintUsage(std::cerr, argv[0], kToolKind);
     return 1;
   }
 
   WarnAboutConflictingLibraries();
 
-  CliOptions options;
-  std::string error;
-  if (!ParseCliOptions(argc, argv, &options, &error)) {
-    std::cerr << error << "\n";
-    PrintUsage(argv[0]);
-    return 1;
-  }
-
   inference_internal::ToolConfig config;
   InferenceStatus status = inference_internal::LoadToolConfigFromModelDir(
-      options.model_dir, options.pcd_path, options.dump_dir, options.override_config_path,
+      options.model_dir, options.input_path, options.dump_dir, options.override_config_path,
       options.warmup_iters, options.profile_iters, 0.2f, &config, &error);
   if (status != INFERENCE_STATUS_OK) {
     std::cerr << "Failed to load tool config: " << error << "\n";

@@ -256,14 +256,14 @@ cmake --build build -j$(nproc)
 Run the recommended pillar API result debug session:
 
 ```bash
-./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.bin --source-num-point-features 5 --dump-dir demo/centerpoint_pillar_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.bin --dump-dir demo/centerpoint_pillar_outputs --source-num-point-features 5 --warmup 10 --profile-iters 100
 ```
 
 For the voxel demo, first build the TensorRT head engine referenced by `demo/centerpoint_voxel/model.yaml`, then run the same debug flow:
 
 ```bash
 bash scripts/centerpoint_voxel_head2engine.sh demo/centerpoint_voxel/rpn_centerhead.onnx demo/centerpoint_voxel/rpn_centerhead.engine
-./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test1.bin --source-num-point-features 5 --dump-dir demo/centerpoint_voxel_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test1.bin --dump-dir demo/centerpoint_voxel_outputs --source-num-point-features 5 --warmup 10 --profile-iters 100
 ```
 
 The demo assets used by the public C++ API and debug tools are:
@@ -399,28 +399,28 @@ Optional override YAML files use the same schema and are applied with this prece
 `infer_debug_tool` follows the same model-directory entry style as the public C++ wrapper and treats `runtime->Infer(...)` as the authoritative final result:
 
 ```bash
-./build/infer_debug_tool --model-dir MODEL_DIR --input INPUT_PATH --dump-dir DUMP_DIR [--source-num-point-features N] [--override-config PATH] [--dump-decoded] [--dump-internal] [--warmup N] [--profile-iters N]
+./build/infer_debug_tool --model-dir MODEL_DIR --input INPUT_PATH --dump-dir DUMP_DIR [--source-num-point-features N] [--override-config PATH] [--warmup N] [--profile-iters N] [--no-dump-decoded] [--no-dump-internal]
 ```
 
-Supported options:
+Both tools require `--model-dir`, `--input`, and `--dump-dir`; arguments may appear in any order. Shared optional arguments:
 
 - `--source-num-point-features N`: source feature count for float32 `.bin` files; specify `3`, `4`, or `5` when the layout is known
 - `--override-config PATH`
 - `--warmup N`
 - `--profile-iters N`
-- `--dump-decoded`
-- `--dump-internal`
+
+`infer_debug_tool` enables decoded detection arrays and auxiliary internal tensors by default. Use `--no-dump-decoded` and `--no-dump-internal` to disable them independently. The existing `--dump-decoded` and `--dump-internal` switches remain available to enable them explicitly; when repeated, the last switch for each dump type wins. Dump collection and file writes are outside the high-level inference timing.
 
 Recommended examples:
 
 ```bash
 # Raw float32 .bin: declare its source feature layout.
-./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.bin --source-num-point-features 5 --dump-dir demo/centerpoint_pillar_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.bin --dump-dir demo/centerpoint_pillar_outputs --source-num-point-features 5 --warmup 10 --profile-iters 100
 
 # PCD: no source feature-count option is needed; fields are read from the PCD header.
-./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.pcd --dump-dir demo/centerpoint_pcd_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.pcd --dump-dir demo/centerpoint_pcd_outputs --warmup 10 --profile-iters 100
 
-./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test1.bin --source-num-point-features 5 --dump-dir demo/centerpoint_voxel_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test1.bin --dump-dir demo/centerpoint_voxel_outputs --source-num-point-features 5 --warmup 10 --profile-iters 100
 ```
 
 The voxel example requires `demo/centerpoint_voxel/rpn_centerhead.engine`; build it from `demo/centerpoint_voxel/rpn_centerhead.onnx` with `scripts/centerpoint_voxel_head2engine.sh` before running inference.
@@ -433,7 +433,7 @@ Behavior:
 - `--dump-dir` controls where result `.npy` and `.json` artifacts are written
 - `--override-config PATH` applies the same package-schema YAML override used by the public C++ wrapper
 - final detections come from the high-level C++ API, so `mapped_label_names` is reflected in `result.json`
-- `--dump-internal` writes raw internal tensors for auxiliary diagnosis only
+- internal tensors are written by default for auxiliary diagnosis; `--no-dump-internal` disables them
 - directory mode sorts numerically by filename stem when all stems are unsigned integers; otherwise it falls back to lexicographic filename order
 - numeric filename stems are treated as Unix nanosecond timestamps in per-frame metadata and sequence outputs
 - directory mode reuses one runtime instance and writes one subdirectory per frame under `dump_dir/frames/`
@@ -442,16 +442,20 @@ Behavior:
 `perf_debug_tool` uses the internal runtime path to profile one sample:
 
 ```bash
-./build/perf_debug_tool <model_dir> <pcd_path> [dump_dir] [--warmup N] [--profile N] [--source-num-point-features N] [--override-config PATH]
+./build/perf_debug_tool --model-dir MODEL_DIR --input INPUT_PATH --dump-dir DUMP_DIR [--source-num-point-features N] [--override-config PATH] [--warmup N] [--profile-iters N]
 ```
 
-It writes timing/profile data only and does not write detection result artifacts.
+`--input` must be a single `.pcd` / `.bin` file. The tool writes timing/profile data only and does not write detection result artifacts. Its previous positional arguments and `--profile` option are no longer accepted; use the named paths and `--profile-iters` instead.
+
+```bash
+./build/perf_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test1.bin --dump-dir outputs/voxel_perf --source-num-point-features 5 --warmup 10 --profile-iters 50
+```
 
 Default values:
 
 - `infer_debug_tool` `warmup_iters`: `0`
 - `infer_debug_tool` `profile_iters`: `1`
-- `perf_debug_tool` `dump_dir`: `outputs/perf_debug`
+- both tools require an explicit `--dump-dir`; there is no default output directory
 - `perf_debug_tool` `warmup_iters`: `10`
 - `perf_debug_tool` `profile_iters`: `50`
 
@@ -473,13 +477,13 @@ In directory batch mode, the root `dump_dir` additionally contains:
 - `sequence_manifest.json`
 - `sequence_detections.jsonl`
 
-With `--dump-decoded`, it also writes:
+By default, it also writes decoded detection arrays (disabled with `--no-dump-decoded`):
 
 - `decoded_scores.npy`
 - `decoded_boxes.npy`
 - `decoded_labels.npy`
 
-With `--dump-internal`, it also writes auxiliary internal tensors:
+By default, it also writes auxiliary internal tensors (disabled with `--no-dump-internal`):
 
 - `pillar_voxels.npy`
 - `pillar_num_points.npy`
@@ -517,7 +521,7 @@ python3 tools/visualize_infer_debug.py demo/centerpoint_pillar demo/centerpoint_
 For the common single-sample flow:
 
 ```bash
-./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.bin --source-num-point-features 5 --dump-dir demo/centerpoint_pillar_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.bin --dump-dir demo/centerpoint_pillar_outputs --source-num-point-features 5 --warmup 10 --profile-iters 100
 python3 tools/visualize_infer_debug.py demo/centerpoint_pillar demo/centerpoint_pillar_outputs --zmin -0.2 --zmax 3
 ```
 
@@ -527,8 +531,8 @@ Typical outputs in the dump directory:
 
 - `01_input_points_height_bev.png`
 - `02_input_points_density_bev.png`
-- `03_cls_heatmap_bev.png` when `cls_score.npy` exists from `--dump-internal`
-- `04_decoded_candidates_bev.png` when decoded arrays exist from `--dump-decoded` or `--dump-internal`
+- `03_cls_heatmap_bev.png` when `cls_score.npy` exists from the internal dump (enabled by default)
+- `04_decoded_candidates_bev.png` when decoded arrays exist from decoded or internal dumps (both enabled by default)
 - `05_final_boxes_bev.png`
 - `06_3d_final_result.html` when Plotly is available
 - `index.html`
@@ -538,7 +542,7 @@ For a more detailed run with decoded candidates and internal debug heatmap:
 
 ```bash
 bash scripts/centerpoint_voxel_head2engine.sh demo/centerpoint_voxel/rpn_centerhead.onnx demo/centerpoint_voxel/rpn_centerhead.engine
-./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test1.bin --source-num-point-features 5 --dump-dir demo/centerpoint_voxel_outputs --dump-decoded --dump-internal --warmup 10 --profile-iters 100
+./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test1.bin --dump-dir demo/centerpoint_voxel_outputs --source-num-point-features 5 --warmup 10 --profile-iters 100
 python3 tools/visualize_infer_debug.py demo/centerpoint_voxel demo/centerpoint_voxel_outputs --zmin -0.2 --zmax 3
 ```
 

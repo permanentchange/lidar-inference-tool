@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Unified debug CLI named arguments: both tools require `--model-dir`, `--input`, and `--dump-dir`, and use `--profile-iters` for profiling iterations. Removed `perf_debug_tool` positional arguments and `--profile`.
+- Enabled decoded and internal dumps by default in `infer_debug_tool`; added `--no-dump-decoded` and `--no-dump-internal` to disable them independently.
+- Added grouped CLI help with defaults, shared argument validation, and regression tests for both tools.
+
 ## v1.8.0
 
 - Added `model.runtime_backend: centerpoint_voxel` for CenterPoint voxel model packages while keeping the high-level C++ API entry points unchanged.
