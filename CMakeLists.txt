@@ -25,7 +25,54 @@ else()
 endif()
 
 find_package(CUDA REQUIRED)
+
+# Respect manual compiler selection without changing the caller's environment.
+# An explicit or cached CMake value takes priority over PROTOC.
+if(NOT Protobuf_PROTOC_EXECUTABLE AND DEFINED ENV{PROTOC}
+    AND NOT "$ENV{PROTOC}" STREQUAL "")
+  set(Protobuf_PROTOC_EXECUTABLE "$ENV{PROTOC}" CACHE FILEPATH
+    "The Google Protocol Buffers Compiler" FORCE)
+endif()
+# Otherwise prefer the compiler installed with the selected C++ headers.
+find_path(Protobuf_INCLUDE_DIR google/protobuf/service.h)
+if(Protobuf_INCLUDE_DIR AND NOT Protobuf_PROTOC_EXECUTABLE)
+  get_filename_component(_protobuf_prefix "${Protobuf_INCLUDE_DIR}" DIRECTORY)
+  find_program(Protobuf_PROTOC_EXECUTABLE NAMES protoc
+    HINTS "${_protobuf_prefix}/bin"
+    NO_DEFAULT_PATH
+  )
+endif()
 find_package(Protobuf REQUIRED)
+
+execute_process(
+  COMMAND "${Protobuf_PROTOC_EXECUTABLE}" --version
+  RESULT_VARIABLE _protoc_result
+  OUTPUT_VARIABLE _protoc_output
+  ERROR_VARIABLE _protoc_error
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+if(NOT _protoc_result EQUAL 0 OR NOT _protoc_output MATCHES "^libprotoc ([0-9.]+)$")
+  message(FATAL_ERROR
+    "Cannot query protoc: ${Protobuf_PROTOC_EXECUTABLE}\n${_protoc_error}\n"
+    "Set -DProtobuf_PROTOC_EXECUTABLE=/path/to/matching/protoc, "
+    "or run PROTOC=/path/to/matching/protoc bash rebuild.sh.")
+endif()
+set(_protoc_version "${CMAKE_MATCH_1}")
+set(_expected_protoc_version "${Protobuf_VERSION}")
+# Newer releases use e.g. C++ runtime 4.25.3 and protoc 25.3.
+if(Protobuf_VERSION VERSION_GREATER_EQUAL "4.0")
+  string(REGEX REPLACE "^[0-9]+\\." "" _expected_protoc_version "${Protobuf_VERSION}")
+endif()
+if(NOT _protoc_version VERSION_EQUAL _expected_protoc_version)
+  message(FATAL_ERROR
+    "Protobuf version mismatch: protoc ${_protoc_version} "
+    "(${Protobuf_PROTOC_EXECUTABLE}), C++ headers ${Protobuf_VERSION} "
+    "(${Protobuf_INCLUDE_DIRS}), libraries ${Protobuf_LIBRARIES}.\n"
+    "Set -DProtobuf_PROTOC_EXECUTABLE=/path/to/matching/protoc "
+    "or run PROTOC=/path/to/matching/protoc bash rebuild.sh.\n"
+    "For an existing CMake build directory, clear its cached compiler "
+    "with -UProtobuf_PROTOC_EXECUTABLE before changing PROTOC.")
+endif()
 
 find_path(TENSORRT_INCLUDE_DIR NvInfer.h)
 find_library(NVINFER_LIB nvinfer)
@@ -49,6 +96,8 @@ message(STATUS "CUDA           : ${CUDA_VERSION_STRING}")
 message(STATUS "TensorRT       : ${NVINFER_LIB}")
 message(STATUS "TensorRT include: ${TENSORRT_INCLUDE_DIR}")
 message(STATUS "Protobuf       : ${Protobuf_LIBRARIES}")
+message(STATUS "Protobuf include: ${Protobuf_INCLUDE_DIRS} (${Protobuf_VERSION})")
+message(STATUS "protoc         : ${Protobuf_PROTOC_EXECUTABLE} (${_protoc_version})")
 message(STATUS "yaml-cpp       : ${YAML_CPP_LIBRARY}")
 
 set(INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
@@ -93,6 +142,7 @@ add_custom_command(
     ${SPCONV_PARSER_DIR}/onnx/onnx-ml.proto
     ${SPCONV_PARSER_DIR}/onnx/onnx-operators-ml.proto
   DEPENDS
+    "${Protobuf_PROTOC_EXECUTABLE}"
     ${SPCONV_PARSER_DIR}/onnx/onnx-ml.proto
     ${SPCONV_PARSER_DIR}/onnx/onnx-operators-ml.proto
   VERBATIM

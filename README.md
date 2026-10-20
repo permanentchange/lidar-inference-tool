@@ -130,7 +130,11 @@ Notes:
 - CMake uses `find_path` / `find_library` for TensorRT and `yaml-cpp`
 - if TensorRT is installed in a nonstandard location, pass `-DTENSORRT_INCLUDE_DIR=...`, `-DNVINFER_LIB=...`, and `-DNVINFER_PLUGIN_LIB=...`
 - `rebuild.sh` selects `third_party/libspconv/lib/<arch>_cuda<cuda>/libspconv.so` from the active `nvcc` version and refreshes `third_party/libspconv/lib/<arch>/libspconv.so`
-- the selected Protobuf headers/libraries and `protoc` must report the same version
+- `rebuild.sh` preserves your environment, including `PATH`, `LD_LIBRARY_PATH`, compiler variables, and CMake search paths; use `CUDA_HOME`, `TENSORRT_ROOT`, or explicit CMake arguments for custom native dependencies
+- the selected Protobuf headers/libraries and `protoc` must correspond to the same release (newer releases use different version numbering for the C++ runtime and compiler)
+- CMake prefers `protoc` from the Protobuf headers' installation prefix before searching `PATH`; incompatible versions stop configuration with the selected paths
+- to select a compiler explicitly, use `PROTOC=/usr/bin/protoc bash rebuild.sh` (for system Protobuf), or pass `-DProtobuf_PROTOC_EXECUTABLE=/path/to/matching/protoc`; explicit CMake arguments take priority over `PROTOC`
+- direct CMake configuration also accepts `PROTOC`; an existing cached `Protobuf_PROTOC_EXECUTABLE` takes priority, so use `-UProtobuf_PROTOC_EXECUTABLE` when changing it through the environment
 
 ### Python utilities
 
@@ -208,6 +212,23 @@ Use the repository helper to rebuild and package:
 ```bash
 ./rebuild.sh
 ```
+
+The native build uses the installed C++/CUDA tools and libraries. The helper
+preserves your shell environment and does not activate or search for a Python
+environment. If dependency discovery fails, set the relevant paths and rerun:
+
+```bash
+export CUDA_HOME=/usr/local/cuda
+export TENSORRT_ROOT=/path/to/TensorRT
+export PROTOC=/usr/bin/protoc
+export LD_LIBRARY_PATH="$CUDA_HOME/lib64:$TENSORRT_ROOT/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+bash rebuild.sh
+```
+
+You can also set `CC`, `CXX`, `PATH`, and `CMAKE_PREFIX_PATH` for your toolchain,
+or pass CMake options directly to `rebuild.sh`. Configuration prints the selected
+Protobuf include directory, library, and compiler version. A version mismatch
+stops configuration with instructions for selecting a matching compiler.
 
 The generated `.deb` installs its runtime commands under `/usr/local/bin`, including:
 

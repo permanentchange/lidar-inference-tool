@@ -4,6 +4,11 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD="${BUILD_DIR:-$DIR/build}"
 
+CMAKE_ARGS=()
+if [ -n "${PROTOC:-}" ]; then
+  CMAKE_ARGS+=("-DProtobuf_PROTOC_EXECUTABLE=$PROTOC")
+fi
+
 case "$(uname -m)" in
   x86_64) ARCH=x86_64 ;;
   aarch64|arm64) ARCH=aarch64 ;;
@@ -43,12 +48,14 @@ if [ -n "${TENSORRT_ROOT:-}" ]; then
     -DTENSORRT_INCLUDE_DIR="$TENSORRT_ROOT/include" \
     -DNVINFER_LIB="$TENSORRT_ROOT/targets/$ARCH-linux-gnu/lib/libnvinfer.so" \
     -DNVINFER_PLUGIN_LIB="$TENSORRT_ROOT/targets/$ARCH-linux-gnu/lib/libnvinfer_plugin.so" \
+    "${CMAKE_ARGS[@]}" \
     "$@"
 else
   cmake -S "$DIR" -B "$BUILD" \
     -DCMAKE_INSTALL_PREFIX="${CMAKE_INSTALL_PREFIX:-/usr/local}" \
     -DCUDA_TOOLKIT_ROOT_DIR="$CUDA_ROOT" \
     -DCMAKE_CUDA_COMPILER="$NVCC" \
+    "${CMAKE_ARGS[@]}" \
     "$@"
 fi
 
