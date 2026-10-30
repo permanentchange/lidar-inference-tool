@@ -12,6 +12,9 @@
 
 namespace inference_internal {
 class PillarRuntime;
+struct RuntimeDiagnostics;
+struct StageTimings;
+struct DebugArtifacts;
 }  // namespace inference_internal
 
 namespace inference {
@@ -140,13 +143,16 @@ class LidarInferenceRuntime {
   const std::string& last_error() const { return last_error_; }
 
  private:
+  friend struct inference_internal::RuntimeDiagnostics;
   LidarInferenceRuntime() = default;
 
   const char* StoreLabelName(const std::string& label_name);
   InferenceStatus InferInternal(const PointCloudView& cloud,
                                 const PostprocessConfig* postprocess,
                                 std::vector<Detection>* out_detections,
-                                bool use_nms);
+                                bool use_nms,
+                                inference_internal::StageTimings* timings = nullptr,
+                                inference_internal::DebugArtifacts* debug = nullptr);
 
   PackageConfig config_{};
   std::shared_ptr<inference_internal::PillarRuntime> runtime_;

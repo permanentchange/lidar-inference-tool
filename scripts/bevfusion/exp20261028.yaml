@@ -1,0 +1,9 @@
+mmdet3d_root: ../../../mmdetection3d
+config: projects/BEVFusion/configs/exp20261028/lidar_cam.py
+checkpoint: work_dirs/exp20261028_lidar_cam_200e/epoch_200.pth
+model_dir: ../../demo/bevfusion_exp20261028
+device: cuda:0
+sample_index: 0
+validation_frames: 20
+sample_dir: ../../demo/data/bevfusion/export_sample
+deployment_config: /home/zhouxiufeng/lidar_perception_config/model.yaml

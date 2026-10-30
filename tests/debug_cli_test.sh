@@ -43,17 +43,19 @@ required=(--model-dir unused-model --input unused-input --dump-dir /tmp/debug_cl
 run_expect_failure "Usage:"
 
 run_expect_failure "Unexpected positional argument: demo/centerpoint_pillar" \
-  demo/centerpoint_pillar demo/data/test1.bin
+  demo/centerpoint_pillar demo/data/lidar/test1.bin
 run_expect_failure "--model-dir is required" \
-  --input demo/data/test1.bin --dump-dir /tmp/infer_debug_cli_test
+  --input demo/data/lidar/test1.bin --dump-dir /tmp/infer_debug_cli_test
 run_expect_failure "--input is required" \
   --model-dir demo/centerpoint_pillar --dump-dir /tmp/infer_debug_cli_test
 run_expect_failure "--dump-dir is required" \
-  --model-dir demo/centerpoint_pillar --input demo/data/test1.bin
+  --model-dir demo/centerpoint_pillar --input demo/data/lidar/test1.bin
 run_expect_failure "use --profile-iters N instead" "${required[@]}" --profile 2
 run_expect_failure "Unknown argument: --unknown" "${required[@]}" --unknown
 
-for option in --model-dir --input --dump-dir --override-config; do
+run_expect_failure "--image-input must be raw or preprocessed" "${required[@]}" --image-input invalid
+
+for option in --model-dir --input --dump-dir --override-config --image-input; do
   run_expect_failure "Missing path for $option" "${required[@]}" "$option"
   run_expect_failure "Missing path for $option" "${required[@]}" "$option" --warmup 0
   run_expect_failure "Missing path for $option" "${required[@]}" "$option" ""
@@ -74,15 +76,11 @@ for value in 0 2 6 -1; do
 done
 
 if [ "$kind" = infer ]; then
-  grep -Fq -- "[--no-dump-decoded] [--no-dump-internal]" <<<"$help_output"
-  grep -Fq -- "both enabled by default" <<<"$help_output"
   grep -Fq -- "Warmup iterations >= 0 (default: 0)" <<<"$help_output"
   grep -Fq -- "Profile iterations > 0 (default: 1)" <<<"$help_output"
 else
-  grep -Fq -- "Single PCD/BIN file" <<<"$help_output"
   grep -Fq -- "Warmup iterations >= 0 (default: 10)" <<<"$help_output"
   grep -Fq -- "Profile iterations > 0 (default: 50)" <<<"$help_output"
-  for option in --dump-decoded --dump-internal --no-dump-decoded --no-dump-internal; do
-    run_expect_failure "Unknown argument: $option" "${required[@]}" "$option"
-  done
 fi
+grep -Fq -- "--dump-result / --no-dump-result" <<<"$help_output"
+grep -Fq -- "separate passes" <<<"$help_output"

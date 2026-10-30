@@ -1,0 +1,9 @@
+# Paths to the library checkout and output are relative to this YAML file.
+mmdet3d_root: ../../../mmdetection3d
+# Model config/checkpoint paths are relative to mmdet3d_root.
+config: projects/BEVFusion/configs/exp20260911/lidar_cam_pipeline.py
+checkpoint: work_dirs/exp20260911_lidar_cam_pipeline/iter_20.pth
+model_dir: ../../outputs/bevfusion_deployment
+device: cuda:0
+sample_index: 0
+validation_frames: 20

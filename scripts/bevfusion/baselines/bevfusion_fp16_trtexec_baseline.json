@@ -1,0 +1,877 @@
+{
+  "captured_at_utc": "2026-10-23T07:09:57.516061+00:00",
+  "model": {
+    "mmdet3d_root": "/home/zhouxiufeng/workspace/openmmlab/mmdetection3d",
+    "config": "/home/zhouxiufeng/workspace/openmmlab/mmdetection3d/projects/BEVFusion/configs/exp20260911/lidar_cam.py",
+    "checkpoint": "/home/zhouxiufeng/workspace/openmmlab/mmdetection3d/work_dirs/exp20260911/epoch_16.pth",
+    "config_sha256": "a7b24c9894d35c71e370edb69688c5a0432dd7c269b3534fc32be3f63cc2ccc9",
+    "checkpoint_sha256": "9df55bcca05162914e28527dfdbe7a9c56910a712691f25733276bae93796fa1",
+    "library_sources": {
+      "mmdet3d/models/layers/sparse_block.py": "4b12c23f7f4479d9bc168c9e6ef7c66ca5c7a5c421f8014efde1b5bf4e5be9f2",
+      "projects/BEVFusion/bevfusion/__init__.py": "b04ec89ec8f7dd662e81ebde8b2668be8c49500b0fe4776bb61b084f7d1dabd6",
+      "projects/BEVFusion/bevfusion/bevfusion.py": "62e8e2b6155dede677343c6268d188c531dd92fd199d2eea2116d83d29501e9e",
+      "projects/BEVFusion/bevfusion/bevfusion_necks.py": "1e97c00194cd0917b0a399b6c4abb1687b99362540b1add0ddfbe1f8b8afd454",
+      "projects/BEVFusion/bevfusion/depth_lss.py": "258af64e166ccfa97bfce69b190c9fa5238491601de9945a39f05e94a7b911ae",
+      "projects/BEVFusion/bevfusion/loading.py": "0f293a807a831bbe83903e93dbd82dbe2922b394bf4474398c6838e7ac1fa7c2",
+      "projects/BEVFusion/bevfusion/ops/__init__.py": "bc458bb1c448ed42b56512badc8d79aa93b69460b7632b3ee47d2f9873d64cac",
+      "projects/BEVFusion/bevfusion/ops/bev_pool/__init__.py": "3be2a83be8ea38b65417ac35b4d377f914c3d2edc087758ab7dcfefe2c1e9a2e",
+      "projects/BEVFusion/bevfusion/ops/bev_pool/bev_pool.py": "ca12d7cafd98e1bf707f7435abfe27dd799062db369b5dde054e9d65f46ed5e4",
+      "projects/BEVFusion/bevfusion/ops/voxel/__init__.py": "daa16f1184d7368c0f5744f1c23e80cb7b0c25e25ec159d773b51c071a4e211a",
+      "projects/BEVFusion/bevfusion/ops/voxel/scatter_points.py": "f06943b7b971ce1ce8df1341721649add83b830e5ac5a520c28de6ebcf9aa841",
+      "projects/BEVFusion/bevfusion/ops/voxel/voxelize.py": "6c48f281343e5e7417bc14538d39192e669c91a08b2d4840577ff81391a30309",
+      "projects/BEVFusion/bevfusion/sparse_encoder.py": "3ccc5734480ce487f31ff3e630ca7084a4bf60b5354f776e5132a0b824aadd34",
+      "projects/BEVFusion/bevfusion/transformer.py": "635d3a6246bda512895f33ba4c8560aff9b9a7c4f04c7b5744a7ddf6ac18f4a8",
+      "projects/BEVFusion/bevfusion/transforms_3d.py": "3b8a45f1abc85b51243373eca1f00249ad78fcda44b6e7a3e97261ea8e0ad731",
+      "projects/BEVFusion/bevfusion/transfusion_head.py": "4e8b37dfc269a3cd1c4669299c5fd93d1714d0ae5d6c53847d8877a703cf30e3",
+      "projects/BEVFusion/bevfusion/utils.py": "3fc385b4563d0c194f3f3387df74ebd19a9c1e7ab8660336bb4ac8c1fe5c9740"
+    }
+  },
+  "precision_policy": {
+    "builder": "trtexec",
+    "fp16_enabled_networks": [
+      "camera.backbone",
+      "camera.vtransform",
+      "fuser",
+      "head.bbox"
+    ],
+    "dense_binding_dtype": "float16",
+    "dense_binding_format": "linear",
+    "tf32_allowed": true,
+    "fp32_layer_overrides": [],
+    "workspace_mib": 2048,
+    "sparse_backbone": "float16",
+    "pooling_accumulator": "float32"
+  },
+  "checks": {
+    "ctest_passed": 14,
+    "sparse_export_cleanup_test_passed": true,
+    "native_rebuild_and_deb_passed": true,
+    "installed_cpp_consumer_passed": true,
+    "installed_cli_passed": true,
+    "fp16_runtime_repeat_cache_error_checks_passed": true,
+    "mixed_engine_dtype_rejected": true,
+    "raw_preprocessed_exact": true,
+    "raw_preprocessing": {
+      "shape": [
+        5,
+        3,
+        224,
+        640
+      ],
+      "max_abs": 0.0,
+      "mean_abs": 0.0,
+      "nrmse": 0.0,
+      "cosine": 1.0000000000000175
+    },
+    "same_engine": {
+      "camera.backbone/camera_feature": {
+        "shape": [
+          5,
+          28,
+          80,
+          80
+        ],
+        "max_abs": 0.0,
+        "mean_abs": 0.0,
+        "nrmse": 0.0,
+        "cosine": 0.9999999999999997
+      },
+      "camera.backbone/camera_depth_weights": {
+        "shape": [
+          5,
+          58,
+          28,
+          80
+        ],
+        "max_abs": 0.0,
+        "mean_abs": 0.0,
+        "nrmse": 0.0,
+        "cosine": 1.0000000000000426
+      },
+      "camera.vtransform/feat_out": {
+        "shape": [
+          1,
+          80,
+          60,
+          40
+        ],
+        "max_abs": 0.0,
+        "mean_abs": 0.0,
+        "nrmse": 0.0,
+        "cosine": 1.0
+      },
+      "fuser/middle": {
+        "shape": [
+          1,
+          512,
+          60,
+          40
+        ],
+        "max_abs": 0.0,
+        "mean_abs": 0.0,
+        "nrmse": 0.0,
+        "cosine": 1.0
+      },
+      "head.bbox/score": {
+        "shape": [
+          1,
+          9,
+          200
+        ],
+        "max_abs": 0.0,
+        "mean_abs": 0.0,
+        "nrmse": 0.0,
+        "cosine": 1.0
+      },
+      "head.bbox/reg": {
+        "shape": [
+          1,
+          2,
+          200
+        ],
+        "max_abs": 0.0,
+        "mean_abs": 0.0,
+        "nrmse": 0.0,
+        "cosine": 1.0000000000000002
+      },
+      "head.bbox/height": {
+        "shape": [
+          1,
+          1,
+          200
+        ],
+        "max_abs": 0.0,
+        "mean_abs": 0.0,
+        "nrmse": 0.0,
+        "cosine": 0.9999999999999998
+      },
+      "head.bbox/dim": {
+        "shape": [
+          1,
+          3,
+          200
+        ],
+        "max_abs": 0.0,
+        "mean_abs": 0.0,
+        "nrmse": 0.0,
+        "cosine": 1.0
+      },
+      "head.bbox/rot": {
+        "shape": [
+          1,
+          2,
+          200
+        ],
+        "max_abs": 0.0,
+        "mean_abs": 0.0,
+        "nrmse": 0.0,
+        "cosine": 0.9999999999999998
+      },
+      "head.bbox/vel": {
+        "shape": [
+          1,
+          2,
+          200
+        ],
+        "max_abs": 0.0,
+        "mean_abs": 0.0,
+        "nrmse": 0.0,
+        "cosine": 1.0
+      }
+    },
+    "independent_ops": {
+      "voxel_indices_exact": true,
+      "voxel_means_exact": true,
+      "pooling": {
+        "shape": [
+          1,
+          80,
+          120,
+          80
+        ],
+        "max_abs": 0.0,
+        "mean_abs": 0.0,
+        "nrmse": 0.0,
+        "cosine": 1.0000000000000442
+      }
+    },
+    "independent_decode": {
+      "boxes_and_velocity": {
+        "shape": [
+          200,
+          9
+        ],
+        "max_abs": 2.384185791015625e-07,
+        "mean_abs": 1.2624594900343153e-08,
+        "nrmse": 1.3354512708874746e-08,
+        "cosine": 0.9999999999999999
+      },
+      "scores": {
+        "shape": [
+          200
+        ],
+        "max_abs": 2.5000002068509275e-10,
+        "mean_abs": 2.652713084852169e-12,
+        "nrmse": 3.1617152640240426e-10,
+        "cosine": 1.0000000000000002
+      },
+      "labels_exact": true
+    },
+    "test_frames": 20,
+    "test_indices": [
+      0,
+      15,
+      32,
+      123,
+      197,
+      279,
+      300,
+      370,
+      387,
+      402,
+      458,
+      559,
+      579,
+      609,
+      656,
+      723,
+      744,
+      758,
+      762,
+      776
+    ],
+    "finite_tensor_files_checked": 340,
+    "same_class_assignment_centers_within_0_2m": 3805
+  },
+  "accuracy": {
+    "validation_frames": 921,
+    "original_mAP": 0.7492906918000607,
+    "deployment_mAP": 0.7491618741060797,
+    "mAP_difference": -0.00012881769398098708,
+    "per_class_AP_by_distance": {
+      "vehicle.electric_two_wheeler.unridden": {
+        "original": {
+          "0.5": 0.9665,
+          "1.0": 0.971,
+          "2.0": 0.9749,
+          "4.0": 0.9763
+        },
+        "deployment": {
+          "0.5": 0.9665,
+          "1.0": 0.971,
+          "2.0": 0.9749,
+          "4.0": 0.9763
+        }
+      },
+      "human.pedestrian": {
+        "original": {
+          "0.5": 0.8724,
+          "1.0": 0.8763,
+          "2.0": 0.8834,
+          "4.0": 0.8983
+        },
+        "deployment": {
+          "0.5": 0.8723,
+          "1.0": 0.876,
+          "2.0": 0.8833,
+          "4.0": 0.8981
+        }
+      },
+      "vehicle.electric_two_wheeler.ridden": {
+        "original": {
+          "0.5": 0.7857,
+          "1.0": 0.7857,
+          "2.0": 0.7857,
+          "4.0": 0.7967
+        },
+        "deployment": {
+          "0.5": 0.7851,
+          "1.0": 0.7851,
+          "2.0": 0.7851,
+          "4.0": 0.796
+        }
+      },
+      "vehicle.bicycle.unridden": {
+        "original": {
+          "0.5": 0.7238,
+          "1.0": 0.7304,
+          "2.0": 0.7304,
+          "4.0": 0.7304
+        },
+        "deployment": {
+          "0.5": 0.7241,
+          "1.0": 0.7307,
+          "2.0": 0.7307,
+          "4.0": 0.7307
+        }
+      },
+      "vehicle.general": {
+        "original": {
+          "0.5": 0.9881,
+          "1.0": 0.9889,
+          "2.0": 0.9889,
+          "4.0": 0.9889
+        },
+        "deployment": {
+          "0.5": 0.9881,
+          "1.0": 0.9889,
+          "2.0": 0.9889,
+          "4.0": 0.9889
+        }
+      },
+      "vehicle.sightseeing": {
+        "original": {
+          "0.5": 0.7647,
+          "1.0": 0.7647,
+          "2.0": 0.7647,
+          "4.0": 0.7647
+        },
+        "deployment": {
+          "0.5": 0.7637,
+          "1.0": 0.7637,
+          "2.0": 0.7637,
+          "4.0": 0.7637
+        }
+      },
+      "vehicle.bicycle.ridden": {
+        "original": {
+          "0.5": 0.3502,
+          "1.0": 0.3502,
+          "2.0": 0.3502,
+          "4.0": 0.3502
+        },
+        "deployment": {
+          "0.5": 0.3502,
+          "1.0": 0.3502,
+          "2.0": 0.3502,
+          "4.0": 0.3502
+        }
+      },
+      "vehicle.tricycle.unridden": {
+        "original": {
+          "0.5": 0.711,
+          "1.0": 0.7431,
+          "2.0": 0.7476,
+          "4.0": 0.7476
+        },
+        "deployment": {
+          "0.5": 0.7112,
+          "1.0": 0.7432,
+          "2.0": 0.7477,
+          "4.0": 0.7477
+        }
+      },
+      "vehicle.tricycle.ridden": {
+        "original": {
+          "0.5": 0.5241,
+          "1.0": 0.5328,
+          "2.0": 0.5328,
+          "4.0": 0.533
+        },
+        "deployment": {
+          "0.5": 0.5243,
+          "1.0": 0.533,
+          "2.0": 0.533,
+          "4.0": 0.5331
+        }
+      }
+    }
+  },
+  "performance": {
+    "preprocessed": {
+      "prior_policy": {
+        "runtime_backend": "bevfusion",
+        "manifest": "/home/zhouxiufeng/workspace/openmmlab/lidar-inference-tool/outputs/bevfusion-prior-precision-sl613yfc/sample/sample.yaml",
+        "image_input": "preprocessed",
+        "load_decode_ms": 13.889308,
+        "total_infer_mean_ms": 7.23512938,
+        "total_infer_p50_ms": 7.1621805,
+        "total_infer_p90_ms": 7.5785591,
+        "warmup": 10,
+        "profile_iters": 50,
+        "timed_geometry_cache_miss": false,
+        "source_points": 94654,
+        "input_points": 94654,
+        "used_points": 94654,
+        "filtered_points": 94654,
+        "range_rejected_points": 0,
+        "discarded_voxels": 0,
+        "truncated_points": 0,
+        "voxels": 38569,
+        "depth_collisions": 7108,
+        "dump_decoded": false,
+        "dump_internal": false
+      },
+      "native_fp16": {
+        "runtime_backend": "bevfusion",
+        "manifest": "/home/zhouxiufeng/workspace/openmmlab/lidar-inference-tool/outputs/bevfusion-fp16-epoch16-kx1nc5zo/sample/sample.yaml",
+        "image_input": "preprocessed",
+        "load_decode_ms": 12.379808,
+        "total_infer_mean_ms": 6.58379784,
+        "total_infer_p50_ms": 6.5839845,
+        "total_infer_p90_ms": 6.6031372,
+        "warmup": 10,
+        "profile_iters": 50,
+        "timed_geometry_cache_miss": false,
+        "source_points": 94654,
+        "input_points": 94654,
+        "used_points": 94654,
+        "filtered_points": 94654,
+        "range_rejected_points": 0,
+        "discarded_voxels": 0,
+        "truncated_points": 0,
+        "voxels": 38569,
+        "depth_collisions": 7108,
+        "dump_decoded": false,
+        "dump_internal": false
+      },
+      "mean_inference_change_ms": -0.6513315400000002,
+      "prior_policy_last_iteration": {
+        "device_memory_used_bytes": 1869742080,
+        "sample": "last_profile_iteration",
+        "stages": [
+          {
+            "name": "point_filter_upload",
+            "host_ms": 0.255732,
+            "gpu_ms": 0.25276801
+          },
+          {
+            "name": "voxelize",
+            "host_ms": 0.377472,
+            "gpu_ms": 0.383839995
+          },
+          {
+            "name": "sparse_backbone",
+            "host_ms": 1.519347,
+            "gpu_ms": 1.57388794
+          },
+          {
+            "name": "sparse_bridge",
+            "host_ms": 0.008459,
+            "gpu_ms": 0.00409599999
+          },
+          {
+            "name": "depth_projection",
+            "host_ms": 0.088614,
+            "gpu_ms": 0.0278079994
+          },
+          {
+            "name": "image_preprocess_upload",
+            "host_ms": 0.686499,
+            "gpu_ms": 0.769024014
+          },
+          {
+            "name": "geometry_cache",
+            "host_ms": 0.00488,
+            "gpu_ms": 0.00131199998
+          },
+          {
+            "name": "camera_backbone",
+            "host_ms": 1.481087,
+            "gpu_ms": 3.21548796
+          },
+          {
+            "name": "bev_pool",
+            "host_ms": 0.010246,
+            "gpu_ms": 0.0522559993
+          },
+          {
+            "name": "camera_vtransform",
+            "host_ms": 0.030937,
+            "gpu_ms": 0.0368640013
+          },
+          {
+            "name": "fusion_backbone",
+            "host_ms": 0.097739,
+            "gpu_ms": 0.149504006
+          },
+          {
+            "name": "head",
+            "host_ms": 0.256741,
+            "gpu_ms": 0.346303999
+          },
+          {
+            "name": "output_decode",
+            "host_ms": 2.096398,
+            "gpu_ms": 0.083296001
+          }
+        ]
+      },
+      "native_fp16_last_iteration": {
+        "device_memory_used_bytes": 1813118976,
+        "sample": "last_profile_iteration",
+        "stages": [
+          {
+            "name": "point_filter_upload",
+            "host_ms": 0.25124,
+            "gpu_ms": 0.248480007
+          },
+          {
+            "name": "voxelize",
+            "host_ms": 0.187931,
+            "gpu_ms": 0.194560006
+          },
+          {
+            "name": "sparse_backbone",
+            "host_ms": 1.514476,
+            "gpu_ms": 1.57081604
+          },
+          {
+            "name": "sparse_bridge",
+            "host_ms": 0.004218,
+            "gpu_ms": 0.001024
+          },
+          {
+            "name": "depth_projection",
+            "host_ms": 0.095013,
+            "gpu_ms": 0.0297919996
+          },
+          {
+            "name": "image_preprocess_upload",
+            "host_ms": 0.690467,
+            "gpu_ms": 0.784799993
+          },
+          {
+            "name": "geometry_cache",
+            "host_ms": 0.005138,
+            "gpu_ms": 0.001024
+          },
+          {
+            "name": "camera_backbone",
+            "host_ms": 1.217909,
+            "gpu_ms": 2.88665605
+          },
+          {
+            "name": "bev_pool",
+            "host_ms": 0.008411,
+            "gpu_ms": 0.0911360011
+          },
+          {
+            "name": "camera_vtransform",
+            "host_ms": 0.026418,
+            "gpu_ms": 0.035840001
+          },
+          {
+            "name": "fusion_backbone",
+            "host_ms": 0.085999,
+            "gpu_ms": 0.148704007
+          },
+          {
+            "name": "head",
+            "host_ms": 0.248243,
+            "gpu_ms": 0.212991998
+          },
+          {
+            "name": "output_decode",
+            "host_ms": 2.020402,
+            "gpu_ms": 0.130144
+          }
+        ]
+      }
+    },
+    "raw": {
+      "prior_policy": {
+        "runtime_backend": "bevfusion",
+        "manifest": "/home/zhouxiufeng/workspace/openmmlab/lidar-inference-tool/outputs/bevfusion-prior-precision-sl613yfc/sample/sample.yaml",
+        "image_input": "raw",
+        "load_decode_ms": 83.998489,
+        "total_infer_mean_ms": 10.39478444,
+        "total_infer_p50_ms": 10.214885,
+        "total_infer_p90_ms": 10.2411839,
+        "warmup": 10,
+        "profile_iters": 50,
+        "timed_geometry_cache_miss": false,
+        "source_points": 94654,
+        "input_points": 94654,
+        "used_points": 94654,
+        "filtered_points": 94654,
+        "range_rejected_points": 0,
+        "discarded_voxels": 0,
+        "truncated_points": 0,
+        "voxels": 38569,
+        "depth_collisions": 7108,
+        "dump_decoded": false,
+        "dump_internal": false
+      },
+      "native_fp16": {
+        "runtime_backend": "bevfusion",
+        "manifest": "/home/zhouxiufeng/workspace/openmmlab/lidar-inference-tool/outputs/bevfusion-fp16-epoch16-kx1nc5zo/sample/sample.yaml",
+        "image_input": "raw",
+        "load_decode_ms": 81.722223,
+        "total_infer_mean_ms": 9.77082712,
+        "total_infer_p50_ms": 9.582918,
+        "total_infer_p90_ms": 9.6157756,
+        "warmup": 10,
+        "profile_iters": 50,
+        "timed_geometry_cache_miss": false,
+        "source_points": 94654,
+        "input_points": 94654,
+        "used_points": 94654,
+        "filtered_points": 94654,
+        "range_rejected_points": 0,
+        "discarded_voxels": 0,
+        "truncated_points": 0,
+        "voxels": 38569,
+        "depth_collisions": 7108,
+        "dump_decoded": false,
+        "dump_internal": false
+      },
+      "mean_inference_change_ms": -0.6239573200000006,
+      "prior_policy_last_iteration": {
+        "device_memory_used_bytes": 1884422144,
+        "sample": "last_profile_iteration",
+        "stages": [
+          {
+            "name": "point_filter_upload",
+            "host_ms": 0.259239,
+            "gpu_ms": 0.256960005
+          },
+          {
+            "name": "voxelize",
+            "host_ms": 0.39365,
+            "gpu_ms": 0.401152015
+          },
+          {
+            "name": "sparse_backbone",
+            "host_ms": 1.50213,
+            "gpu_ms": 1.55750406
+          },
+          {
+            "name": "sparse_bridge",
+            "host_ms": 0.007786,
+            "gpu_ms": 0.00409599999
+          },
+          {
+            "name": "depth_projection",
+            "host_ms": 0.094642,
+            "gpu_ms": 0.032159999
+          },
+          {
+            "name": "image_preprocess_upload",
+            "host_ms": 3.747443,
+            "gpu_ms": 3.74604797
+          },
+          {
+            "name": "geometry_cache",
+            "host_ms": 0.005092,
+            "gpu_ms": 0.00377600011
+          },
+          {
+            "name": "camera_backbone",
+            "host_ms": 1.288915,
+            "gpu_ms": 3.27168012
+          },
+          {
+            "name": "bev_pool",
+            "host_ms": 0.008654,
+            "gpu_ms": 0.0542719997
+          },
+          {
+            "name": "camera_vtransform",
+            "host_ms": 0.027224,
+            "gpu_ms": 0.035840001
+          },
+          {
+            "name": "fusion_backbone",
+            "host_ms": 0.094095,
+            "gpu_ms": 0.147456005
+          },
+          {
+            "name": "head",
+            "host_ms": 0.221377,
+            "gpu_ms": 0.347135991
+          },
+          {
+            "name": "output_decode",
+            "host_ms": 2.305652,
+            "gpu_ms": 0.0825280026
+          }
+        ]
+      },
+      "native_fp16_last_iteration": {
+        "device_memory_used_bytes": 1817313280,
+        "sample": "last_profile_iteration",
+        "stages": [
+          {
+            "name": "point_filter_upload",
+            "host_ms": 0.258635,
+            "gpu_ms": 0.256159991
+          },
+          {
+            "name": "voxelize",
+            "host_ms": 0.193308,
+            "gpu_ms": 0.200703993
+          },
+          {
+            "name": "sparse_backbone",
+            "host_ms": 1.524389,
+            "gpu_ms": 1.58003199
+          },
+          {
+            "name": "sparse_bridge",
+            "host_ms": 0.003695,
+            "gpu_ms": 0.00204799999
+          },
+          {
+            "name": "depth_projection",
+            "host_ms": 0.094694,
+            "gpu_ms": 0.0287040006
+          },
+          {
+            "name": "image_preprocess_upload",
+            "host_ms": 3.752779,
+            "gpu_ms": 3.75135994
+          },
+          {
+            "name": "geometry_cache",
+            "host_ms": 0.004851,
+            "gpu_ms": 0.00307200011
+          },
+          {
+            "name": "camera_backbone",
+            "host_ms": 1.194441,
+            "gpu_ms": 2.90099192
+          },
+          {
+            "name": "bev_pool",
+            "host_ms": 0.008201,
+            "gpu_ms": 0.0901120007
+          },
+          {
+            "name": "camera_vtransform",
+            "host_ms": 0.035702,
+            "gpu_ms": 0.0368640013
+          },
+          {
+            "name": "fusion_backbone",
+            "host_ms": 0.090099,
+            "gpu_ms": 0.148479998
+          },
+          {
+            "name": "head",
+            "host_ms": 0.255277,
+            "gpu_ms": 0.214016005
+          },
+          {
+            "name": "output_decode",
+            "host_ms": 1.952787,
+            "gpu_ms": 0.139392003
+          }
+        ]
+      }
+    }
+  },
+  "environment": {
+    "benchmark_gpu_index": 0,
+    "warmup": 10,
+    "profile_iters": 50,
+    "gpu_query": [
+      "0, NVIDIA GeForce RTX 4090, 595.58.03",
+      "1, NVIDIA GeForce RTX 4090, 595.58.03",
+      "2, NVIDIA GeForce RTX 4090, 595.58.03",
+      "3, NVIDIA GeForce RTX 4090, 595.58.03",
+      "4, NVIDIA GeForce RTX 4090, 595.58.03",
+      "5, NVIDIA GeForce RTX 4090, 595.58.03",
+      "6, NVIDIA GeForce RTX 4090, 595.58.03",
+      "7, NVIDIA GeForce RTX 4090, 595.58.03"
+    ],
+    "export_packages": {
+      "torch": "1.13.1+cu117",
+      "mmcv": "2.0.1",
+      "mmengine": "0.10.7",
+      "mmdet": "3.1.0",
+      "mmdet3d": "1.4.0",
+      "spconv-cu117": "2.3.6",
+      "Pillow": "9.5.0",
+      "onnx": "1.16.0"
+    },
+    "build": {
+      "device": {
+        "pci_bus_id": "0000:37:00.0",
+        "compute_capability": [
+          8,
+          9
+        ],
+        "cuda_runtime": 11070,
+        "cuda_driver": 13020
+      },
+      "trtexec": {
+        "path": "/home/zhouxiufeng/TensorRT-8.6.1.6/targets/x86_64-linux-gnu/bin/trtexec",
+        "sha256": "445afc79dab301dfed7e510290d58a2bcbc91bfae50bf9829b5cb53dffa41087"
+      }
+    }
+  },
+  "source_sha256": {
+    "CMakeLists.txt": "1575e21e2b5e7a1589b3f60a3f950a290875b8fcd99a527beb298d9ae1485f04",
+    "include/bevfusion_inference.hpp": "123ecb62ee74cf75e27b1e3d281392d41e4c4a0eee802ea2976c57292018d031",
+    "src/bevfusion/CMakeLists.txt": "03bcd64e544ac76ad53e6218c8277908d497aea141cb228e5ac467ecb355b641",
+    "src/bevfusion/internal.hpp": "8beef75915ddc5ab66574a80377f81d831306571dee9fed27cab35faeb14fb4c",
+    "src/bevfusion/io.cpp": "ab5cd1c613db718ceeb9ce4dd84bfbe148d615e51c752a7b96ac134aee53915e",
+    "src/bevfusion/kernels.cu": "6568483bfebf012050a512a0357383cb48a8f0f197ff165eae5eca6e6ccc0c8c",
+    "src/bevfusion/runtime.cpp": "3c3ef998d71d2996ef7273b422bdad727313b39fa2005f4798d83c4e35813cc9",
+    "tools/bevfusion/debug.cpp": "fe8ea43283d3a7855920b4a799621675d429a8247a8d4e52c020dc08fbd2904f",
+    "tools/bevfusion/debug.hpp": "f8419ecf1f7013844260a2a2ac9b623845917b6b1bf6d205db7aa1e6d3824e84",
+    "scripts/bevfusion/export.py": "cb94be850b5806cbce4fd32703b4542ff9cb940d2f8d0129ccc2187b23e4d92d",
+    "scripts/bevfusion/build_engines.py": "a307407240dbd3f3bf9ea50e435f3ee33e099beee0ca23bd3daa93626101e797",
+    "scripts/bevfusion/validate.py": "47d752082bf289ce6c554e5a4d1413e8269509d5bde8c4fc3dcd4ca7cef335c4",
+    "scripts/bevfusion/evaluate.py": "0eb56ee2865e5afa8fe6659dcf2f7d98471570ad096022e10f295f692c851274",
+    "scripts/bevfusion/run_pipeline.sh": "7bb01d67c81036843c39ed40c8e5670784cdda67aa21963c316b65bd97757be0",
+    "scripts/bevfusion/_lib/__init__.py": "3ad2287708614bd21fdf2cf444720e2f7d984923490ffe08ebef53eb507c1d93",
+    "scripts/bevfusion/_lib/common.py": "c8f67f5f6c437e105cbe3976580be07f2775f10d9ce20a07acf582735ac34252",
+    "scripts/bevfusion/_lib/engine_build.py": "0b7005ae9180de963b34fe65d003f2ba0a6f9524c4ea3ccba46f17b178d3137f",
+    "scripts/bevfusion/_lib/environment.py": "3e3d8e994b6ab8233c59c8a0ab7fda4ad1d56bff699032f21db83f591c8ef164",
+    "scripts/bevfusion/_lib/evaluation.py": "ff63d92db57efeb332044d4ecac70a7063310d738db69badcfe37c498121da28",
+    "scripts/bevfusion/_lib/images.py": "323a35973098dfb4a5db681d8f77f4d7fd5cf029cee3c4015625ce95d9a23f76",
+    "scripts/bevfusion/_lib/model.py": "208f49552076df9fcdeb49d2f76d6649d9875343ef8ef676b182905088e9acb9",
+    "scripts/bevfusion/_lib/onnx_export.py": "86268439a8d574ee87992560ddf9722c4a5a31830bcf1404dc39876220094645",
+    "scripts/bevfusion/_lib/parity.py": "f7a09fab09946b13c77965783bc242ec50e2926723f969bc8deecdfb52d07572",
+    "scripts/bevfusion/_lib/pipeline_config.py": "40bb0d9e3facab6ebdd127f54221ec68974a4d747a9a5ff1bc03a236402346c8",
+    "scripts/bevfusion/_lib/reference.py": "ec665b86ba4f6f3dc720c3c13ba7d3cba8e2f09d7df08ed41929719190cabe5f",
+    "scripts/bevfusion/_lib/runtime.py": "1b74b37b983893caf3217ec40deaf71124967ad45ece8d629dbcf61e830eb839",
+    "scripts/bevfusion/_lib/sparse_export.py": "e6825a304a57979c4caa9e86704d4c7cfd7138e97b76310a51050ae9c8667587",
+    "scripts/bevfusion/_lib/trtexec.py": "5e188b7b0a2f34aaffb1eb2a572ae094edc0a9b194ced9c8410301d42bc173c3",
+    "scripts/bevfusion/_lib/validation.py": "bd1a273344671c6640eb731a6aabf27839806b8a42bf2a886c627d0bab966e1b"
+  },
+  "binary_sha256": {
+    "build/libinference.so": "ada55f7ca83ea1d9f0d5479df77fc46e8cf9236472a07509aef98c1470e7761e",
+    "build/infer_debug_tool": "8776067bf782ab5f5aa71dbb15b8877b7e479978a8b11fc694019661b07db033",
+    "build/perf_debug_tool": "1c91b37e0190d9e762ae5aaa0848e0d358674921bbe17242ad50bd2f63ada4ee"
+  },
+  "onnx_sha256": {
+    "head.bbox.onnx": "27ab2108d01fa96194c9f4a5a8cd2171f22c403a0e1b8fd151788612e650e9f4",
+    "camera.backbone.onnx": "3d91f3fd2761757de3b466a196938de57007331751a2dc47e87205a721de4348",
+    "fuser.onnx": "80b60bf04406c496ff331709a2df0cb28363dcb6a107173f70388c1575ef5559",
+    "camera.vtransform.onnx": "fb7257b3c9800028526c80474306ff11816d973518836fd26bafd773e80afc7a",
+    "lidar.backbone.xyz.onnx": "d52a0206a81d92a92b1971ce6e6fa5e7f04d956257c24b5f7fd51fbf61bcb39b"
+  },
+  "engine_sha256": {
+    "camera.backbone.engine": "c0de567121b843eb904129460f7e73e1db23563cd3004961d1a257dd80de0a82",
+    "camera.vtransform.engine": "569dd659f7175fb03656c958e64404b7dbfe1014673b566611c5062731306257",
+    "fuser.engine": "196430aaf12b104ce02b99cdcfa3e78ed6451d5d6dfcb96274d4cf05085c3260",
+    "head.bbox.engine": "71f0d4389e47b55eaffa20414b21aca1089cceb4c2245d7980643b90181643cb"
+  },
+  "artifacts": {
+    "package": "outputs/bevfusion-fp16-epoch16-kx1nc5zo",
+    "provenance_sha256": "7d392370f4658ee93b2551622b45e3822aa15a69e051284a9f5e5d02c4051051",
+    "validation_report": "outputs/bevfusion-fp16-epoch16-kx1nc5zo/validation/report.json",
+    "validation_report_sha256": "4e0ebe1ed1064a19530d39ea85cdedf24b2fa365db4a15879ed8757215b51865",
+    "evaluation_report": "outputs/bevfusion-fp16-epoch16-kx1nc5zo/evaluation/report.json",
+    "evaluation_report_sha256": "e33fe7edba47dab4b5816bc7e444cb385486e8b052b550d5a1b3bae5a0a93ff3",
+    "prior_policy_reference": "outputs/bevfusion-prior-precision-sl613yfc",
+    "prior_policy_build": {
+      "tensorrt": "8.6.1",
+      "script": "/tmp/bevfusion-build-prior-precision.py",
+      "script_sha256": "f11bb843959e1632f4e84c675e0b047c168db61b999d61912672de272ad1ab71",
+      "note": "Controlled previous-policy reference, not a native FP16 build stage.",
+      "saved_builder_script": "reference_builder.py"
+    }
+  },
+  "notes": [
+    "No PTQ, INT8 calibration, or retraining. TensorRT may select FP32 internal computations.",
+    "Prior policy uses FP32 bindings/head, FP16 camera/fuser with normalization/Softmax FP32 constraints, and TF32 disabled. Both packages use byte-identical ONNX files and sample inputs.",
+    "Latency includes output transfer/decode and excludes file dumps. Load/decode is one separate sample measurement.",
+    "Device memory reports whole-device used memory rather than context allocation or peak.",
+    "Original GPU depth collision assignment is nondeterministic; all candidate differences are retained without a match-rate acceptance gate.",
+    "Full accuracy uses the configured validation dataset and evaluator, including ignore filtering."
+  ]
+}

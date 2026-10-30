@@ -63,6 +63,8 @@ def load_model_config(model_dir: Path):
 
 def load_optional_array(path: Path):
     if not path.exists():
+        path = path.parent / 'internal' / path.name
+    if not path.exists():
         return np.empty((0,), dtype=np.float32)
     return np.load(path)
 

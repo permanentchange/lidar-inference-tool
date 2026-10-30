@@ -1,0 +1,54 @@
+{
+  "dataset": "20260419_pici1",
+  "split": "test",
+  "dataset_index": 36,
+  "sample_token": "e65e12ce1ff14ffabdfa6d8f84a244a3",
+  "scene_token": "13fdfea1a8d491d44b0dadfb84a686a4",
+  "scene_name": "reclustered_scene_0061",
+  "timestamp_ns": 1776580417398125945,
+  "annotation_source": "/training/zhouxiufeng/data/zhonghengzhilian/20260419_pici1/zhzl_bevfusion_infos_test.pkl",
+  "annotation_sha256": "811cd29ff6692cab031150b02bbc1c9454a79b90848d8b89ee526a671d00b562",
+  "config": "/home/zhouxiufeng/workspace/openmmlab/mmdetection3d/projects/BEVFusion/configs/exp20261028/lidar_cam.py",
+  "config_sha256": "789b5aa297295c99e6ea53fa3a45f541928e0fd337dcf29cf3d52163f3c6b195",
+  "reason": "sparse_pedestrians",
+  "source_points": 128465,
+  "training_point_features_equal": true,
+  "files": [
+    {
+      "source": "/training/zhouxiufeng/data/zhonghengzhilian/20260419_pici1/samples/lidar_point_cloud_0/1776580417398125945.pcd",
+      "file": "lidar_point_cloud_0/1776580417398125945.pcd",
+      "sha256": "f1a2ab579f573451fe9e2a6c6236c24729cd842dbef8d9208d11140971d6652a"
+    },
+    {
+      "source": "/training/zhouxiufeng/data/zhonghengzhilian/20260419_pici1/samples/camera_config/1776580417398125945.json",
+      "file": "camera_config/1776580417398125945.json",
+      "sha256": "6876894d7747eac073114f175d7f0a20dcdb99967bd19224e350db9acd83038e"
+    },
+    {
+      "source": "/training/zhouxiufeng/data/zhonghengzhilian/20260419_pici1/samples/camera_image_0/1776580417398125945.jpg",
+      "file": "camera_image_0/1776580417398125945.jpg",
+      "sha256": "e322bd275cdc313f088edbbe13d395b2bd048d77f9a8a909992f40cec018fd42"
+    },
+    {
+      "source": "/training/zhouxiufeng/data/zhonghengzhilian/20260419_pici1/samples/camera_image_1/1776580417398125945.jpg",
+      "file": "camera_image_1/1776580417398125945.jpg",
+      "sha256": "dde76c50f7ac43b5dddb75d8f1fe8ffbb0832df4ece9a116583bb6423e55e295"
+    },
+    {
+      "source": "/training/zhouxiufeng/data/zhonghengzhilian/20260419_pici1/samples/camera_image_2/1776580417398125945.jpg",
+      "file": "camera_image_2/1776580417398125945.jpg",
+      "sha256": "d75efa3af5a9ffbc485fa9e0ef8d90311d01ef4ed20226d8479c924fe6e95724"
+    },
+    {
+      "source": "/training/zhouxiufeng/data/zhonghengzhilian/20260419_pici1/samples/camera_image_3/1776580417398125945.jpg",
+      "file": "camera_image_3/1776580417398125945.jpg",
+      "sha256": "ed9fb2b294da54609964a775d93b75b11b5d3ab16e0eed12be1cad16eab2b5e4"
+    },
+    {
+      "source": "/training/zhouxiufeng/data/zhonghengzhilian/20260419_pici1/samples/camera_image_4/1776580417398125945.jpg",
+      "file": "camera_image_4/1776580417398125945.jpg",
+      "sha256": "ad86a8fe8eec7533ff37765968f2496e182b6c13ead83dba60049fdbb7c10d91"
+    }
+  ],
+  "annotation_index": 36
+}

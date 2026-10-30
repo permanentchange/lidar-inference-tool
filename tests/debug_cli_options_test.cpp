@@ -1,9 +1,10 @@
-#include "debug_cli.hpp"
-
 #include <iostream>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include "bevfusion/debug.hpp"
+#include "debug_cli.hpp"
 
 namespace {
 
@@ -33,62 +34,105 @@ CliOptions Parse(ToolKind kind, std::vector<std::string> arguments) {
 }
 
 std::vector<std::string> RequiredArguments() {
-  return {"debug_tool", "--model-dir", "model dir", "--input", "cloud.pcd",
-          "--dump-dir", "output dir"};
+  return {"debug_tool", "--model-dir", "model dir", "--input",
+          "cloud.pcd",  "--dump-dir",  "output dir"};
 }
 
 void TestDefaults() {
   const auto infer = Parse(ToolKind::kInfer, RequiredArguments());
-  Check(infer.dump_decoded && infer.dump_internal, "Infer dumps must default to enabled");
-  Check(infer.warmup_iters == 0 && infer.profile_iters == 1, "Infer timing defaults changed");
-  Check(infer.source_num_point_features == 0, "Source layout must default to auto-detection");
+  Check(infer.dump_decoded && infer.dump_internal,
+        "Infer dumps must default to enabled");
+  Check(infer.warmup_iters == 0 && infer.profile_iters == 1,
+        "Infer timing defaults changed");
+  Check(infer.source_num_point_features == 0,
+        "Source layout must default to auto-detection");
+  Check(infer.image_input == "raw", "BEVFusion images must default to raw");
   Check(infer.override_config_path.empty(), "Override must default to absent");
 
   const auto perf = Parse(ToolKind::kPerf, RequiredArguments());
-  Check(!perf.dump_decoded && !perf.dump_internal, "Perf must not enable result dumps");
-  Check(perf.warmup_iters == 10 && perf.profile_iters == 50, "Perf timing defaults changed");
+  Check(!perf.dump_decoded && !perf.dump_internal,
+        "Perf must not enable result dumps");
+  Check(perf.warmup_iters == 10 && perf.profile_iters == 50,
+        "Perf timing defaults changed");
 }
 
 void TestCommonOptionsInAnyOrder() {
   for (const auto kind : {ToolKind::kInfer, ToolKind::kPerf}) {
-    const auto options = Parse(kind, {
-        "debug_tool", "--profile-iters", "3", "--dump-dir", "output dir",
-        "--source-num-point-features", "5", "--input", "cloud.bin", "--warmup", "0",
-        "--override-config", "override config.yaml", "--model-dir", "model dir"});
-    Check(options.model_dir == "model dir" && options.input_path == "cloud.bin" &&
-              options.dump_dir == "output dir", "Required paths were parsed incorrectly");
-    Check(options.override_config_path == "override config.yaml", "Override path was lost");
-    Check(options.source_num_point_features == 5, "Source feature count was lost");
-    Check(options.warmup_iters == 0 && options.profile_iters == 3, "Timing overrides were lost");
+    const auto options = Parse(
+        kind, {"debug_tool", "--profile-iters", "3", "--dump-dir", "output dir",
+               "--source-num-point-features", "5", "--input", "cloud.bin",
+               "--warmup", "0", "--override-config", "override config.yaml",
+               "--model-dir", "model dir"});
+    Check(options.model_dir == "model dir" &&
+              options.input_path == "cloud.bin" &&
+              options.dump_dir == "output dir",
+          "Required paths were parsed incorrectly");
+    Check(options.override_config_path == "override config.yaml",
+          "Override path was lost");
+    Check(options.source_num_point_features == 5,
+          "Source feature count was lost");
+    Check(options.warmup_iters == 0 && options.profile_iters == 3,
+          "Timing overrides were lost");
   }
 }
 
 void TestDumpSwitches() {
   auto arguments = RequiredArguments();
-  arguments.insert(arguments.end(), {"--no-dump-decoded", "--no-dump-internal"});
+  arguments.insert(arguments.end(),
+                   {"--no-dump-decoded", "--no-dump-internal"});
   auto options = Parse(ToolKind::kInfer, arguments);
-  Check(!options.dump_decoded && !options.dump_internal, "Dump opt-outs were ignored");
+  Check(!options.dump_decoded && !options.dump_internal,
+        "Dump opt-outs were ignored");
 
   arguments.push_back("--dump-decoded");
   options = Parse(ToolKind::kInfer, arguments);
-  Check(options.dump_decoded && !options.dump_internal, "Dump switches must be independent");
+  Check(options.dump_decoded && !options.dump_internal,
+        "Dump switches must be independent");
 
   arguments.push_back("--dump-internal");
   options = Parse(ToolKind::kInfer, arguments);
-  Check(options.dump_decoded && options.dump_internal, "Positive dump switches must re-enable dumps");
+  Check(options.dump_decoded && options.dump_internal,
+        "Positive dump switches must re-enable dumps");
 
-  arguments.insert(arguments.end(), {"--no-dump-decoded", "--no-dump-internal"});
+  arguments.insert(arguments.end(),
+                   {"--no-dump-decoded", "--no-dump-internal"});
   options = Parse(ToolKind::kInfer, arguments);
-  Check(!options.dump_decoded && !options.dump_internal, "Last dump switch must win");
+  Check(!options.dump_decoded && !options.dump_internal,
+        "Last dump switch must win");
 }
 
 }  // namespace
 
 int main() {
   try {
+    std::vector<std::filesystem::path> numeric = {"10.yaml", "2.yaml",
+                                                  "1.yaml"};
+    inference_tools::SortBevFusionManifests(&numeric);
+    Check(numeric[0] == "1.yaml" && numeric[1] == "2.yaml" &&
+              numeric[2] == "10.yaml",
+          "Numeric manifest order");
+    std::vector<std::filesystem::path> mixed = {"2.yaml", "10.yaml", "1b.yaml"};
+    inference_tools::SortBevFusionManifests(&mixed);
+    Check(
+        mixed[0] == "10.yaml" && mixed[1] == "1b.yaml" && mixed[2] == "2.yaml",
+        "Mixed manifest lexical order");
+    bool duplicate = false;
+    std::vector<std::filesystem::path> repeated = {"1.yaml", "1.json"};
+    try {
+      inference_tools::SortBevFusionManifests(&repeated);
+    } catch (const std::runtime_error&) {
+      duplicate = true;
+    }
+    Check(duplicate, "Duplicate manifest frame IDs must be rejected");
     TestDefaults();
     TestCommonOptionsInAnyOrder();
     TestDumpSwitches();
+    for (auto kind : {ToolKind::kInfer, ToolKind::kPerf}) {
+      auto args = RequiredArguments();
+      args.insert(args.end(), {"--image-input", "preprocessed"});
+      Check(Parse(kind, args).image_input == "preprocessed",
+            "Image mode was lost");
+    }
   } catch (const std::exception& error) {
     std::cerr << error.what() << "\n";
     return 1;

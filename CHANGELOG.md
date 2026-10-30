@@ -2,9 +2,29 @@
 
 ## Unreleased
 
+- Unify CenterPoint Voxel and BEVFusion deployment profiles, original-label thresholding, global grouped NMS, ego filtering and final five-class mapping. Preserve source candidate indices for velocity packing and sort all NMS inputs by score.
+- Generate both model YAMLs from one deployment profile and invalidate obsolete validation records without rebuilding model assets.
+
+- Split BEVFusion preparation into independent local export, engine build, numerical validation and full evaluation tools; added a YAML-driven Bash pipeline for the first three steps and per-stage provenance.
+
+- Added a separate BEVFusion camera/LiDAR C++ runtime, calibrated manifest inputs, raw JPEG / preprocessed NPY paths, deterministic CUDA voxelization/depth and FP32 pooling accumulation with FP16 output storage.
+- Added strict-checkpoint preparation and native `trtexec` FP16 construction for all four dense BEVFusion engines with FP16 bindings, original PyTorch references, same-engine parity and full configured evaluation. Existing linear FP32 bindings remain supported.
+- Grouped BEVFusion runtime, tool adapters and tests in dedicated directories; added native build logs/profiles, selective-frame validation and nonfinite tensor checks.
+- Added BEVFusion dispatch to both debug tools, batch manifests in infer, stage timing/velocity dumps, an installed C++ example, and operator/input/runtime regression tests.
+
 - Unified debug CLI named arguments: both tools require `--model-dir`, `--input`, and `--dump-dir`, and use `--profile-iters` for profiling iterations. Removed `perf_debug_tool` positional arguments and `--profile`.
 - Enabled decoded and internal dumps by default in `infer_debug_tool`; added `--no-dump-decoded` and `--no-dump-internal` to disable them independently.
 - Added grouped CLI help with defaults, shared argument validation, and regression tests for both tools.
+
+## Unreleased
+
+- Unified inference/debug runners, versioned JSON reports, common dump switches,
+  and separate normal-latency/stage profiling passes.
+- Kept only CenterHead BEVFusion; retired TransFusion runtime/export branches.
+- Organized original PCD/JPEG demo frames with source hashes, annotations and
+  reproducible same-frame CenterPoint/BEVFusion comparisons.
+- Separated demo input provenance from model artifacts and defaulted successful
+  validation to report-only retention.
 
 ## v1.8.0
 

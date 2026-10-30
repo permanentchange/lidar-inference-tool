@@ -12,7 +12,7 @@ if ! grep -Fq -- "Usage: ./build/minimal_cpp_api_example MODEL_DIR POINT_CLOUD_B
   echo "$output" >&2
   exit 1
 fi
-if ! grep -Fq -- "./build/minimal_cpp_api_example demo/centerpoint_pillar demo/data/test1.bin" <<<"$output"; then
+if ! grep -Fq -- "./build/minimal_cpp_api_example demo/centerpoint_pillar demo/data/lidar/test1.bin" <<<"$output"; then
   echo "Expected pillar demo command missing" >&2
   echo "$output" >&2
   exit 1

@@ -1,0 +1,6 @@
+The local ONNX graph wrappers and sparse exporter contain adaptations of:
+  MMDetection3D/projects/BEVFusion/tools/export_bevfusion_split.py
+  MMDetection3D/projects/CenterPoint/tools/scn_onnx_exporter.py
+from the OpenMMLab MMDetection3D source tree, under Apache License 2.0.
+These modules are maintained in lidar-inference-tool and have no runtime
+imports or subprocess dependencies on the source deployment tools.

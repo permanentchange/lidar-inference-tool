@@ -471,6 +471,7 @@ InferenceStatus BuildCenterPointHeadContract(const RuntimeConfig& config,
   }
 
   CenterPointHeadContract contract{};
+  contract.task_num_classes = layout.task_num_classes;
   contract.task_count = layout.task_count;
   contract.bbox_channels = layout.task_count * layout.bbox_channels_per_task;
   contract.cls_channels = layout.cls_channels_total;
@@ -570,6 +571,27 @@ InferenceStatus BuildCenterPointHeadContract(const RuntimeConfig& config,
 }
 
 }  // namespace
+
+InferenceStatus InspectCenterPointHead(const RuntimeConfig& config,
+    const ResolvedHeadLayout& layout, nvinfer1::ICudaEngine& engine,
+    CenterPointHeadContract* contract, std::string* error) {
+  return BuildCenterPointHeadContract(config, layout, engine, contract, error);
+}
+
+void BindCenterPointHeadOutputs(const CenterPointHeadContract& c,
+    float* bbox, float* cls, float* dir, std::vector<void*>* bindings) {
+  int offset = 0, hw = c.height * c.width;
+  for (int i = 0; i < c.task_count; ++i) {
+    auto base = bbox + size_t(i) * 8 * hw;
+    (*bindings)[c.reg_indices[i]] = base;
+    (*bindings)[c.height_indices[i]] = base + 2 * hw;
+    (*bindings)[c.dim_indices[i]] = base + 3 * hw;
+    (*bindings)[c.vel_indices[i]] = base + 6 * hw;
+    (*bindings)[c.rot_indices[i]] = dir + size_t(i) * 2 * hw;
+    (*bindings)[c.hm_indices[i]] = cls + size_t(offset) * hw;
+    offset += c.task_num_classes[i];
+  }
+}
 
 InferenceStatus NormalizeCenterPointHeadInputShape(
     const std::vector<int64_t>& engine_shape,
@@ -928,39 +950,9 @@ InferenceStatus CenterPointHeadTrtExecutor::Enqueue(void* scn_features,
     }
   }
 
-  const int hw = contract_.height * contract_.width;
-  constexpr int kRegOffset = 0;
-  constexpr int kHeightOffset = 2;
-  constexpr int kDimOffset = 3;
-  constexpr int kVelOffset = 6;
-  constexpr int kBboxChannelsPerTask = 8;
-  constexpr int kDirChannelsPerTask = 2;
-
   std::vector<void*> bindings(static_cast<size_t>(contract_.num_bindings), nullptr);
   bindings[static_cast<size_t>(contract_.input_index)] = scn_features;
-  int class_offset = 0;
-  for (int task_id = 0; task_id < contract_.task_count; ++task_id) {
-    const size_t index = static_cast<size_t>(task_id);
-    float* bbox_base =
-        d_bbox_pred + static_cast<size_t>(task_id) * kBboxChannelsPerTask * hw;
-    float* dir_base =
-        d_dir_cls_pred + static_cast<size_t>(task_id) * kDirChannelsPerTask * hw;
-    bindings[static_cast<size_t>(contract_.reg_indices[index])] =
-        bbox_base + kRegOffset * hw;
-    bindings[static_cast<size_t>(contract_.height_indices[index])] =
-        bbox_base + kHeightOffset * hw;
-    bindings[static_cast<size_t>(contract_.dim_indices[index])] =
-        bbox_base + kDimOffset * hw;
-    bindings[static_cast<size_t>(contract_.rot_indices[index])] = dir_base;
-    bindings[static_cast<size_t>(contract_.vel_indices[index])] =
-        bbox_base + kVelOffset * hw;
-    bindings[static_cast<size_t>(contract_.hm_indices[index])] =
-        d_cls_score + static_cast<size_t>(class_offset) * hw;
-
-    const nvinfer1::Dims hm_dims =
-        impl_->engine->getBindingDimensions(contract_.hm_indices[index]);
-    class_offset += hm_dims.d[1];
-  }
+  BindCenterPointHeadOutputs(contract_, d_bbox_pred, d_cls_score, d_dir_cls_pred, &bindings);
 
 #if INFERENCE_USE_TRT_TENSOR_API
   for (int binding_index = 0; binding_index < contract_.num_bindings; ++binding_index) {

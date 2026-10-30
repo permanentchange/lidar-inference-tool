@@ -21,6 +21,8 @@ constexpr int kDirChannelsPerTask = 2;
 constexpr float kPi = 3.14159265358979323846f;
 
 struct DeviceCandidate {
+  bool keep = true;
+  float velocity[2]{};
   float score = -1.0f;
   int label = 0;
   float box[kBoxDim]{};
@@ -144,6 +146,7 @@ __global__ void FinalizeDecodeCandidatesKernel(const float* bbox_pred,
                                                int decode_mode,
                                                int yaw_encoding,
                                                bool norm_bbox,
+                                               bool topk_before_range_filter,
                                                int bbox_channels_per_task,
                                                DeviceCandidate* candidates) {
   const int slot = blockDim.x * blockIdx.x + threadIdx.x;
@@ -230,15 +233,17 @@ __global__ void FinalizeDecodeCandidatesKernel(const float* bbox_pred,
       decode_mode == static_cast<int>(inference::DecodeMode::kCenterPoint)
           ? height_value
           : height_value - dim_z * 0.5f;
-  if (!isfinite(center_x) || !isfinite(center_y) || !isfinite(center_z) ||
+  bool keep = !(!isfinite(center_x) || !isfinite(center_y) || !isfinite(center_z) ||
       center_x < post_center_range[0] || center_x > post_center_range[3] ||
       center_y < post_center_range[1] || center_y > post_center_range[4] ||
-      center_z < post_center_range[2] || center_z > post_center_range[5]) {
+      center_z < post_center_range[2] || center_z > post_center_range[5]);
+  if (!keep && !topk_before_range_filter) {
     candidates[slot].score = -1.0f;
     return;
   }
 
   DeviceCandidate candidate;
+  candidate.keep = keep;
   candidate.score = score;
   candidate.label = task_global_label_ids[class_channel];
   candidate.box[0] = center_x;
@@ -248,6 +253,10 @@ __global__ void FinalizeDecodeCandidatesKernel(const float* bbox_pred,
   candidate.box[4] = dim_y;
   candidate.box[5] = dim_z;
   candidate.box[6] = yaw;
+  if (decode_mode == static_cast<int>(inference::DecodeMode::kCenterPoint) && bbox_channels_per_task >= 8) {
+    candidate.velocity[0] = bbox[6 * height * width + spatial_index];
+    candidate.velocity[1] = bbox[7 * height * width + spatial_index];
+  }
   candidates[slot] = candidate;
 }
 
@@ -255,6 +264,7 @@ __global__ void PackTopKCandidatesKernel(const DeviceCandidate* sorted_candidate
                                          const int* task_segment_offsets,
                                          int task_count,
                                          int topk,
+                                         bool topk_before_range_filter,
                                          DeviceCandidate* output_candidates,
                                          int* output_counts) {
   const int task_id = blockDim.x * blockIdx.x + threadIdx.x;
@@ -264,13 +274,17 @@ __global__ void PackTopKCandidatesKernel(const DeviceCandidate* sorted_candidate
   const int start = task_segment_offsets[task_id];
   const int end = task_segment_offsets[task_id + 1];
   int count = 0;
-  for (int i = start; i < end && count < topk; ++i) {
+  int considered = 0;
+  for (int i = start; i < end && considered < topk; ++i) {
     const DeviceCandidate candidate = sorted_candidates[i];
     if (candidate.score <= 0.0f) {
       break;
     }
+    if (topk_before_range_filter) ++considered;
+    if (!candidate.keep) continue;
     output_candidates[task_id * topk + count] = candidate;
     ++count;
+    if (!topk_before_range_filter) considered = count;
   }
   output_counts[task_id] = count;
 }
@@ -544,6 +558,7 @@ InferenceStatus GpuDecodedCandidates::Decode(const float* d_bbox_pred,
       impl_->d_post_center_range, impl_->d_pillar_size, impl_->config.out_size_factor,
       static_cast<int>(impl_->layout.decode_mode),
       static_cast<int>(impl_->layout.yaw_encoding), impl_->layout.norm_bbox,
+      impl_->config.topk_before_range_filter,
       impl_->layout.bbox_channels_per_task, impl_->d_workspace);
   InferenceStatus status =
       CheckCuda(cudaPeekAtLastError(), "FinalizeDecodeCandidatesKernel", out_error);
@@ -561,13 +576,15 @@ InferenceStatus GpuDecodedCandidates::Decode(const float* d_bbox_pred,
 
   PackTopKCandidatesKernel<<<1, impl_->task_count, 0, stream>>>(
       impl_->d_workspace, impl_->d_task_segment_offsets, impl_->task_count,
-      impl_->config.bbox_max_num, impl_->d_output, impl_->d_output_counts);
+      impl_->config.bbox_max_num, impl_->config.topk_before_range_filter,
+      impl_->d_output, impl_->d_output_counts);
   return CheckCuda(cudaPeekAtLastError(), "PackTopKCandidatesKernel", out_error);
 }
 
 InferenceStatus GpuDecodedCandidates::CopyToHost(CandidateDetections* out_candidates,
                                                  cudaStream_t stream,
-                                                 std::string* out_error) const {
+                                               std::string* out_error,
+                                               std::vector<float>* velocities) const {
   if (!impl_) {
     return SetError(out_error, INFERENCE_STATUS_NOT_READY,
                     "GPU decode workspace is not initialized");
@@ -600,6 +617,7 @@ InferenceStatus GpuDecodedCandidates::CopyToHost(CandidateDetections* out_candid
   }
 
   out_candidates->scores.clear();
+  if (velocities) velocities->clear();
   out_candidates->boxes.clear();
   out_candidates->labels.clear();
   out_candidates->scores.reserve(static_cast<size_t>(impl_->max_candidates));
@@ -613,6 +631,7 @@ InferenceStatus GpuDecodedCandidates::CopyToHost(CandidateDetections* out_candid
     for (int i = 0; i < task_count; ++i) {
       const DeviceCandidate& candidate = task_candidates[i];
       out_candidates->scores.push_back(candidate.score);
+      if (velocities) velocities->insert(velocities->end(), candidate.velocity, candidate.velocity + 2);
       out_candidates->labels.push_back(candidate.label);
       out_candidates->boxes.insert(out_candidates->boxes.end(), candidate.box,
                                    candidate.box + kBoxDim);

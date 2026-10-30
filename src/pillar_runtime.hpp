@@ -16,6 +16,7 @@ enum class RuntimeBackend {
 };
 
 struct RuntimeConfig {
+  bool topk_before_range_filter = false;
   std::string end2end_file;
   std::string scn_onnx_file;
   std::string head_engine_file;
@@ -85,7 +86,19 @@ struct PostprocessConfig {
   std::optional<float> self_car_nms_thresh;
 };
 
+struct StageSample {
+  std::string name;
+  double host_ms = 0, gpu_ms = 0;
+  bool has_gpu = true;
+};
 struct StageTimings {
+  bool profile = true;
+  int voxel_count = 0;
+  size_t decoded_candidates = 0;
+  std::vector<StageSample> stages;
+  double sparse_backbone_ms = 0;
+  double nms_ms = 0;
+
   double pillarize_ms = 0.0;
   double h2d_prepare_ms = 0.0;
   double trt_forward_ms = 0.0;
@@ -130,7 +143,11 @@ struct CandidateDetections {
   std::vector<float> scores;
   std::vector<float> boxes;
   std::vector<int> labels;
+  // Indices into the original decoded candidates, retained through NMS.
+  std::vector<size_t> source_indices;
 };
+
+void SortCandidatesDescending(CandidateDetections* candidates);
 
 struct DebugArtifacts {
   std::vector<float> input_points;

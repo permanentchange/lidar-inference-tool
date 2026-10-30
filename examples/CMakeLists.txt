@@ -1,1 +1,3 @@
 add_subdirectory(minimal_cpp_api)
+
+add_subdirectory(bevfusion_cpp_api)

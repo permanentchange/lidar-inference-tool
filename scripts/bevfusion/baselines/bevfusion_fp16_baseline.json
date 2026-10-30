@@ -1,0 +1,477 @@
+{
+  "date": "2026-10-20",
+  "checkpoint": "work_dirs/exp20260911_lidar_cam_pipeline/iter_20.pth",
+  "config": "projects/BEVFusion/configs/exp20260911/lidar_cam_pipeline.py",
+  "preparation_fingerprint": {
+    "training_source": "adc2de4c603407035365eea7c8f452ac8444c805127f655b0ac43d7cd0e9702c",
+    "libspconv": "c4becb480390416ba99aacd6ef8640ecd4719e3abeaf7057ee36a2dfafabd253",
+    "config": "74d14b66da6142c45eb01a2bfecb29fe56466afae33a832ee70c4f8342cd3b38",
+    "resolved_config": "44bf902790453b8c76c3310aed92fa11d41cc53587fbf8f9f5412d0612b44983",
+    "checkpoint": "81088358a5966afece8b1e16067e3a0436086aa3fc2082b6f182dc99a49f36aa",
+    "exporter": "5c6dc21aa880f92b26f618598f7d30a75d99f6f7a38a2402b7dfe446ea464c6d",
+    "preparation": "2ac0c85873fa6a21fe883c8bd435df3dea986bdf58e77460398ab4ed00ff00f9",
+    "torch": "1.13.1+cu117",
+    "tensorrt": "8.6.1",
+    "pillow": "9.5.0",
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "compute_capability": [
+      8,
+      9
+    ],
+    "cuda": "11.7",
+    "head_precision": "float32",
+    "dense_precision": "float16",
+    "tf32": false,
+    "sample_index": 0
+  },
+  "build_type": "Release",
+  "python": "3.8.20",
+  "python_packages": {
+    "torch": "1.13.1+cu117",
+    "tensorrt": "8.6.1",
+    "mmcv": "2.0.1",
+    "mmengine": "0.10.7",
+    "mmdet": "3.1.0",
+    "mmdet3d": "1.4.0",
+    "spconv-cu117": "2.3.6",
+    "Pillow": "9.5.0",
+    "onnx": "1.16.0"
+  },
+  "runtime_source_sha256": {
+    "CMakeLists.txt": "b2ece37b4e313696b89288a6c83431016be30f4bf579b49bb02af1977284e185",
+    "include/bevfusion_inference.hpp": "123ecb62ee74cf75e27b1e3d281392d41e4c4a0eee802ea2976c57292018d031",
+    "src/bevfusion_internal.hpp": "d6371f263398243158ac7e9f719cda09e0ec0cff7c89f8ce0bc78226be1b1b02",
+    "src/bevfusion_io.cpp": "86ad438d516b104d6440fad324b50200e6decc63b4ff7c8af5bb38e5ffc90345",
+    "src/bevfusion_kernels.cu": "83cfc4368cd545c13442408d291266d2ec3667b9f3184994a318a2ceec5c24a1",
+    "src/bevfusion_runtime.cpp": "9e84637249cbe384db489572d19d9aaa2a9c22d6ad8ce85f374b1c95becb6c61",
+    "tools/bevfusion_debug.cpp": "b1ef2723c61b01ae6b0e55cb43d8425564fdbece2933a7a018bdcc4c0be43260",
+    "tools/bevfusion_debug.hpp": "f8419ecf1f7013844260a2a2ac9b623845917b6b1bf6d205db7aa1e6d3824e84",
+    "tools/debug_cli.hpp": "5e47f5dbef4159583be6d106df6256a6e0f6b612e2e5f679bd4fdef33dcd4ac0",
+    "tools/infer_debug_tool.cpp": "c5a4226e436bfe4676f7e64e996f09a544ba5e89c2ec072b8e0c58916de187e4",
+    "tools/perf_debug_tool.cpp": "3e9769c7efa1a52f923a40c7540a3a1328b3d7dae509303aeaec1956228033ad"
+  },
+  "runtime_binary_sha256": {
+    "build/libinference.so": "bef6a545e396420715d79c4d2cb07ad7832710fe4d906ec5aed4a836fa854cc7",
+    "build/infer_debug_tool": "e89a26fe2f76478ab3eff3341f4dbcdfa73133361d9e5129559fd5ee20616224",
+    "build/perf_debug_tool": "3540431836c107807fdd24027e5f162ffcc05c80f9da067baf333b8b7dfd8961"
+  },
+  "engine_sha256": {
+    "camera.backbone.engine": "e5e7836176eabf427be3830485e28a19ce550755520b4b91f0eb140f9add03c0",
+    "camera.vtransform.engine": "23eae8b6062d294007b4171bbe937d27ac907b196424d18bde53d70c0a9f1e2e",
+    "fuser.engine": "ea8eeefb5411b86a9a573cdd24bd218e187bb7ef9db1a4aeee4182f19cd9f243",
+    "head.bbox.engine": "76d16ccb43ec344ac3f43f6fc58a5dc1b6cf1aa61b6489a690d7432100795d23"
+  },
+  "checks": {
+    "ctest_passed": 11,
+    "ctest_skipped": 0,
+    "installed_cpp_consumer_passed": true,
+    "installed_example_binary_passed": true,
+    "centerpoint_voxel_and_pillar_passed": true,
+    "raw_preprocessed_exact": true,
+    "raw_preprocessing": {
+      "shape": [
+        5,
+        3,
+        224,
+        640
+      ],
+      "max_abs": 0.0,
+      "mean_abs": 0.0,
+      "nrmse": 0.0,
+      "cosine": 1.000000000000152
+    },
+    "independent_ops": {
+      "voxel_indices_exact": true,
+      "voxel_means_exact": true,
+      "pooling": {
+        "shape": [
+          1,
+          80,
+          120,
+          80
+        ],
+        "max_abs": 1.1444091796875e-05,
+        "mean_abs": 2.237338870651288e-09,
+        "nrmse": 5.96157054275263e-08,
+        "cosine": 0.9999999999999873
+      }
+    },
+    "independent_decode": {
+      "boxes_and_velocity": {
+        "shape": [
+          200,
+          9
+        ],
+        "max_abs": 1.1920928955078125e-07,
+        "mean_abs": 8.189429839452107e-09,
+        "nrmse": 8.868864058631314e-09,
+        "cosine": 0.9999999999999997
+      },
+      "scores": {
+        "shape": [
+          200
+        ],
+        "max_abs": 4.999943167827148e-12,
+        "mean_abs": 2.40661830741562e-12,
+        "nrmse": 3.1308669653725206e-10,
+        "cosine": 0.9999999999999998
+      },
+      "labels_exact": true
+    },
+    "same_engine": {
+      "camera.backbone/camera_feature": {
+        "shape": [
+          5,
+          28,
+          80,
+          80
+        ],
+        "max_abs": 0.0,
+        "mean_abs": 0.0,
+        "nrmse": 0.0,
+        "cosine": 1.0000000000000004
+      },
+      "camera.backbone/camera_depth_weights": {
+        "shape": [
+          5,
+          58,
+          28,
+          80
+        ],
+        "max_abs": 0.0,
+        "mean_abs": 0.0,
+        "nrmse": 0.0,
+        "cosine": 0.9999999999999359
+      },
+      "camera.vtransform/feat_out": {
+        "shape": [
+          1,
+          80,
+          60,
+          40
+        ],
+        "max_abs": 0.0,
+        "mean_abs": 0.0,
+        "nrmse": 0.0,
+        "cosine": 1.0000000000000002
+      },
+      "fuser/middle": {
+        "shape": [
+          1,
+          512,
+          60,
+          40
+        ],
+        "max_abs": 0.0,
+        "mean_abs": 0.0,
+        "nrmse": 0.0,
+        "cosine": 1.0
+      },
+      "head.bbox/score": {
+        "shape": [
+          1,
+          9,
+          200
+        ],
+        "max_abs": 0.0,
+        "mean_abs": 0.0,
+        "nrmse": 0.0,
+        "cosine": 0.9999999999999998
+      },
+      "head.bbox/reg": {
+        "shape": [
+          1,
+          2,
+          200
+        ],
+        "max_abs": 0.0,
+        "mean_abs": 0.0,
+        "nrmse": 0.0,
+        "cosine": 1.0000000000000004
+      },
+      "head.bbox/height": {
+        "shape": [
+          1,
+          1,
+          200
+        ],
+        "max_abs": 0.0,
+        "mean_abs": 0.0,
+        "nrmse": 0.0,
+        "cosine": 1.0
+      },
+      "head.bbox/dim": {
+        "shape": [
+          1,
+          3,
+          200
+        ],
+        "max_abs": 0.0,
+        "mean_abs": 0.0,
+        "nrmse": 0.0,
+        "cosine": 1.0
+      },
+      "head.bbox/rot": {
+        "shape": [
+          1,
+          2,
+          200
+        ],
+        "max_abs": 0.0,
+        "mean_abs": 0.0,
+        "nrmse": 0.0,
+        "cosine": 1.0
+      },
+      "head.bbox/vel": {
+        "shape": [
+          1,
+          2,
+          200
+        ],
+        "max_abs": 0.0,
+        "mean_abs": 0.0,
+        "nrmse": 0.0,
+        "cosine": 1.0
+      }
+    },
+    "test_frames": 20,
+    "test_indices": [
+      0,
+      2,
+      7,
+      8,
+      10,
+      22,
+      24,
+      40,
+      48,
+      51,
+      71,
+      73,
+      78,
+      85,
+      89,
+      92,
+      98,
+      100,
+      101,
+      126
+    ],
+    "configured_val_frames": 115,
+    "original_candidates": 4000,
+    "deployed_candidates": 4000,
+    "same_class_assignment_centers_within_0_2m": 3822
+  },
+  "accuracy": {
+    "original_mAP": 0.0012900335660948675,
+    "deployment_mAP": 0.0012831230409485303,
+    "mAP_difference": -6.910525146337169e-06
+  },
+  "performance": {
+    "raw": {
+      "profile": {
+        "runtime_backend": "bevfusion",
+        "manifest": "demo/bevfusion/sample/sample.yaml",
+        "image_input": "raw",
+        "load_decode_ms": 84.545266,
+        "total_infer_mean_ms": 10.44238238,
+        "total_infer_p50_ms": 10.16181,
+        "total_infer_p90_ms": 10.6189629,
+        "warmup": 10,
+        "profile_iters": 50,
+        "timed_geometry_cache_miss": false,
+        "source_points": 94654,
+        "input_points": 94654,
+        "used_points": 94654,
+        "filtered_points": 94654,
+        "range_rejected_points": 0,
+        "discarded_voxels": 0,
+        "truncated_points": 0,
+        "voxels": 38569,
+        "depth_collisions": 7108,
+        "dump_decoded": false,
+        "dump_internal": false
+      },
+      "last_iteration": {
+        "device_memory_used_bytes": 1882324992,
+        "sample": "last_profile_iteration",
+        "stages": [
+          {
+            "name": "point_filter_upload",
+            "host_ms": 0.250448,
+            "gpu_ms": 0.248704001
+          },
+          {
+            "name": "voxelize",
+            "host_ms": 0.3908,
+            "gpu_ms": 0.397311985
+          },
+          {
+            "name": "sparse_backbone",
+            "host_ms": 1.508072,
+            "gpu_ms": 1.56368005
+          },
+          {
+            "name": "sparse_to_float",
+            "host_ms": 0.007247,
+            "gpu_ms": 0.00307200011
+          },
+          {
+            "name": "depth_projection",
+            "host_ms": 0.094292,
+            "gpu_ms": 0.0305920001
+          },
+          {
+            "name": "image_preprocess_upload",
+            "host_ms": 3.731997,
+            "gpu_ms": 3.7299521
+          },
+          {
+            "name": "geometry_cache",
+            "host_ms": 0.004948,
+            "gpu_ms": 0.00409599999
+          },
+          {
+            "name": "camera_backbone",
+            "host_ms": 1.292162,
+            "gpu_ms": 3.24115205
+          },
+          {
+            "name": "bev_pool",
+            "host_ms": 0.007801,
+            "gpu_ms": 0.0532479994
+          },
+          {
+            "name": "camera_vtransform",
+            "host_ms": 0.026311,
+            "gpu_ms": 0.0348480009
+          },
+          {
+            "name": "fusion_backbone",
+            "host_ms": 0.085251,
+            "gpu_ms": 0.146431997
+          },
+          {
+            "name": "head",
+            "host_ms": 0.222165,
+            "gpu_ms": 0.345088005
+          },
+          {
+            "name": "output_decode",
+            "host_ms": 2.273781,
+            "gpu_ms": 0.0768959969
+          }
+        ]
+      }
+    },
+    "preprocessed": {
+      "profile": {
+        "runtime_backend": "bevfusion",
+        "manifest": "demo/bevfusion/sample/sample.yaml",
+        "image_input": "preprocessed",
+        "load_decode_ms": 12.474858,
+        "total_infer_mean_ms": 7.19975332,
+        "total_infer_p50_ms": 7.200409,
+        "total_infer_p90_ms": 7.2233426,
+        "warmup": 10,
+        "profile_iters": 50,
+        "timed_geometry_cache_miss": false,
+        "source_points": 94654,
+        "input_points": 94654,
+        "used_points": 94654,
+        "filtered_points": 94654,
+        "range_rejected_points": 0,
+        "discarded_voxels": 0,
+        "truncated_points": 0,
+        "voxels": 38569,
+        "depth_collisions": 7108,
+        "dump_decoded": false,
+        "dump_internal": false
+      },
+      "last_iteration": {
+        "device_memory_used_bytes": 1867644928,
+        "sample": "last_profile_iteration",
+        "stages": [
+          {
+            "name": "point_filter_upload",
+            "host_ms": 0.2544,
+            "gpu_ms": 0.252191991
+          },
+          {
+            "name": "voxelize",
+            "host_ms": 0.393937,
+            "gpu_ms": 0.400384009
+          },
+          {
+            "name": "sparse_backbone",
+            "host_ms": 1.513186,
+            "gpu_ms": 1.56905603
+          },
+          {
+            "name": "sparse_to_float",
+            "host_ms": 0.007078,
+            "gpu_ms": 0.00332799996
+          },
+          {
+            "name": "depth_projection",
+            "host_ms": 0.095181,
+            "gpu_ms": 0.0306240004
+          },
+          {
+            "name": "image_preprocess_upload",
+            "host_ms": 0.687643,
+            "gpu_ms": 0.77164799
+          },
+          {
+            "name": "geometry_cache",
+            "host_ms": 0.005535,
+            "gpu_ms": 0.00127999997
+          },
+          {
+            "name": "camera_backbone",
+            "host_ms": 1.298787,
+            "gpu_ms": 3.26448011
+          },
+          {
+            "name": "bev_pool",
+            "host_ms": 0.007774,
+            "gpu_ms": 0.0532479994
+          },
+          {
+            "name": "camera_vtransform",
+            "host_ms": 0.026723,
+            "gpu_ms": 0.035840001
+          },
+          {
+            "name": "fusion_backbone",
+            "host_ms": 0.083982,
+            "gpu_ms": 0.148640007
+          },
+          {
+            "name": "head",
+            "host_ms": 0.219225,
+            "gpu_ms": 0.348159999
+          },
+          {
+            "name": "output_decode",
+            "host_ms": 2.386797,
+            "gpu_ms": 0.0828479975
+          }
+        ]
+      }
+    }
+  },
+  "artifacts": {
+    "package_provenance": "demo/bevfusion/provenance.json",
+    "validation_report": "demo/bevfusion/validation/report.json",
+    "validation_hash_manifest": "outputs/bevfusion_baseline/validation_artifact_hashes.json",
+    "validation_hash_manifest_sha256": "c1e2b704e8a51ce2dd1147ae0dca8d5bb101057d5eb67a5a6ce7c440690d2367",
+    "validation_files": 2332
+  },
+  "notes": [
+    "Warmup=10, profile_iters=50 on idle RTX 4090 GPU 0. Load/JPEG decode is a separate one-time sample measurement.",
+    "Device memory is total used memory, not an isolated context allocation or peak.",
+    "Original GPU depth indexed assignment is nondeterministic at collisions; captured references and all changed candidates are retained.",
+    "This 20-iteration model is a deployment baseline; candidate match rates are reported without an arbitrary acceptance gate."
+  ]
+}

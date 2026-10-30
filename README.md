@@ -1,6 +1,6 @@
 # lidar-inference-tool
 
-`lidar-inference-tool` is a C++17 LiDAR inference project built around TensorRT LiDAR detection models. It supports the original end-to-end pillar package path and a CenterPoint voxel package path. The repository exposes:
+`lidar-inference-tool` is a C++17 LiDAR inference project built around TensorRT LiDAR detection models. It supports the original end-to-end pillar package path, a CenterPoint voxel package path, and a separate camera/LiDAR BEVFusion runtime. The repository exposes:
 
 - `libinference.so`: a shared library exposing the recommended C++ wrapper for loading one model package and running decoded or final NMS-filtered detections
 - `infer_debug_tool`: a single-file or batch debug executable that validates high-level C++ API inference results and writes visualization-friendly artifacts
@@ -17,7 +17,14 @@
 
 See [CHANGELOG.md](./CHANGELOG.md) for version history.
 
-The current runtime is written for PointPillars / CenterPoint-style engines with fixed binding names and a configurable CenterPoint task head layout.
+PointPillars / CenterPoint use the existing LiDAR C++ wrapper. BEVFusion uses `include/bevfusion_inference.hpp`, a sparse ONNX graph and two TensorRT engines, calibrated camera manifests and the same two debug tools. See [BEVFusion deployment](scripts/bevfusion/README.md) for checkpoint preparation, raw/preprocessed image inputs, precision and validation.
+
+## Shared CenterHead deployment
+
+CenterPoint Voxel and BEVFusion use the same deployment configuration fields,
+GPU decoder, globally grouped NMS, ego-box filtering and final business-label mapping.
+See [configuration synchronization and run commands](docs/centerhead_deployment.md).
+The checked-in default profile is `scripts/configs/centerpoint_deployment.yaml`.
 
 ## Privacy Note
 
@@ -25,10 +32,14 @@ This README intentionally uses repository-relative paths and placeholders such a
 
 ## Repository Layout
 
+- `include/bevfusion_inference.hpp`: public multimodal C++ API
+- `scripts/bevfusion/`: local ONNX export, independent TensorRT build, numerical checks, full evaluation and a YAML-driven Bash pipeline
 - `include/inference_cpp.hpp`: public C++ wrapper API
 - `include/inference.h`: internal C compatibility header used by the wrapper and runtime implementation
 - `src/inference_api.cpp`: internal compatibility-layer entry points used by the wrapper
-- `src/pillar_runtime.cpp`: TensorRT loading, voxelization, inference, decode, NMS, and response packing
+- `src/pillar_runtime.cpp`: TensorRT loading, voxelization, inference, decode, and response packing
+- `src/centerhead_postprocess.cpp`: common candidate sorting, filtering and grouped NMS
+- `src/postprocess_config.cpp`: common postprocess parsing, validation and output-label mapping
 - `src/pillar_debug_utils.cpp`: debug-tool config assembly, point-cloud loading, and artifact export
 - `tools/debug_cli.hpp`: shared debug CLI argument parsing, defaults, and help
 - `tools/infer_debug_tool.cpp`: high-level C++ API result debug CLI entry point
@@ -41,7 +52,7 @@ This README intentionally uses repository-relative paths and placeholders such a
 - `examples/minimal_cpp_api/`: minimal executable example for the public C++ wrapper API
 - `demo/centerpoint_pillar/`: example end-to-end pillar model package assets
 - `demo/centerpoint_voxel/`: example CenterPoint voxel model package assets
-- `demo/data/`: shared example point-cloud inputs
+- `demo/data/`: original point-cloud and multimodal frame inputs
 - `third_party/libspconv/`: CenterPoint voxel sparse-convolution runtime copied from CUDA-CenterPoint
 - `third_party/voxelize/`: vendored CUDA voxelization module
 - `third_party/iou3d_nms/`: low-level IoU / NMS module used by the runtime and debug tools
@@ -121,7 +132,7 @@ Point-cloud loading supports 3D, 4D, and 5D float `.bin` files and PCD files wit
 Install common development dependencies on Ubuntu:
 
 ```bash
-sudo apt-get install -y libyaml-cpp-dev protobuf-compiler libprotobuf-dev
+sudo apt-get install -y libyaml-cpp-dev protobuf-compiler libprotobuf-dev libjpeg-dev
 ```
 
 Notes:
@@ -154,7 +165,7 @@ python3 -m pip install numpy pyyaml matplotlib plotly minio
 
 ## Build
 
-Run commands from the repository root.
+Run commands from the repository root. Single-config builds default to `Release`; use `-DCMAKE_BUILD_TYPE=Debug` when needed.
 
 ### Full build
 
@@ -196,7 +207,7 @@ A successful full build generates:
 - `build/libinference.so`
 - `build/infer_debug_tool`
 - `build/perf_debug_tool`
-- `build/minimal_cpp_api_example` when `BUILD_EXAMPLES=ON`
+- `build/minimal_cpp_api_example` and `build/bevfusion_cpp_api_example` when `BUILD_EXAMPLES=ON`
 
 Build and run regression tests when CUDA, TensorRT, `yaml-cpp`, Protobuf, and the vendored runtime libraries are available:
 
@@ -259,7 +270,7 @@ Run a pillar API result debug session. Decoded detections and internal tensors a
 ```bash
 ./build/infer_debug_tool \
   --model-dir demo/centerpoint_pillar \
-  --input demo/data/test1.bin \
+  --input demo/data/lidar/test1.bin \
   --dump-dir demo/centerpoint_pillar_outputs \
   --source-num-point-features 5
 ```
@@ -270,7 +281,7 @@ For the voxel demo, build the TensorRT head engine if it is not already availabl
 bash scripts/centerpoint_voxel_head2engine.sh demo/centerpoint_voxel/rpn_centerhead.onnx demo/centerpoint_voxel/rpn_centerhead.engine
 ./build/infer_debug_tool \
   --model-dir demo/centerpoint_voxel \
-  --input demo/data/test3.pcd \
+  --input demo/data/lidar/test3.pcd \
   --dump-dir demo/centerpoint_voxel_outputs
 ```
 
@@ -279,7 +290,7 @@ Profile the same input with the performance tool. Its defaults are 10 warmup ite
 ```bash
 ./build/perf_debug_tool \
   --model-dir demo/centerpoint_voxel \
-  --input demo/data/test3.pcd \
+  --input demo/data/lidar/test3.pcd \
   --dump-dir outputs/voxel_perf
 ```
 
@@ -293,10 +304,10 @@ The demo assets used by the public C++ API and debug tools are:
 - `demo/centerpoint_voxel/centerpoint.scn.onnx`
 - `demo/centerpoint_voxel/rpn_centerhead.onnx`
 - `demo/centerpoint_voxel/rpn_centerhead.engine` after running `scripts/centerpoint_voxel_head2engine.sh`
-- `demo/data/test1.bin`
-- `demo/data/test1.pcd`
-- `demo/data/test2.pcd`
-- `demo/data/test3.pcd`
+- `demo/data/lidar/test1.bin`
+- `demo/data/lidar/test1.pcd`
+- `demo/data/lidar/test2.pcd`
+- `demo/data/lidar/test3.pcd`
 
 Typical `perf_debug_tool` console output includes:
 
@@ -385,7 +396,7 @@ overlap metric is strictly greater than the ego threshold. The ego box is remove
 and does not consume `nms_pre_maxsize` or `nms_post_maxsize` capacity. Ego-box filtering supports
 `iou_bev` and `iou_min_bev`; it is rejected with `circle` NMS.
 
-The current demo config uses lower per-label score thresholds than the previous release and runs one shared NMS pass over all nine global labels. Override these values in `model.yaml` or an override YAML when a deployment needs class-specific NMS groups.
+The CenterPoint Voxel and BEVFusion demos share the configured per-label score thresholds and run one NMS pass over all nine global labels. Override these values in `model.yaml` or an override YAML when a deployment needs class-specific NMS groups.
 
 Label-related config uses two stages:
 
@@ -413,186 +424,112 @@ Optional override YAML files use the same schema and are applied with this prece
 - override YAML
 - base `model.yaml`
 
-## Debug CLIs
+## BEVFusion deployment and shared demos
 
-Both tools use named arguments, with required paths first in the help and examples:
+BEVFusion uses the current CenterHead implementation: a libspconv ZYX sparse
+backbone, camera TensorRT engine, CUDA geometry/pooling, and a fusion/CenterHead
+TensorRT engine. See [deployment](scripts/bevfusion/README.md) and
+[model details](scripts/bevfusion/MODEL.md). The old TransFusion package is no
+longer supported. Its existing engine/ONNX files remain untouched.
 
-| Tool | Purpose | Supported input | Default warmup / measured iterations |
-| --- | --- | --- | --- |
-| `infer_debug_tool` | Validate high-level C++ API results and export detection/debug artifacts | One PCD/BIN file or a directory | `0` / `1` per file |
-| `perf_debug_tool` | Measure internal inference stages and export timing statistics | One PCD/BIN file | `10` / `50` |
-
-`infer_debug_tool` follows the same model-directory entry style as the public C++ wrapper and treats `runtime->Infer(...)` as the authoritative final result:
-
-```bash
-./build/infer_debug_tool --model-dir MODEL_DIR --input INPUT_PATH --dump-dir DUMP_DIR [--source-num-point-features N] [--override-config PATH] [--warmup N] [--profile-iters N] [--no-dump-decoded] [--no-dump-internal]
-```
-
-Both tools require `--model-dir`, `--input`, and `--dump-dir`; arguments may appear in any order. There is no default output directory.
-
-| Shared option | Meaning | Default |
-| --- | --- | --- |
-| `--source-num-point-features N` | Source float32 BIN features per point: `3`, `4`, or `5`; PCD uses its header | Accept a BIN layout only when unambiguous |
-| `--override-config PATH` | Apply a package-schema YAML override | No override |
-| `--warmup N` | Warmup iterations; integer `N >= 0` | infer: `0`; perf: `10` |
-| `--profile-iters N` | Measured iterations; integer `N > 0` | infer: `1`; perf: `50` |
-
-`infer_debug_tool` enables decoded detection arrays and auxiliary internal tensors by default. Use `--no-dump-decoded` and `--no-dump-internal` to disable them independently. The existing `--dump-decoded` and `--dump-internal` switches remain available to enable them explicitly; when repeated, the last switch for each dump type wins. Dump collection and file writes are outside the high-level inference timing.
-
-Recommended examples:
+All example inputs live under [demo/data](demo/data/README.md). Four multimodal
+frames retain their original PCD, five JPEGs, camera configuration, annotations,
+and source hashes. Three selected scenes cover mixed traffic, sparse pedestrians,
+and a disabled camera. The same original PCD can be passed directly to CenterPoint.
 
 ```bash
-# Raw float32 .bin: declare its source feature layout.
-./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.bin --dump-dir demo/centerpoint_pillar_outputs --source-num-point-features 5 --warmup 10 --profile-iters 100
+conda activate openmmlab_py38
+export CUDA_VISIBLE_DEVICES=5
+export TENSORRT_ROOT=/home/zhouxiufeng/TensorRT-8.6.1.6
+export LD_LIBRARY_PATH="$TENSORRT_ROOT/lib:/usr/local/cuda-11.7/lib64:$CONDA_PREFIX/lib/python3.8/site-packages/torch/lib:${LD_LIBRARY_PATH:-}"
 
-# PCD: no source feature-count option is needed; fields are read from the PCD header.
-./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.pcd --dump-dir demo/centerpoint_pcd_outputs --warmup 10 --profile-iters 100
-
-./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test1.bin --dump-dir demo/centerpoint_voxel_outputs --source-num-point-features 5 --warmup 10 --profile-iters 100
+./build/infer_debug_tool --model-dir demo/centerpoint_voxel \
+  --input demo/data/bevfusion/frames/1776582550193446516/lidar_point_cloud_0/1776582550193446516.pcd \
+  --dump-dir outputs/mixed/centerpoint --no-dump-internal --no-dump-decoded
+./build/infer_debug_tool --model-dir demo/bevfusion_exp20261028 \
+  --input demo/data/bevfusion/manifests/1776582550193446516.yaml \
+  --dump-dir outputs/mixed/bevfusion --no-dump-internal --no-dump-decoded
+python scripts/compare_demo_frames.py
 ```
 
-The voxel example requires `demo/centerpoint_voxel/rpn_centerhead.engine`; build it from `demo/centerpoint_voxel/rpn_centerhead.onnx` with `scripts/centerpoint_voxel_head2engine.sh` before running inference.
+## Debug tools and reports
 
-To keep only the input and final-result artifacts, disable both optional dumps:
+Both tools accept `--model-dir`, `--input`, `--dump-dir`,
+`--override-config`, `--source-num-point-features`, `--warmup`, and
+`--profile-iters`. BEVFusion also accepts `--image-input raw|preprocessed`.
+PCD fields come from its header; ambiguous BIN layouts require the source feature
+count. Runtime backend selection comes from the model package.
+
+| Behavior | infer_debug_tool | perf_debug_tool |
+|---|---|---|
+| Purpose | Inspect detections and tensors | Measure latency and stages |
+| Input | Single frame or flat directory | Single frame |
+| Default warmup / samples | 0 / 1 | 10 / 50 per pass |
+| Default result / decoded / internal dumps | On / on / on | Off / off / off |
+| Profile | Normal inference total | Normal total, then a separate stage pass |
+
+Each dump type has common positive/negative switches:
+`--dump-result` / `--no-dump-result`, `--dump-decoded` /
+`--no-dump-decoded`, `--dump-internal` / `--no-dump-internal`.
+The last switch wins. Extra dump inference and file writes occur after profiling.
 
 ```bash
-./build/infer_debug_tool \
-  --model-dir demo/centerpoint_voxel \
-  --input demo/data/test3.pcd \
-  --dump-dir outputs/voxel_final \
-  --no-dump-decoded --no-dump-internal
+./build/perf_debug_tool --model-dir demo/centerpoint_voxel \
+  --input demo/data/lidar/test3.pcd --dump-dir outputs/centerpoint_perf
+./build/perf_debug_tool --model-dir demo/bevfusion_exp20261028 \
+  --input demo/data/bevfusion/manifests/1776582550193446516.yaml \
+  --dump-dir outputs/bevfusion_perf
+./build/infer_debug_tool --model-dir demo/bevfusion_exp20261028 \
+  --input demo/data/bevfusion/manifests --dump-dir outputs/bevfusion_sequence \
+  --no-dump-internal --no-dump-decoded
 ```
 
-To process all top-level PCD/BIN files in a directory, pass the directory to `--input`:
+Total latency is wall time for the complete synchronous inference call, including
+upload, preprocessing, networks, decoding, NMS and result packing. It excludes
+runtime initialization, file/JPEG loading, extra diagnostic inference, and disk
+writes. Stage collection is disabled during the total pass. Perf then repeats
+warmup and measurement with stage collection enabled; both passes reuse one
+runtime and loaded frame. `--warmup 0` performs no hidden inference. Geometry
+cache misses are reported separately for each pass. CUDA events are collected
+at the end rather than adding synchronization after every stage.
+
+Terminal output and JSON reports use the same backend-independent statistics:
+`n`, `mean`, `min`, `max`, `p50`, `p90`, in milliseconds. Host stage time includes
+submission/waits; CUDA event spans measure stream elapsed time, not exclusively
+GPU busy time. Stage and total values come from separate passes and must not be
+summed or mixed. CPU-only stages have null CUDA statistics.
+
+Every frame writes `metadata.json` and `timings.json` with `schema_version: 2`:
+
+- Metadata: mode/backend/model, source input, counts, device, effective switches,
+  frame ID/timestamp and artifact list.
+- Timings: `setup.runtime_init_ms`, `setup.input_load_ms`, `total_infer_ms`
+  statistics, pass settings/cache misses, and `stage_profile.stages` (null in
+  infer mode). Each stage contains `name`, `host_ms` and optional `gpu_ms` stats.
+- The previous `stage_timings.json` and timing fields embedded in metadata have
+  been replaced; repository consumers use the new report.
+
+With result dumps enabled, tools also write `result.json`, `input_points.npy`,
+`final_{boxes,scores,labels}.npy`, `final_label_names.json` and available velocities.
+`result.json.objects` contains labels/names, scores and geometric-center
+`[x,y,z,dx,dy,dz,yaw]` boxes; velocity is optional. Decoded arrays are independent
+of final result dumps. Backend-specific internal NPY tensors live in `internal/`.
+
+Directory inference sorts numeric stems numerically (otherwise by filename),
+rejects duplicate frame IDs, and reuses the runtime. Per-frame outputs live in
+`frames/<six-digit-index>_<stem>/`; the root writes `sequence_manifest.json` and,
+when results are enabled, `sequence_detections.jsonl`. Numeric filename stems are
+interpreted as nanosecond timestamps.
+
+## Infer visualization
 
 ```bash
-./build/infer_debug_tool \
-  --model-dir demo/centerpoint_voxel \
-  --input demo/data \
-  --dump-dir outputs/voxel_sequence \
-  --source-num-point-features 5
+python tools/visualize_infer_debug.py demo/centerpoint_voxel outputs/mixed/centerpoint
 ```
 
-The source feature count applies to every BIN file in the directory; PCD files continue to use their own headers. Each frame receives the same dump and timing options. Use BIN files with the same source layout when specifying one feature count for a batch.
-
-Behavior:
-
-- `--model-dir` must point to a directory containing `model.yaml`
-- runtime and postprocess settings come from `--model-dir` `model.yaml`
-- `--input` may be one `.pcd` / `.bin` file or a directory containing top-level `.pcd` / `.bin` files
-- `--dump-dir` controls where result `.npy` and `.json` artifacts are written
-- `--override-config PATH` applies the same package-schema YAML override used by the public C++ wrapper
-- final detections come from the high-level C++ API, so `mapped_label_names` is reflected in `result.json`
-- internal tensors are written by default for auxiliary diagnosis; `--no-dump-internal` disables them
-- directory mode sorts numerically by filename stem when all stems are unsigned integers; otherwise it falls back to lexicographic filename order
-- numeric filename stems are treated as Unix nanosecond timestamps in per-frame metadata and sequence outputs
-- directory mode reuses one runtime instance and writes one subdirectory per frame under `dump_dir/frames/`
-- `--warmup` and `--profile-iters` repeat the high-level `runtime->Infer(...)` call and print total latency statistics
-- high-level latency statistics exclude model initialization, point-cloud loading, auxiliary dump inference, and file writes; enabled dumps still add to the total command runtime
-
-`perf_debug_tool` uses the internal runtime path to profile one sample:
-
-```bash
-./build/perf_debug_tool --model-dir MODEL_DIR --input INPUT_PATH --dump-dir DUMP_DIR [--source-num-point-features N] [--override-config PATH] [--warmup N] [--profile-iters N]
-```
-
-`--input` must be a single `.pcd` / `.bin` file. The tool writes timing/profile data only and does not write detection result artifacts. Its previous positional arguments and `--profile` option are no longer accepted; use the named paths and `--profile-iters` instead.
-
-```bash
-./build/perf_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test1.bin --dump-dir outputs/voxel_perf --source-num-point-features 5 --warmup 10 --profile-iters 50
-```
-
-The performance report includes a diagnostic single run and an aggregate over `--profile-iters` runs after `--warmup` runs. Its internal stage timings have a different measurement boundary from infer's high-level API latency. Point-cloud loading is reported separately, and the diagnostic run and file writes are outside the aggregate profiling loop.
-
-## Debug Artifacts
-
-A successful `infer_debug_tool` run writes these files into `dump_dir`:
-
-- `input_points.npy`
-- `final_scores.npy`
-- `final_boxes.npy`
-- `final_labels.npy`
-- `final_label_names.json`
-- `result.json`
-- `metadata.json`
-
-In directory batch mode, the root `dump_dir` additionally contains:
-
-- `frames/<frame_index>_<file_stem>/...` per-frame artifact directories
-- `sequence_manifest.json`
-- `sequence_detections.jsonl`
-
-By default, it also writes decoded detection arrays (disabled with `--no-dump-decoded`):
-
-- `decoded_scores.npy`
-- `decoded_boxes.npy`
-- `decoded_labels.npy`
-
-By default, it also writes auxiliary internal tensors (disabled with `--no-dump-internal`):
-
-- `pillar_voxels.npy`
-- `pillar_num_points.npy`
-- `pillar_coors.npy`
-- `bbox_pred.npy`
-- `cls_score.npy`
-- `dir_cls_pred.npy`
-- `internal_decoded_scores.npy`
-- `internal_decoded_boxes.npy`
-- `internal_decoded_labels.npy`
-
-A successful `perf_debug_tool` run writes:
-
-- `timings.json`
-- `metadata.json`
-
-Notes:
-
-- `result.json` contains final detections returned by `runtime->Infer(...)`
-- final boxes use `[x, y, z, dx, dy, dz, yaw]` with `z` at the box geometric center
-- `label_name` fields in `result.json` come from the high-level API and honor `postprocess.mapped_label_names`
-- per-frame `metadata.json` now also includes `input_path_kind`, optional `frame_index`, and optional `timestamp_ns` / `timestamp_seconds`
-- `sequence_manifest.json` records ordered frame metadata for downstream consumers
-- `sequence_detections.jsonl` writes one JSON object per frame with ordered detections for downstream Python Kalman-filter code
-- `perf_debug_tool/timings.json` contains both the single-run timing breakdown and aggregated profile statistics
-
-## Infer Debug Visualization
-
-After an `infer_debug_tool` run, generate detailed BEV plots, an optional interactive 3D HTML view, an index page, and a visualization summary with one command:
-
-```bash
-python3 tools/visualize_infer_debug.py demo/centerpoint_pillar demo/centerpoint_pillar_outputs
-```
-
-For the common single-sample flow:
-
-```bash
-./build/infer_debug_tool --model-dir demo/centerpoint_pillar --input demo/data/test1.bin --dump-dir demo/centerpoint_pillar_outputs --source-num-point-features 5 --warmup 10 --profile-iters 100
-python3 tools/visualize_infer_debug.py demo/centerpoint_pillar demo/centerpoint_pillar_outputs --zmin -0.2 --zmax 3
-```
-
-The script reads the selected model directory's `model.yaml` for the point-cloud range and reads final detections from `result.json`, so final box labels use the `label_name` values returned by the high-level C++ API and therefore honor `postprocess.mapped_label_names`.
-
-Typical outputs in the dump directory:
-
-- `01_input_points_height_bev.png`
-- `02_input_points_density_bev.png`
-- `03_cls_heatmap_bev.png` when `cls_score.npy` exists from the internal dump (enabled by default)
-- `04_decoded_candidates_bev.png` when decoded arrays exist from decoded or internal dumps (both enabled by default)
-- `05_final_boxes_bev.png`
-- `06_3d_final_result.html` when Plotly is available
-- `index.html`
-- `visualization_summary.json`
-
-For a more detailed run with decoded candidates and internal debug heatmap:
-
-```bash
-bash scripts/centerpoint_voxel_head2engine.sh demo/centerpoint_voxel/rpn_centerhead.onnx demo/centerpoint_voxel/rpn_centerhead.engine
-./build/infer_debug_tool --model-dir demo/centerpoint_voxel --input demo/data/test1.bin --dump-dir demo/centerpoint_voxel_outputs --source-num-point-features 5 --warmup 10 --profile-iters 100
-python3 tools/visualize_infer_debug.py demo/centerpoint_voxel demo/centerpoint_voxel_outputs --zmin -0.2 --zmax 3
-```
-
-Use `--max-candidates` and `--candidate-score-threshold` to reduce clutter when decoded candidate dumps are large.
-The default 3D HTML view shows only the final high-level API result. Add `--show-decoded-3d`, `--show-internal-3d`, or `--show-heatmap-3d` only when you explicitly want those debug layers overlaid in 3D.
+The viewer reads final JSON/arrays and optional tensors from `internal/`. For
+same-frame model comparisons, use `scripts/compare_demo_frames.py`: it generates
+native result directories and ground-truth/CenterPoint/BEVFusion BEV plots.
 
 ## Input Formats
 
@@ -600,7 +537,7 @@ The default 3D HTML view shows only the final high-level API result. Add `--show
 
 The debug tools accept float32 `.bin` files with 3, 4, or 5 features per point. Use `--source-num-point-features 3|4|5` to declare the source layout explicitly; the option is supported by both `infer_debug_tool` and `perf_debug_tool`.
 
-These BIN files contain raw float32 values without a header describing point boundaries. The source feature count describes the stored file layout, independently of `model.num_point_features`. Use the layout specified by the data exporter: a different count may still divide the file size while grouping coordinates and features incorrectly. The repository's `demo/data/test1.bin` examples use `--source-num-point-features 5`.
+These BIN files contain raw float32 values without a header describing point boundaries. The source feature count describes the stored file layout, independently of `model.num_point_features`. Use the layout specified by the data exporter: a different count may still divide the file size while grouping coordinates and features incorrectly. The repository's `demo/data/lidar/test1.bin` examples use `--source-num-point-features 5`.
 
 If the option is omitted, the loader accepts a layout only when exactly one of the 3-, 4-, or 5-feature layouts divides the file's float count. Ambiguous files are rejected with an error asking for an explicit source feature count instead of guessing from file size.
 

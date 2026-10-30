@@ -1,17 +1,21 @@
-# CMake and local build directories
+# ============================================================
+# CMake & Build
+# ============================================================
 /build/
 /out/
 /cmake-build-*/
-/CMakeFiles/
-/CMakeCache.txt
-/CTestTestfile.cmake
-/cmake_install.cmake
-/install_manifest.txt
-/compile_commands.json
+CMakeFiles/
+CMakeCache.txt
+CTestTestfile.cmake
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
 /Makefile
-/Testing/
+Testing/
 
-# Native build intermediates
+# ============================================================
+# Native Libraries & Intermediates
+# ============================================================
 *.o
 *.obj
 *.lo
@@ -19,14 +23,13 @@
 *.a
 *.so
 *.so.*
-!third_party/libspconv/lib/*/libspconv.so
-third_party/libspconv/lib/x86_64/libspconv.so
-third_party/libspconv/lib/aarch64/libspconv.so
 *.dylib
 *.dll
 *.exe
 
-# Python caches and virtual environments
+# ============================================================
+# Python
+# ============================================================
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -35,7 +38,9 @@ __pycache__/
 venv/
 env/
 
-# Editor and OS files
+# ============================================================
+# IDE & OS
+# ============================================================
 .idea/
 .vscode/
 *.swp
@@ -43,30 +48,69 @@ env/
 .DS_Store
 Thumbs.db
 
-# Local runtime artifacts
+# ============================================================
+# Runtime Outputs
+# ============================================================
 /artifacts/
 /outputs/
 /dump/
 /tmp/
-/.cache/
+.cache/
 *.log
 
-# output data
-outputs 
-demo/*outputs 
-# big files
+# ============================================================
+# Models & Large Data
+# ============================================================
 *.onnx
-!demo/centerpoint_pillar/*onnx
-!demo/centerpoint_voxel/*onnx
 *.engine
 *.trt
 *.pt
 *.pth
 *.bin
-!demo/data/*bin
 *.pcd
-!demo/data/*pcd
 *.png
 *.jpg
 *.jpeg
 *.engine.reports/
+
+# ============================================================
+# Third-party Libraries
+# ============================================================
+!/third_party/libspconv/lib/*/libspconv.so
+
+# ============================================================
+# Demo: Ignore Everything by Default
+# ============================================================
+/demo/*
+
+# Allow selected directories
+!/demo/centerpoint_pillar/
+!/demo/centerpoint_voxel/
+!/demo/bevfusion/
+!/demo/data/
+
+# ============================================================
+# Demo Models: Keep ONNX Only
+# ============================================================
+/demo/centerpoint_pillar/*
+# !/demo/centerpoint_pillar/*.onnx
+
+/demo/centerpoint_voxel/*
+# !/demo/centerpoint_voxel/*.onnx
+
+/demo/bevfusion/*
+# !/demo/bevfusion/*.onnx
+
+# ============================================================
+# Demo Data: Keep Selected Datasets
+# ============================================================
+/demo/data/*
+!/demo/data/lidar/
+!/demo/data/bevfusion/
+
+/demo/data/bevfusion/*
+!/demo/data/bevfusion/frames/
+
+# Allow all files recursively in selected datasets
+!/demo/data/lidar/**
+!/demo/data/bevfusion/frames/**

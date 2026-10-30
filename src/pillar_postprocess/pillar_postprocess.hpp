@@ -33,7 +33,8 @@ class GpuDecodedCandidates {
                          std::string* out_error);
   InferenceStatus CopyToHost(CandidateDetections* out_candidates,
                              cudaStream_t stream,
-                             std::string* out_error) const;
+                             std::string* out_error,
+                             std::vector<float>* velocities = nullptr) const;
 
  private:
   struct Impl;

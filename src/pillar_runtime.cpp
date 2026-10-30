@@ -146,43 +146,7 @@ InferenceStatus SyncCudaStream(cudaStream_t stream,
   return CheckCuda(cudaStreamSynchronize(stream), operation, out_error);
 }
 
-InferenceStatus MeasureGpuStageBegin(cudaEvent_t start_event,
-                                     cudaStream_t stream,
-                                     bool enabled,
-                                     std::string* out_error) {
-  if (!enabled) {
-    return INFERENCE_STATUS_OK;
-  }
-  return CheckCuda(cudaEventRecord(start_event, stream), "cudaEventRecord(stage_start)", out_error);
-}
 
-InferenceStatus MeasureGpuStageEnd(cudaEvent_t start_event,
-                                   cudaEvent_t end_event,
-                                   cudaStream_t stream,
-                                   bool enabled,
-                                   double* out_ms,
-                                   std::string* out_error) {
-  if (!enabled || out_ms == nullptr) {
-    return INFERENCE_STATUS_OK;
-  }
-  InferenceStatus status =
-      CheckCuda(cudaEventRecord(end_event, stream), "cudaEventRecord(stage_end)", out_error);
-  if (status != INFERENCE_STATUS_OK) {
-    return status;
-  }
-  status = CheckCuda(cudaEventSynchronize(end_event), "cudaEventSynchronize(stage_end)", out_error);
-  if (status != INFERENCE_STATUS_OK) {
-    return status;
-  }
-  float elapsed_ms = 0.0f;
-  status = CheckCuda(cudaEventElapsedTime(&elapsed_ms, start_event, end_event),
-                     "cudaEventElapsedTime(stage)", out_error);
-  if (status != INFERENCE_STATUS_OK) {
-    return status;
-  }
-  *out_ms = static_cast<double>(elapsed_ms);
-  return INFERENCE_STATUS_OK;
-}
 
 struct HeapEntry {
   float score = 0.0f;
@@ -206,257 +170,6 @@ struct MinHeatmapScoreCompare {
     return lhs.score > rhs.score;
   }
 };
-
-void ApplyPreMaxsize(std::vector<float>* scores,
-                     std::vector<float>* boxes,
-                     std::vector<int>* labels,
-                     int pre_maxsize) {
-  if (pre_maxsize <= 0 || scores == nullptr || boxes == nullptr || labels == nullptr ||
-      scores->size() <= static_cast<size_t>(pre_maxsize)) {
-    return;
-  }
-  std::vector<size_t> indices(scores->size());
-  std::iota(indices.begin(), indices.end(), 0);
-  std::sort(indices.begin(), indices.end(),
-            [&](size_t lhs, size_t rhs) { return (*scores)[lhs] > (*scores)[rhs]; });
-
-  std::vector<float> new_scores;
-  std::vector<float> new_boxes;
-  std::vector<int> new_labels;
-  new_scores.reserve(static_cast<size_t>(pre_maxsize));
-  new_boxes.reserve(static_cast<size_t>(pre_maxsize) * kBoxDim);
-  new_labels.reserve(static_cast<size_t>(pre_maxsize));
-  for (int i = 0; i < pre_maxsize; ++i) {
-    const size_t src = indices[static_cast<size_t>(i)];
-    new_scores.push_back((*scores)[src]);
-    new_labels.push_back((*labels)[src]);
-    new_boxes.insert(new_boxes.end(), boxes->begin() + static_cast<long>(src * kBoxDim),
-                     boxes->begin() + static_cast<long>((src + 1) * kBoxDim));
-  }
-  scores->swap(new_scores);
-  boxes->swap(new_boxes);
-  labels->swap(new_labels);
-}
-
-void AppendBoxes(const std::vector<float>& source_boxes,
-                 size_t source_index,
-                 std::vector<float>* target_boxes) {
-  target_boxes->insert(target_boxes->end(),
-                       source_boxes.begin() + static_cast<long>(source_index * kBoxDim),
-                       source_boxes.begin() + static_cast<long>((source_index + 1) * kBoxDim));
-}
-
-void FilterByScoreThreshold(CandidateDetections* detections, float score_threshold) {
-  if (detections == nullptr || score_threshold <= 0.0f) {
-    return;
-  }
-
-  CandidateDetections filtered;
-  filtered.scores.reserve(detections->scores.size());
-  filtered.labels.reserve(detections->labels.size());
-  filtered.boxes.reserve(detections->boxes.size());
-  for (size_t i = 0; i < detections->scores.size(); ++i) {
-    if (detections->scores[i] < score_threshold) {
-      continue;
-    }
-    filtered.scores.push_back(detections->scores[i]);
-    filtered.labels.push_back(detections->labels[i]);
-    AppendBoxes(detections->boxes, i, &filtered.boxes);
-  }
-  detections->scores.swap(filtered.scores);
-  detections->labels.swap(filtered.labels);
-  detections->boxes.swap(filtered.boxes);
-}
-
-void FilterByLabelScoreThreshold(CandidateDetections* detections,
-                                 const std::vector<float>& label_score_thresh) {
-  if (detections == nullptr || label_score_thresh.empty()) {
-    return;
-  }
-
-  CandidateDetections filtered;
-  filtered.scores.reserve(detections->scores.size());
-  filtered.labels.reserve(detections->labels.size());
-  filtered.boxes.reserve(detections->boxes.size());
-  for (size_t i = 0; i < detections->scores.size(); ++i) {
-    const int label = detections->labels[i];
-    if (label >= 0 && label < static_cast<int>(label_score_thresh.size()) &&
-        detections->scores[i] < label_score_thresh[static_cast<size_t>(label)]) {
-      continue;
-    }
-    filtered.scores.push_back(detections->scores[i]);
-    filtered.labels.push_back(label);
-    AppendBoxes(detections->boxes, i, &filtered.boxes);
-  }
-  detections->scores.swap(filtered.scores);
-  detections->labels.swap(filtered.labels);
-  detections->boxes.swap(filtered.boxes);
-}
-
-void SortCandidatesDescending(CandidateDetections* out_candidates);
-
-void CollectByLabelSet(const CandidateDetections& candidates,
-                       const std::vector<int>& labels,
-                       int label_count,
-                       CandidateDetections* out_group) {
-  out_group->scores.clear();
-  out_group->boxes.clear();
-  out_group->labels.clear();
-  if (labels.empty() || label_count <= 0) {
-    return;
-  }
-
-  std::vector<uint8_t> selected(static_cast<size_t>(label_count), 0);
-  for (const int label : labels) {
-    if (label >= 0 && label < label_count) {
-      selected[static_cast<size_t>(label)] = 1U;
-    }
-  }
-
-  out_group->scores.reserve(candidates.scores.size());
-  out_group->labels.reserve(candidates.labels.size());
-  out_group->boxes.reserve(candidates.boxes.size());
-  for (size_t i = 0; i < candidates.scores.size(); ++i) {
-    const int label = candidates.labels[i];
-    if (label < 0 || label >= label_count || selected[static_cast<size_t>(label)] == 0U) {
-      continue;
-    }
-    out_group->scores.push_back(candidates.scores[i]);
-    out_group->labels.push_back(label);
-    AppendBoxes(candidates.boxes, i, &out_group->boxes);
-  }
-}
-
-InferenceStatus AppendCircleNmsResult(CandidateDetections* detections,
-                                      float distance_threshold,
-                                      int post_maxsize,
-                                      CandidateDetections* out_result,
-                                      std::string* out_error) {
-  if (detections == nullptr || out_result == nullptr) {
-    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                    "Circle NMS input or output is null");
-  }
-  if (distance_threshold < 0.0f || post_maxsize <= 0) {
-    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                    "Circle NMS group config is invalid");
-  }
-  if (detections->scores.empty()) {
-    return INFERENCE_STATUS_OK;
-  }
-
-  SortCandidatesDescending(detections);
-  std::vector<long> keep(detections->scores.size(), 0);
-  const int keep_count =
-      circle_nms_gpu(detections->boxes.data(), keep.data(), distance_threshold,
-                     static_cast<int>(detections->scores.size()));
-  const size_t final_count =
-      std::min(static_cast<size_t>(keep_count), static_cast<size_t>(post_maxsize));
-  for (size_t i = 0; i < final_count; ++i) {
-    const size_t src = static_cast<size_t>(keep[i]);
-    out_result->scores.push_back(detections->scores[src]);
-    out_result->labels.push_back(detections->labels[src]);
-    AppendBoxes(detections->boxes, src, &out_result->boxes);
-  }
-  return INFERENCE_STATUS_OK;
-}
-
-InferenceStatus AppendIouNmsResult(CandidateDetections* detections,
-                                   InferenceNmsType nms_type,
-                                   float nms_thresh,
-                                   int pre_maxsize,
-                                   int post_maxsize,
-                                   const std::optional<std::array<float, inference::kBoxDimension>>&
-                                       self_car_box,
-                                   const std::optional<float>& self_car_nms_thresh,
-                                   CandidateDetections* out_result,
-                                   std::string* out_error) {
-  if (detections == nullptr || out_result == nullptr) {
-    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                    "IoU NMS input or output is null");
-  }
-  if (nms_thresh < 0.0f || pre_maxsize <= 0 || post_maxsize <= 0) {
-    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                    "IoU NMS group config is invalid");
-  }
-  if (detections->scores.empty()) {
-    return INFERENCE_STATUS_OK;
-  }
-
-  ApplyPreMaxsize(&detections->scores, &detections->boxes, &detections->labels, pre_maxsize);
-  const bool use_self_car = self_car_box.has_value() && self_car_nms_thresh.has_value();
-  if (use_self_car) {
-    detections->scores.insert(detections->scores.begin(),
-                              std::numeric_limits<float>::max());
-    detections->labels.insert(detections->labels.begin(), -1);
-    detections->boxes.insert(detections->boxes.begin(), self_car_box->begin(),
-                             self_car_box->end());
-  }
-  std::vector<long> keep(detections->scores.size(), 0);
-  int keep_count = 0;
-  if (nms_type == INFERENCE_NMS_IOU_BEV) {
-    keep_count = use_self_car
-                     ? nms_gpu_with_self_car(detections->boxes.data(), keep.data(), nms_thresh,
-                                             *self_car_nms_thresh,
-                                             static_cast<int>(detections->scores.size()))
-                     : nms_gpu(detections->boxes.data(), keep.data(), nms_thresh,
-                               static_cast<int>(detections->scores.size()));
-  } else if (nms_type == INFERENCE_NMS_IOU_MIN_BEV) {
-    keep_count = use_self_car
-                     ? nms_normalized_gpu_with_self_car(
-                           detections->boxes.data(), keep.data(), nms_thresh,
-                           *self_car_nms_thresh, static_cast<int>(detections->scores.size()))
-                     : nms_normalized_gpu(detections->boxes.data(), keep.data(), nms_thresh,
-                                          static_cast<int>(detections->scores.size()));
-  } else {
-    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                    "IoU NMS type is invalid");
-  }
-  size_t appended_count = 0;
-  for (size_t i = 0; i < static_cast<size_t>(keep_count) &&
-                     appended_count < static_cast<size_t>(post_maxsize);
-       ++i) {
-    const size_t src = static_cast<size_t>(keep[i]);
-    if (use_self_car && src == 0U) {
-      continue;
-    }
-    out_result->scores.push_back(detections->scores[src]);
-    out_result->labels.push_back(detections->labels[src]);
-    AppendBoxes(detections->boxes, src, &out_result->boxes);
-    ++appended_count;
-  }
-  return INFERENCE_STATUS_OK;
-}
-
-InferenceStatus RunGroupedNms(const CandidateDetections& candidates,
-                              const PostprocessConfig& config,
-                              const RuntimeConfig& runtime_config,
-                              CandidateDetections* out_result,
-                              std::string* out_error) {
-  out_result->scores.clear();
-  out_result->boxes.clear();
-  out_result->labels.clear();
-  const int label_count = runtime_config.label_count > 0 ? runtime_config.label_count : kLabelCount;
-  for (const PostprocessConfig::NmsLabelGroup& group : config.nms_label_groups) {
-    CandidateDetections per_group;
-    CollectByLabelSet(candidates, group.labels, label_count, &per_group);
-    FilterByLabelScoreThreshold(&per_group, config.label_score_thresh);
-    InferenceStatus status = INFERENCE_STATUS_OK;
-    if (config.nms_type == INFERENCE_NMS_CIRCLE) {
-      status = AppendCircleNmsResult(&per_group, group.circle_nms_min_radius,
-                                     group.nms_post_maxsize, out_result, out_error);
-    } else {
-      status = AppendIouNmsResult(&per_group, config.nms_type, group.nms_thresh,
-                                  group.nms_pre_maxsize, group.nms_post_maxsize,
-                                  config.self_car_box, config.self_car_nms_thresh,
-                                  out_result, out_error);
-    }
-    if (status != INFERENCE_STATUS_OK) {
-      return status;
-    }
-  }
-  FilterByScoreThreshold(out_result, config.final_score_threshold);
-  return INFERENCE_STATUS_OK;
-}
 
 InferenceStatus BuildPillars(const RuntimeConfig& config,
                              int num_pillars,
@@ -513,28 +226,6 @@ InferenceStatus BuildPillars(const RuntimeConfig& config,
                            cudaMemcpyDeviceToHost),
                 "cudaMemcpy(pillar_coors)", out_error);
   return status;
-}
-
-void SortCandidatesDescending(CandidateDetections* out_candidates) {
-  if (out_candidates == nullptr) {
-    return;
-  }
-  std::vector<size_t> order(out_candidates->scores.size());
-  std::iota(order.begin(), order.end(), 0);
-  std::sort(order.begin(), order.end(), [&](size_t lhs, size_t rhs) {
-    return out_candidates->scores[lhs] > out_candidates->scores[rhs];
-  });
-
-  CandidateDetections sorted;
-  sorted.scores.reserve(order.size());
-  sorted.labels.reserve(order.size());
-  sorted.boxes.reserve(order.size() * kBoxDim);
-  for (size_t index : order) {
-    sorted.scores.push_back(out_candidates->scores[index]);
-    sorted.labels.push_back(out_candidates->labels[index]);
-    AppendBoxes(out_candidates->boxes, index, &sorted.boxes);
-  }
-  *out_candidates = std::move(sorted);
 }
 
 InferenceStatus DecodeLegacyOutputs(const RuntimeConfig& config,
@@ -1045,180 +736,6 @@ InferenceStatus ParsePostprocessConfig(const InferencePostprocessConfig& config,
   return INFERENCE_STATUS_OK;
 }
 
-InferenceStatus RunPostprocessNms(const CandidateDetections& candidates,
-                                  const PostprocessConfig& config,
-                                  const RuntimeConfig& runtime_config,
-                                  CandidateDetections* out_result,
-                                  std::string* out_error) {
-  if (out_result == nullptr) {
-    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                    "out_result is null");
-  }
-  if (config.nms_type != INFERENCE_NMS_IOU_BEV &&
-      config.nms_type != INFERENCE_NMS_IOU_MIN_BEV &&
-      config.nms_type != INFERENCE_NMS_CIRCLE) {
-    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                    "nms_type is invalid");
-  }
-  const int label_count = runtime_config.label_count > 0 ? runtime_config.label_count : kLabelCount;
-  const bool uses_label_score_thresholds =
-      !config.nms_label_groups.empty() ||
-      runtime_config.decode_mode == inference::DecodeMode::kCenterPoint ||
-      config.nms_type != INFERENCE_NMS_CIRCLE;
-  if (uses_label_score_thresholds && !config.label_score_thresh.empty() &&
-      config.label_score_thresh.size() < static_cast<size_t>(label_count)) {
-    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                    "label_score_thresh has fewer values than the runtime label count");
-  }
-  if (config.nms_label_groups.empty() && config.nms_type == INFERENCE_NMS_CIRCLE) {
-    if (runtime_config.decode_mode == inference::DecodeMode::kCenterPoint) {
-      if (config.circle_nms_min_radius.size() != runtime_config.task_num_classes.size()) {
-        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                        "circle_nms_min_radius must contain one value per CenterPoint task");
-      }
-    } else if (config.circle_nms_min_radius.size() < static_cast<size_t>(label_count)) {
-      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                      "circle_nms_min_radius has fewer values than the runtime label count");
-    }
-  }
-  if (config.self_car_box.has_value() != config.self_car_nms_thresh.has_value()) {
-    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                    "self_car_box and self_car_nms_thresh must be configured together");
-  }
-  if (config.self_car_box.has_value()) {
-    if (config.nms_type == INFERENCE_NMS_CIRCLE) {
-      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                      "self-car NMS only supports IoU BEV modes");
-    }
-    if (!std::isfinite(*config.self_car_nms_thresh) ||
-        *config.self_car_nms_thresh < 0.0f) {
-      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                      "self_car_nms_thresh must be finite and non-negative");
-    }
-    for (const float value : *config.self_car_box) {
-      if (!std::isfinite(value)) {
-        return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                        "self_car_box must contain finite values");
-      }
-    }
-    if ((*config.self_car_box)[3] <= 0.0f || (*config.self_car_box)[4] <= 0.0f ||
-        (*config.self_car_box)[5] <= 0.0f) {
-      return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                      "self_car_box dimensions must be positive");
-    }
-  }
-  if (config.nms_pre_maxsize <= 0 || config.nms_post_maxsize <= 0) {
-    return SetError(out_error, INFERENCE_STATUS_INVALID_ARGUMENT,
-                    "NMS maxsize must be positive");
-  }
-  if (!config.nms_label_groups.empty()) {
-    return RunGroupedNms(candidates, config, runtime_config, out_result, out_error);
-  }
-  if (runtime_config.decode_mode == inference::DecodeMode::kCenterPoint) {
-    ResolvedHeadLayout layout;
-    InferenceStatus status =
-        ResolveHeadLayout(runtime_config, &layout, out_error);
-    if (status != INFERENCE_STATUS_OK) {
-      return status;
-    }
-    out_result->scores.clear();
-    out_result->boxes.clear();
-    out_result->labels.clear();
-
-    for (size_t task_index = 0; task_index < layout.task_num_classes.size();
-         ++task_index) {
-      CandidateDetections per_task;
-      per_task.scores.reserve(candidates.scores.size());
-      per_task.labels.reserve(candidates.labels.size());
-      per_task.boxes.reserve(candidates.boxes.size());
-      const std::vector<int>& task_labels = GlobalLabelsForTask(layout, task_index);
-      CollectByLabelSet(candidates, task_labels, runtime_config.label_count, &per_task);
-      FilterByLabelScoreThreshold(&per_task, config.label_score_thresh);
-      if (config.nms_type == INFERENCE_NMS_CIRCLE) {
-        const float radius = task_index < config.circle_nms_min_radius.size()
-                                 ? config.circle_nms_min_radius[task_index]
-                                 : 0.0f;
-        InferenceStatus status = AppendCircleNmsResult(&per_task, radius, config.nms_post_maxsize,
-                                                       out_result, out_error);
-        if (status != INFERENCE_STATUS_OK) {
-          return status;
-        }
-      } else {
-        InferenceStatus status = AppendIouNmsResult(&per_task, config.nms_type, config.nms_thresh,
-                                                    config.nms_pre_maxsize,
-                                                    config.nms_post_maxsize,
-                                                    config.self_car_box,
-                                                    config.self_car_nms_thresh,
-                                                    out_result, out_error);
-        if (status != INFERENCE_STATUS_OK) {
-          return status;
-        }
-      }
-    }
-    FilterByScoreThreshold(out_result, config.final_score_threshold);
-    return INFERENCE_STATUS_OK;
-  }
-  if (config.nms_type == INFERENCE_NMS_CIRCLE) {
-    out_result->scores.clear();
-    out_result->boxes.clear();
-    out_result->labels.clear();
-
-    for (int label = 0; label < label_count; ++label) {
-      CandidateDetections per_label;
-      per_label.scores.reserve(candidates.scores.size());
-      per_label.labels.reserve(candidates.labels.size());
-      per_label.boxes.reserve(candidates.boxes.size());
-      for (size_t i = 0; i < candidates.scores.size(); ++i) {
-        if (candidates.labels[i] != label) {
-          continue;
-        }
-        per_label.scores.push_back(candidates.scores[i]);
-        per_label.labels.push_back(label);
-        AppendBoxes(candidates.boxes, i, &per_label.boxes);
-      }
-      InferenceStatus status = AppendCircleNmsResult(
-          &per_label, config.circle_nms_min_radius[static_cast<size_t>(label)],
-          config.nms_post_maxsize, out_result, out_error);
-      if (status != INFERENCE_STATUS_OK) {
-        return status;
-      }
-    }
-    FilterByScoreThreshold(out_result, config.final_score_threshold);
-    return INFERENCE_STATUS_OK;
-  }
-
-  std::vector<float> scores;
-  std::vector<float> boxes;
-  std::vector<int> labels;
-  scores.reserve(candidates.scores.size());
-  boxes.reserve(candidates.boxes.size());
-  labels.reserve(candidates.labels.size());
-  for (size_t i = 0; i < candidates.scores.size(); ++i) {
-    const int label = candidates.labels[i];
-    if (label < 0 || label >= label_count) {
-      continue;
-    }
-    if (!config.label_score_thresh.empty() &&
-        candidates.scores[i] < config.label_score_thresh[static_cast<size_t>(label)]) {
-      continue;
-    }
-    scores.push_back(candidates.scores[i]);
-    labels.push_back(label);
-    AppendBoxes(candidates.boxes, i, &boxes);
-  }
-  out_result->scores.clear();
-  out_result->boxes.clear();
-  out_result->labels.clear();
-  CandidateDetections filtered;
-  filtered.scores = std::move(scores);
-  filtered.boxes = std::move(boxes);
-  filtered.labels = std::move(labels);
-  return AppendIouNmsResult(&filtered, config.nms_type, config.nms_thresh,
-                            config.nms_pre_maxsize, config.nms_post_maxsize,
-                            config.self_car_box, config.self_car_nms_thresh,
-                            out_result, out_error);
-}
-
 InferenceOutputSpec MakeOutputSpec(int task_count, int bbox_max_num) {
   InferenceOutputSpec spec{};
   spec.max_candidates = static_cast<size_t>(task_count) * static_cast<size_t>(bbox_max_num);
@@ -1237,8 +754,12 @@ struct PillarRuntime::Impl {
   std::unique_ptr<GpuDecodedCandidates> gpu_decoder;
   std::shared_ptr<Voxelization> voxelizer;
   cudaStream_t stream = nullptr;
-  cudaEvent_t profile_start = nullptr;
-  cudaEvent_t profile_end = nullptr;
+  struct ProfileSpan {
+    cudaEvent_t start = nullptr, stop = nullptr;
+    ~ProfileSpan() { if (start) cudaEventDestroy(start); if (stop) cudaEventDestroy(stop); }
+  };
+  std::array<ProfileSpan, 16> profile_spans;
+
   float* d_points = nullptr;
   float* d_bbox_pred = nullptr;
   float* d_cls_score = nullptr;
@@ -1269,12 +790,6 @@ struct PillarRuntime::Impl {
     }
     if (d_points != nullptr) {
       cudaFree(d_points);
-    }
-    if (profile_end != nullptr) {
-      cudaEventDestroy(profile_end);
-    }
-    if (profile_start != nullptr) {
-      cudaEventDestroy(profile_start);
     }
     if (stream != nullptr) {
       cudaStreamDestroy(stream);
@@ -1343,15 +858,11 @@ InferenceStatus PillarRuntime::Initialize() {
   if (status != INFERENCE_STATUS_OK) {
     return status;
   }
-  status = CheckCuda(cudaEventCreate(&impl_->profile_start), "cudaEventCreate(profile_start)",
-                     &last_error_);
-  if (status != INFERENCE_STATUS_OK) {
-    return status;
-  }
-  status = CheckCuda(cudaEventCreate(&impl_->profile_end), "cudaEventCreate(profile_end)",
-                     &last_error_);
-  if (status != INFERENCE_STATUS_OK) {
-    return status;
+  for (auto& span : impl_->profile_spans) {
+    status = CheckCuda(cudaEventCreate(&span.start), "cudaEventCreate(start)", &last_error_);
+    if (status != INFERENCE_STATUS_OK) return status;
+    status = CheckCuda(cudaEventCreate(&span.stop), "cudaEventCreate(stop)", &last_error_);
+    if (status != INFERENCE_STATUS_OK) return status;
   }
 
   VoxelizationParameter voxelization_param{};
@@ -1478,6 +989,8 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
   const int bounded_point_count = std::max(0, std::min(request.point_count, config_.max_points));
 
   StageTimings local_timings;
+  local_timings.profile = timings && timings->profile;
+
   const auto total_start = std::chrono::steady_clock::now();
   if (debug != nullptr && bounded_point_count > 0) {
     debug->input_points.assign(
@@ -1487,15 +1000,33 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
     debug->input_points.clear();
   }
 
-  const bool enable_gpu_timing = (timings != nullptr || debug != nullptr);
+  const bool enable_gpu_timing = local_timings.profile;
+  size_t span_index = 0;
+  std::vector<double*> destinations;
+  std::vector<double> host_times;
+  std::chrono::steady_clock::time_point span_host_start;
+  auto begin_stage = [&]() {
+    if (!enable_gpu_timing) return INFERENCE_STATUS_OK;
+    span_host_start = std::chrono::steady_clock::now();
+    return CheckCuda(cudaEventRecord(impl_->profile_spans.at(span_index).start, impl_->stream),
+                     "cudaEventRecord(start)", &last_error_);
+  };
+  auto end_stage = [&](double* destination) {
+    if (!enable_gpu_timing) return INFERENCE_STATUS_OK;
+    auto result = CheckCuda(cudaEventRecord(impl_->profile_spans.at(span_index).stop, impl_->stream),
+                            "cudaEventRecord(stop)", &last_error_);
+    destinations.push_back(destination);
+    host_times.push_back(ElapsedMs(span_host_start, std::chrono::steady_clock::now()));
+    ++span_index;
+    return result;
+  };
   InferenceStatus status = INFERENCE_STATUS_OK;
   if (bounded_point_count > 0) {
     const size_t input_bytes = static_cast<size_t>(bounded_point_count) *
                                static_cast<size_t>(config_.num_point_features) *
                                sizeof(float);
     std::memcpy(impl_->h_points_staging, request.points, input_bytes);
-    status = MeasureGpuStageBegin(impl_->profile_start, impl_->stream, enable_gpu_timing,
-                                  &last_error_);
+    status = begin_stage();
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
@@ -1505,8 +1036,7 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
-    status = MeasureGpuStageEnd(impl_->profile_start, impl_->profile_end, impl_->stream,
-                                enable_gpu_timing, &local_timings.h2d_prepare_ms, &last_error_);
+    status = end_stage(&local_timings.h2d_prepare_ms);
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
@@ -1521,8 +1051,7 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
   bool head_outputs_ready = false;
 
   if (config_.runtime_backend == RuntimeBackend::kCenterPointVoxel) {
-    status = MeasureGpuStageBegin(impl_->profile_start, impl_->stream, enable_gpu_timing,
-                                  &last_error_);
+    status = begin_stage();
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
@@ -1533,19 +1062,18 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
     unsigned int* d_voxel_indices = nullptr;
     const int actual_num_voxels =
         static_cast<int>(impl_->voxelizer->get_output(&d_voxel_features, &d_voxel_indices));
-    status = MeasureGpuStageEnd(impl_->profile_start, impl_->profile_end, impl_->stream,
-                                enable_gpu_timing, &local_timings.pillarize_ms, &last_error_);
+    status = end_stage(&local_timings.pillarize_ms);
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
+    local_timings.voxel_count = actual_num_voxels;
     if (debug != nullptr) {
       debug->pillar_inputs = PillarInputTensors{};
       debug->pillar_inputs.num_pillars = actual_num_voxels;
     }
 
     if (actual_num_voxels > 0) {
-      status = MeasureGpuStageBegin(impl_->profile_start, impl_->stream, enable_gpu_timing,
-                                    &last_error_);
+      status = begin_stage();
       if (status != INFERENCE_STATUS_OK) {
         return status;
       }
@@ -1567,6 +1095,10 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
                         "CenterPoint voxel SCN forward returned empty output");
       }
       spconv::Tensor& scn_features = scn_output->features();
+      status = end_stage(&local_timings.sparse_backbone_ms);
+      if (status != INFERENCE_STATUS_OK) return status;
+      status = begin_stage();
+      if (status != INFERENCE_STATUS_OK) return status;
       status = impl_->voxel_head_trt.Enqueue(scn_features.ptr(),
                                              scn_features.shape,
                                              impl_->d_bbox_pred,
@@ -1576,9 +1108,7 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
       if (status != INFERENCE_STATUS_OK) {
         return status;
       }
-      status = MeasureGpuStageEnd(impl_->profile_start, impl_->profile_end, impl_->stream,
-                                  enable_gpu_timing, &local_timings.trt_forward_ms,
-                                  &last_error_);
+      status = end_stage(&local_timings.trt_forward_ms);
       if (status != INFERENCE_STATUS_OK) {
         return status;
       }
@@ -1592,8 +1122,7 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
       head_outputs_ready = true;
     }
   } else {
-    status = MeasureGpuStageBegin(impl_->profile_start, impl_->stream, enable_gpu_timing,
-                                  &last_error_);
+    status = begin_stage();
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
@@ -1605,11 +1134,11 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
     unsigned int* d_coors = nullptr;
     const int actual_num_pillars =
         static_cast<int>(impl_->voxelizer->get_pillar_output(&d_voxels, &d_num_points, &d_coors));
-    status = MeasureGpuStageEnd(impl_->profile_start, impl_->profile_end, impl_->stream,
-                                enable_gpu_timing, &local_timings.pillarize_ms, &last_error_);
+    status = end_stage(&local_timings.pillarize_ms);
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
+    local_timings.voxel_count = actual_num_pillars;
     const EngineContract& contract = impl_->trt.contract();
     const int padded_num_pillars =
         std::min(contract.max_runtime_pillars,
@@ -1647,8 +1176,7 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
     bindings[static_cast<size_t>(contract.cls_score_index)] = impl_->d_cls_score;
     bindings[static_cast<size_t>(contract.dir_cls_pred_index)] = impl_->d_dir_cls_pred;
 
-    status = MeasureGpuStageBegin(impl_->profile_start, impl_->stream, enable_gpu_timing,
-                                  &last_error_);
+    status = begin_stage();
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
@@ -1656,8 +1184,7 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
-    status = MeasureGpuStageEnd(impl_->profile_start, impl_->profile_end, impl_->stream,
-                                enable_gpu_timing, &local_timings.trt_forward_ms, &last_error_);
+    status = end_stage(&local_timings.trt_forward_ms);
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
@@ -1684,8 +1211,7 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
       debug->final_nms_outputs = CandidateDetections{};
     }
   } else if (debug == nullptr && impl_->gpu_decoder != nullptr) {
-    status = MeasureGpuStageBegin(impl_->profile_start, impl_->stream, enable_gpu_timing,
-                                  &last_error_);
+    status = begin_stage();
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
@@ -1694,14 +1220,12 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
-    status = MeasureGpuStageEnd(impl_->profile_start, impl_->profile_end, impl_->stream,
-                                enable_gpu_timing, &local_timings.decode_ms, &last_error_);
+    status = end_stage(&local_timings.decode_ms);
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
 
-    status = MeasureGpuStageBegin(impl_->profile_start, impl_->stream, enable_gpu_timing,
-                                  &last_error_);
+    status = begin_stage();
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
@@ -1709,8 +1233,7 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
-    status = MeasureGpuStageEnd(impl_->profile_start, impl_->profile_end, impl_->stream,
-                                enable_gpu_timing, &local_timings.d2h_collect_ms, &last_error_);
+    status = end_stage(&local_timings.d2h_collect_ms);
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
@@ -1718,8 +1241,7 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
       SortCandidatesDescending(&candidates);
     }
   } else {
-    status = MeasureGpuStageBegin(impl_->profile_start, impl_->stream, enable_gpu_timing,
-                                  &last_error_);
+    status = begin_stage();
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
@@ -1746,8 +1268,7 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
-    status = MeasureGpuStageEnd(impl_->profile_start, impl_->profile_end, impl_->stream,
-                                enable_gpu_timing, &local_timings.d2h_collect_ms, &last_error_);
+    status = end_stage(&local_timings.d2h_collect_ms);
     if (status != INFERENCE_STATUS_OK) {
       return status;
     }
@@ -1791,6 +1312,8 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
     }
   }
 
+  local_timings.decoded_candidates = candidates.scores.size();
+  const auto nms_start = std::chrono::steady_clock::now();
   if (postprocess != nullptr) {
     status = RunPostprocessNms(candidates, *postprocess, config_, &final_detections, &last_error_);
     if (status != INFERENCE_STATUS_OK) {
@@ -1802,6 +1325,7 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
     output_detections = &final_detections;
   }
 
+  local_timings.nms_ms = ElapsedMs(nms_start, std::chrono::steady_clock::now());
   start = std::chrono::steady_clock::now();
   status = CopyOutputsToResponse(*output_detections, response, &last_error_);
   end = std::chrono::steady_clock::now();
@@ -1810,6 +1334,25 @@ InferenceStatus PillarRuntime::ForwardInternal(const InferenceRequest& request,
     return status;
   }
 
+  if (enable_gpu_timing) {
+    status = SyncCudaStream(impl_->stream, "cudaStreamSynchronize(profile)", &last_error_);
+    if (status != INFERENCE_STATUS_OK) return status;
+    for (size_t i = 0; i < span_index; ++i) {
+      float elapsed = 0;
+      status = CheckCuda(cudaEventElapsedTime(&elapsed, impl_->profile_spans[i].start,
+          impl_->profile_spans[i].stop), "cudaEventElapsedTime", &last_error_);
+      if (status != INFERENCE_STATUS_OK) return status;
+      auto* d = destinations[i]; *d = elapsed;
+      std::string name = d == &local_timings.h2d_prepare_ms ? "point_upload" :
+          d == &local_timings.pillarize_ms ? "voxelize" :
+          d == &local_timings.sparse_backbone_ms ? "sparse_backbone" :
+          d == &local_timings.trt_forward_ms ? "trt_head" :
+          d == &local_timings.d2h_collect_ms ? "output_download" : "decode";
+      local_timings.stages.push_back({name, host_times[i], elapsed, true});
+    }
+    local_timings.stages.push_back({"nms", local_timings.nms_ms, 0, false});
+    local_timings.stages.push_back({"output_pack", local_timings.output_pack_ms, 0, false});
+  }
   local_timings.total_forward_ms = ElapsedMs(total_start, std::chrono::steady_clock::now());
   if (timings != nullptr) {
     *timings = local_timings;

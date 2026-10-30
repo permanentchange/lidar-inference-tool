@@ -1,10 +1,14 @@
-cmake_minimum_required(VERSION 3.0.2)
+cmake_minimum_required(VERSION 3.16)
 
 project(lidar-inference-tool
   VERSION 1.8.0
   DESCRIPTION "TensorRT lidar-inference-tool library"
   LANGUAGES CXX
 )
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
 
 option(BUILD_EXAMPLES "Build examples" ON)
 option(BUILD_TESTING "Build tests" OFF)
@@ -25,6 +29,16 @@ else()
 endif()
 
 find_package(CUDA REQUIRED)
+find_package(JPEG REQUIRED)
+enable_language(CUDA)
+set(CMAKE_CUDA_STANDARD 17)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+# nvcc 11.x with CMake 3.16 needs the standard flag explicitly.
+string(APPEND CMAKE_CUDA_FLAGS " -std=c++17")
+set(CMAKE_CUDA_ARCHITECTURES 87)
+if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 11.8)
+  set(CMAKE_CUDA_ARCHITECTURES 87 89)
+endif()
 
 # Respect manual compiler selection without changing the caller's environment.
 # An explicit or cached CMake value takes priority over PROTOC.
@@ -159,17 +173,24 @@ set_target_properties(spconv_onnx_proto PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_subdirectory(src/pillar_postprocess)
 add_subdirectory(third_party/iou3d_nms)
 add_subdirectory(third_party/voxelize)
+add_subdirectory(src/bevfusion)
 
 set(INFERENCE_SOURCES
+  ${BEVFUSION_SOURCES}
+  src/pillar_debug_utils.cpp
   src/inference_api.cpp
   src/inference_cpp.cpp
   src/pillar_runtime.cpp
+  src/postprocess_config.cpp
+  src/centerhead_postprocess.cpp
   src/trt_engine.cpp
   ${SPCONV_PARSER_DIR}/onnx-parser.cpp
 )
 
 set(INFERENCE_INCLUDES
   ${SRC_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/tools
+  ${JPEG_INCLUDE_DIR}
   ${TENSORRT_INCLUDE_DIR}
   ${CUDA_INCLUDE_DIRS}
   ${YAML_CPP_INCLUDE_DIR}
@@ -180,6 +201,8 @@ set(INFERENCE_INCLUDES
 )
 
 set(INFERENCE_LIBS
+  bevfusion_kernels
+  ${JPEG_LIBRARIES}
   pillar_postprocess
   iou3d_nms
   voxelization
@@ -196,7 +219,8 @@ add_library(inference SHARED ${INFERENCE_SOURCES})
 target_include_directories(inference
   PUBLIC
     $<BUILD_INTERFACE:${INCLUDE_DIR}>
-    $<INSTALL_INTERFACE:include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/${PROJECT_NAME}>
   PRIVATE
     ${INFERENCE_INCLUDES}
 )
@@ -210,8 +234,7 @@ set_target_properties(inference PROPERTIES
 
 add_executable(perf_debug_tool
   tools/perf_debug_tool.cpp
-  src/pillar_debug_utils.cpp
-  ${INFERENCE_SOURCES}
+  tools/debug_runner.cpp
 )
 
 target_include_directories(perf_debug_tool PRIVATE
@@ -219,7 +242,7 @@ target_include_directories(perf_debug_tool PRIVATE
   ${INFERENCE_INCLUDES}
 )
 
-target_link_libraries(perf_debug_tool PRIVATE ${INFERENCE_LIBS})
+target_link_libraries(perf_debug_tool PRIVATE inference ${INFERENCE_LIBS})
 
 set_target_properties(perf_debug_tool PROPERTIES
   BUILD_RPATH "${SPCONV_LIBRARY_DIR}"
@@ -228,7 +251,7 @@ set_target_properties(perf_debug_tool PROPERTIES
 
 add_executable(infer_debug_tool
   tools/infer_debug_tool.cpp
-  src/pillar_debug_utils.cpp
+  tools/debug_runner.cpp
 )
 
 target_include_directories(infer_debug_tool PRIVATE
@@ -236,7 +259,10 @@ target_include_directories(infer_debug_tool PRIVATE
   ${INFERENCE_INCLUDES}
 )
 
-target_link_libraries(infer_debug_tool PRIVATE inference)
+target_link_libraries(infer_debug_tool PRIVATE inference ${YAML_CPP_LIBRARY} ${CUDA_LIBRARIES})
+set_target_properties(infer_debug_tool PROPERTIES
+  INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR};$ORIGIN"
+)
 
 if(BUILD_EXAMPLES)
   add_subdirectory(examples)
@@ -244,6 +270,8 @@ endif()
 
 if(BUILD_TESTING)
   enable_testing()
+
+  add_subdirectory(tests/bevfusion)
 
   add_executable(self_car_nms_test
     tests/self_car_nms_test.cpp
@@ -260,7 +288,6 @@ if(BUILD_TESTING)
 
   add_executable(config_and_input_loader_test
     tests/config_and_input_loader_test.cpp
-    src/pillar_debug_utils.cpp
   )
   target_include_directories(config_and_input_loader_test PRIVATE
     ${INCLUDE_DIR}
@@ -269,6 +296,19 @@ if(BUILD_TESTING)
   )
   target_link_libraries(config_and_input_loader_test PRIVATE inference)
   add_test(NAME config_and_input_loader_test COMMAND config_and_input_loader_test)
+  # Existing regression tests use assert; keep their checks in Release builds.
+  target_compile_options(self_car_nms_test PRIVATE -UNDEBUG)
+  target_compile_options(config_and_input_loader_test PRIVATE -UNDEBUG)
+
+  add_executable(centerhead_postprocess_smoke_test tests/centerhead_postprocess_smoke_test.cpp)
+  target_include_directories(centerhead_postprocess_smoke_test PRIVATE ${INCLUDE_DIR} ${SRC_DIR} ${CUDA_INCLUDE_DIRS})
+  target_link_libraries(centerhead_postprocess_smoke_test PRIVATE inference)
+  add_test(NAME centerhead_postprocess_smoke_test COMMAND centerhead_postprocess_smoke_test ${CMAKE_CURRENT_SOURCE_DIR})
+
+  add_executable(debug_report_test tests/debug_report_test.cpp)
+  target_include_directories(debug_report_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+  target_compile_options(debug_report_test PRIVATE -UNDEBUG)
+  add_test(NAME debug_report_test COMMAND debug_report_test)
 
   add_executable(debug_cli_options_test tests/debug_cli_options_test.cpp)
   target_include_directories(debug_cli_options_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tools)

@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+namespace nvinfer1 { class ICudaEngine; }
 
 namespace inference_internal {
 
@@ -66,6 +67,7 @@ InferenceStatus NormalizeCenterPointHeadInputShape(
     std::string* out_error);
 
 struct CenterPointHeadContract {
+  std::vector<int> task_num_classes;
   int task_count = 0;
   int bbox_channels = 0;
   int cls_channels = 0;
@@ -81,6 +83,13 @@ struct CenterPointHeadContract {
   std::vector<int> vel_indices;
   std::vector<int> hm_indices;
 };
+
+InferenceStatus InspectCenterPointHead(const RuntimeConfig& config,
+    const ResolvedHeadLayout& layout, nvinfer1::ICudaEngine& engine,
+    CenterPointHeadContract* contract, std::string* error);
+// Share the output packing between the LiDAR-only and multimodal executors.
+void BindCenterPointHeadOutputs(const CenterPointHeadContract& contract,
+    float* bbox, float* cls, float* dir, std::vector<void*>* bindings);
 
 class CenterPointHeadTrtExecutor {
  public:

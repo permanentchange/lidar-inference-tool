@@ -10,6 +10,9 @@ enum class ToolKind { kInfer, kPerf };
 enum class ParseResult { kOk, kHelp, kError };
 
 struct CliOptions {
+  std::string image_input = "raw";
+  bool image_input_explicit = false;
+  bool dump_result = true;
   std::string model_dir;
   std::string input_path;
   std::string dump_dir;
@@ -24,6 +27,7 @@ struct CliOptions {
 inline CliOptions DefaultCliOptions(ToolKind kind) {
   CliOptions options;
   if (kind == ToolKind::kPerf) {
+    options.dump_result = false;
     options.dump_decoded = false;
     options.dump_internal = false;
     options.warmup_iters = 10;
@@ -37,19 +41,18 @@ inline void PrintUsage(std::ostream& output, const char* program, ToolKind kind)
   output << "Usage: " << program
          << " --model-dir MODEL_DIR --input INPUT_PATH --dump-dir DUMP_DIR"
          << " [--source-num-point-features N] [--override-config PATH]"
-         << " [--warmup N] [--profile-iters N]";
-  if (kind == ToolKind::kInfer) {
-    output << " [--no-dump-decoded] [--no-dump-internal]";
-  }
+         << " [--warmup N] [--profile-iters N] [--image-input raw|preprocessed]";
+  output << " [--dump-result|--no-dump-result] [--dump-decoded|--no-dump-decoded] [--dump-internal|--no-dump-internal]";
   output << "\n\nRequired paths:\n"
          << "  --model-dir MODEL_DIR          Model directory containing model.yaml\n"
          << "  --input INPUT_PATH            "
-         << (kind == ToolKind::kInfer ? "PCD/BIN file or directory of PCD/BIN files\n"
-                                      : "Single PCD/BIN file\n")
+         << (kind == ToolKind::kInfer ? "PCD/BIN or BEVFusion manifest; directory supported\n"
+                                      : "Single PCD/BIN file or BEVFusion manifest\n")
          << "  --dump-dir DUMP_DIR            Output directory (required; no default)\n"
          << "\nInput format:\n"
          << "  --source-num-point-features N  BIN source features: 3, 4, or 5\n"
          << "                                Default: auto-detect unambiguous BIN layout; PCD uses its header\n"
+         << "  --image-input MODE            BEVFusion raw JPEG (default: raw) or preprocessed NPY\n"
          << "\nConfiguration:\n"
          << "  --override-config PATH        Package YAML override (default: none)\n"
          << "\nTiming:\n"
@@ -57,14 +60,13 @@ inline void PrintUsage(std::ostream& output, const char* program, ToolKind kind)
          << defaults.warmup_iters << ")\n"
          << "  --profile-iters N             Profile iterations > 0 (default: "
          << defaults.profile_iters << ")\n";
-  if (kind == ToolKind::kInfer) {
-    output << "\nDebug dumps (both enabled by default; outside the inference timing):\n"
-           << "  --no-dump-decoded             Disable decoded detection arrays\n"
-           << "  --no-dump-internal            Disable auxiliary internal tensors\n"
-           << "  --dump-decoded                Enable decoded arrays (default: enabled)\n"
-           << "  --dump-internal               Enable internal tensors (default: enabled)\n"
-           << "                                Repeated dump switches: last occurrence wins\n";
-  }
+  output << "\nDebug dumps (outside timing; infer defaults on, perf defaults off):\n"
+    << "  --dump-result / --no-dump-result     Final result JSON, arrays and input points\n"
+    << "  --dump-decoded / --no-dump-decoded   Decoded arrays\n"
+    << "  --dump-internal / --no-dump-internal Internal tensors\n"
+    << "  Repeated switches: last occurrence wins\n"
+    << "\nPerf collects normal total latency and stage analysis in separate passes;\n"
+    << "each pass uses the requested warmup/profile iterations. Infer measures total only.\n";
   output << "\nHelp:\n"
          << "  -h, --help                    Show this help\n";
 }
@@ -99,18 +101,19 @@ inline ParseResult ParseCliOptions(int argc, char** argv, ToolKind kind,
     if (arg == "--help" || arg == "-h") {
       return ParseResult::kHelp;
     }
-    if (kind == ToolKind::kInfer &&
-        (arg == "--dump-decoded" || arg == "--no-dump-decoded")) {
+    if (arg == "--dump-result" || arg == "--no-dump-result") {
+      options.dump_result = arg == "--dump-result"; continue;
+    }
+    if ((arg == "--dump-decoded" || arg == "--no-dump-decoded")) {
       options.dump_decoded = (arg == "--dump-decoded");
       continue;
     }
-    if (kind == ToolKind::kInfer &&
-        (arg == "--dump-internal" || arg == "--no-dump-internal")) {
+    if ((arg == "--dump-internal" || arg == "--no-dump-internal")) {
       options.dump_internal = (arg == "--dump-internal");
       continue;
     }
     const bool path_option = arg == "--model-dir" || arg == "--input" ||
-                             arg == "--dump-dir" || arg == "--override-config";
+                             arg == "--dump-dir" || arg == "--override-config" || arg == "--image-input";
     const bool count_option = arg == "--warmup" || arg == "--profile-iters" ||
                               arg == "--source-num-point-features";
     if (!path_option && !count_option) {
@@ -138,6 +141,10 @@ inline ParseResult ParseCliOptions(int argc, char** argv, ToolKind kind,
         options.input_path = value;
       } else if (arg == "--dump-dir") {
         options.dump_dir = value;
+      } else if (arg == "--image-input") {
+        if (value != "raw" && value != "preprocessed") return fail("--image-input must be raw or preprocessed");
+        options.image_input = value;
+        options.image_input_explicit = true;
       } else {
         options.override_config_path = value;
       }
