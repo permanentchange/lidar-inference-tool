@@ -31,14 +31,9 @@ endif()
 find_package(CUDA REQUIRED)
 find_package(JPEG REQUIRED)
 enable_language(CUDA)
-set(CMAKE_CUDA_STANDARD 17)
-set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-# nvcc 11.x with CMake 3.16 needs the standard flag explicitly.
-string(APPEND CMAKE_CUDA_FLAGS " -std=c++17")
-set(CMAKE_CUDA_ARCHITECTURES 87)
-if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 11.8)
-  set(CMAKE_CUDA_ARCHITECTURES 87 89)
-endif()
+
+# Match master: CUDA subdirectories pass C++17 and architecture flags directly
+# to nvcc. CMake 3.16 cannot resolve CUDA17 dialect flags with CUDA 11.4.
 
 # Respect manual compiler selection without changing the caller's environment.
 # An explicit or cached CMake value takes priority over PROTOC.
